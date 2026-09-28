@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "contratacion"
+version = "0.1.0"
+description = "Plataforma SERCOP multi-tenant — backend (monolito modular hexagonal)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "httpx>=0.27",
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.10",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    # Base de datos horaria para Windows, donde no existe la del sistema: `zoneinfo` la necesita.
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pip-audit>=2.7",
+    "testcontainers[postgres,redis]>=4.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/contratacion"]
+
+# ---------------------------------------------------------------------------
+# Pruebas
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["pruebas"]
+asyncio_mode = "auto"
+addopts = "-q"
+
+# ---------------------------------------------------------------------------
+# Estilo y tipado
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "pruebas"]
+
+[tool.ruff.lint]
+# BLE001 exige justificar con `noqa` cualquier `except Exception` amplio.
+select = ["E", "F", "I", "UP", "B", "SIM", "BLE", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Las migraciones contienen SQL literal: las líneas largas son legibles así.
+"alembic/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+# Permite ejecutar `mypy` sin argumentos (local y en CI).
+files = ["src", "pruebas", "scripts"]
+
+[[tool.mypy.overrides]]
+# `openpyxl` no publica stubs y no hay un paquete de terceros que los aporte. Se declara la excepción
+# aquí, en un solo sitio y acotada a ese paquete, en lugar de sembrar `# type: ignore` por cada
+# importación del módulo de exportación: así se sigue comprobando a fondo todo lo demás, y el día
+# que existan stubs oficiales basta con borrar este bloque.
+module = ["openpyxl", "openpyxl.*"]
+ignore_missing_imports = true

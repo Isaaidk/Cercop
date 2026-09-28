@@ -1,0 +1,24 @@
+{
+  "name": "contratacion-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Panel de contratación pública: filtros por palabra clave, gráficas interactivas y mapa del Ecuador.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "revisar": "vite build && vite preview --port 4173"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.7",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}

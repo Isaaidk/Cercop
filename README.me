@@ -1,0 +1,156 @@
+# Consultoría SERCOP — Dashboard de Contratación Pública
+
+Dashboard web (FastAPI + Vue 3) para consultar las **Necesidades de Contratación y
+Recepción de Proformas** del SERCOP y los **procesos publicados** (API de Datos
+Abiertos OCDS), con filtros por palabra clave, provincia, cantón, estado, tipo y
+rango de fechas, y exportación a Excel.
+
+## Tabla principal
+
+La vista principal reproduce la tabla del portal del SERCOP:
+
+| Columna |
+| --- |
+| Tipo de Necesidad |
+| Código Necesidad de Contratación |
+| Fecha de Publicación |
+| Provincia - Cantón |
+| Descripción del Objeto de compra |
+| Estado de la Necesidad |
+| Fecha límite para la entrega de proformas |
+| Entidad Contratante |
+| Dirección de Entrega |
+| Contacto |
+
+## Estructura del proyecto (MVC)
+
+```
+main.py                                  # Punto de entrada (incluye los routers)
+Consultoria/
+├── model/
+│   ├── necesidades.py                   # NCO: Necesidades de Contratación (portal SERCOP)
+│   ├── ofertas.py                       # Ofertas: procesos publicados en recepción de ofertas
+│   └── sercop.py                        # OCDS: listado y detalle de procesos (datos abiertos)
+├── controller/
+│   ├── necesidades_controller.py        # /api/necesidades* (tabla, filtros, estadísticas)
+│   ├── ofertas_controller.py            # /api/ofertas*
+│   ├── contrataciones_controller.py     # /api/contrataciones, /api/exportar
+│   └── utils.py                         # Exportación a Excel
+└── view/frontend/                       # Vue 3 + Vite
+    └── src/
+        ├── App.vue                      # Pestañas
+        ├── services/api.js              # Cliente axios
+        └── components/
+            ├── NecesidadesTab.vue       # Tabla + filtros + paginación
+            ├── GraficasTab.vue          # Gráficas (pastel por cantón/provincia, barras)
+            ├── OfertasTab.vue           # Procesos en recepción de ofertas
+            ├── OcdsTab.vue              # Listado OCDS básico
+            ├── Paginacion.vue
+            └── EtiquetaEstado.vue       # Estado y cuenta regresiva del plazo
+```
+
+## Pestañas del dashboard
+
+| Pestaña | Contenido |
+| --- | --- |
+| **Necesidades de Contratación** | Tabla con las 10 columnas del portal + filtros y exportación. |
+| **Gráficas** | Pastel de **Ínfimas Cuantías por cantón** (top N + resto), pastel por provincia, donas de estado y tipo, barras de vencimiento de proformas y de publicaciones por día, con los mismos filtros. |
+| **Ofertas / Procesos** | Procesos publicados con foco en la **recepción de ofertas**: inicio y fecha límite de ofertas, número de ofertas recibidas, estado, proveedor adjudicado y presupuesto. |
+| **Procesos publicados (OCDS)** | Listado OCDS sin detalle (rápido). |
+
+## Puesta en marcha
+
+```powershell
+# 1. Backend
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000      # http://127.0.0.1:8000/docs
+
+# 2. Frontend (otra terminal)
+cd Consultoria\view\frontend
+npm install
+npm run dev                                # http://localhost:5173
+```
+
+## Endpoints
+
+### Necesidades de Contratación (NCO)
+
+| Endpoint | Descripción |
+| --- | --- |
+| `GET /api/necesidades` | Tabla paginada con filtros |
+| `GET /api/necesidades/filtros` | Provincias, cantones, estados y tipos disponibles |
+| `GET /api/necesidades/estadisticas` | Agregados para las gráficas (cantón, provincia, estado, tipo, por día, vencimientos) |
+| `POST /api/necesidades/actualizar` | Fuerza una nueva descarga desde el SERCOP |
+| `GET /api/necesidades/exportar` | Excel con los mismos filtros |
+
+Parámetros: `q` (palabras clave separadas por comas), `modo` (`todas`/`cualquiera`),
+`provincia`, `canton`, `estado`, `tipo`, `fecha_desde`, `fecha_hasta`,
+`por_vencer_horas`, `solo_vigentes`, `orden`, `dir`, `pagina`, `por_pagina`.
+`estadisticas` añade `top` (cantones a mostrar) y `dias_serie`.
+
+### Ofertas / procesos publicados
+
+| Endpoint | Descripción |
+| --- | --- |
+| `GET /api/ofertas` | Procesos en recepción de ofertas, paginados |
+| `GET /api/ofertas/exportar` | Excel de los procesos filtrados |
+
+Parámetros: `search`, `fecha_inicio`, `fecha_fin`, `provincia`, `canton`, `estado`,
+`tipo`, `solo_abiertas`, `cierra_en_horas`, `analizar`, `max_paginas`, `orden`,
+`dir`, `pagina`, `por_pagina`.
+
+> `analizar` indica a cuántos procesos se les consulta el detalle (`record`) para
+> obtener el estado, las fechas de recepción de ofertas y el número de ofertas
+> recibidas. La respuesta informa `analizados` y avisa si hubo que omitir alguno.
+
+### Procesos publicados (OCDS)
+
+| Endpoint | Descripción |
+| --- | --- |
+| `GET /api/contrataciones` | Procesos filtrados y paginados |
+| `GET /api/procesos/{ocid}/detalle` | Estado, proformas, dirección y contacto |
+| `GET /api/exportar` | Excel de los procesos |
+
+Parámetros adicionales: `search`, `fecha_inicio`, `fecha_fin`, `max_paginas`,
+`incluir_detalle` (consulta el endpoint `record` de cada proceso; es lento),
+`limite_detalle`.
+
+## Fuentes de datos
+
+1. **Necesidades de Contratación (NCO)**
+   `https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/NCO/NCORetornaRegistros.cpe?lot=1`
+   Es el mismo origen que alimenta la vista pública "Necesidades de Contratación y
+   Recepción de Proformas". Entrega `tipo_necesidad`, `codigo_contratacion`,
+   `fecha_publicacion`, `provincia`, `canton`, `objeto_contratacion`, `estado`,
+   `fecha_limite_propuesta`, `razon_social`, `direccion_entrega` y `contacto`.
+
+2. **Datos Abiertos OCDS**
+   `search_ocds` (listado) y `record` (detalle). Se usa para los procesos
+   publicados (subasta inversa, licitación, catálogo electrónico, etc.).
+
+## Consideraciones y límites
+
+- **El SERCOP limita la tasa de peticiones (HTTP 429).** `Consultoria/model/sercop.py`
+  serializa las llamadas, aplica un espaciado mínimo, respeta `Retry-After` y
+  reintenta con espera creciente. Si aun así falla, la respuesta incluye `avisos`
+  y la interfaz avisa que los resultados pueden estar incompletos.
+- **Caché en memoria:** el listado de necesidades (TTL 5 min), las páginas de
+  `search_ocds` (TTL 10 min) y los detalles `record` (TTL 15 min) se cachean, por
+  lo que los cambios de filtro son instantáneos. Use “Actualizar del SERCOP” para
+  forzar la descarga.
+- El endpoint NCO entrega **solo las necesidades vigentes** ("Ínfimas Cuantías",
+  "En Curso"). Los procesos finalizados o cancelados se consultan en la pestaña
+  **Procesos publicados (OCDS)**.
+- Los filtros de provincia, cantón, estado y tipo se aplican **localmente** sobre
+  los datos descargados, porque el SERCOP no ofrece esos filtros en su API.
+- **La búsqueda de procesos del portal clásico (`PC/buscarProceso.cpe`) no es
+  consumible de forma programática**: exige captcha y sesión, y su endpoint AJAX
+  (`interfazWeb.php`) no está expuesto públicamente. Por eso la pestaña
+  **Ofertas / Procesos** se construye con la API oficial OCDS.
+- En OCDS, la **fecha límite de recepción de ofertas** (`tender.tenderPeriod.endDate`)
+  no viene publicada en todos los procesos (por ejemplo, en varias Subastas
+  Inversas solo consta la fecha de inicio). Esos casos se muestran como
+  "No publicado"; el número de **ofertas recibidas** (`numberOfTenderers`) sí suele
+  estar disponible.

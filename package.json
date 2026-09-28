@@ -1,0 +1,39 @@
+{
+  "name": "contratacion-publica",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Plataforma de seguimiento de contratación pública: API en backend/, panel en frontend/.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "preparar": "npm --prefix frontend ci",
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "revisar": "npm --prefix frontend run build && npm --prefix frontend run preview"
+  },
+  "//": [
+    "Este archivo NO es una aplicación: el panel real vive en frontend/ y la API en backend/.",
+    "Existe por una razón concreta. Antes declaraba una dependencia de @supabase/server que",
+    "NINGUNA parte del proyecto importa —el backend habla con Postgres por DATABASE_URL, no por",
+    "el SDK de JavaScript— y no tenía nombre, versión, scripts ni engines. Un manifiesto así",
+    "rompe los despliegues: las plataformas que detectan Node por la presencia de un",
+    "package.json en la raíz —Vercel, Netlify, Render, Railway— tratan el repositorio entero",
+    "como una aplicación de Node, buscan un script build que no existía y fallan antes de",
+    "compilar nada.",
+    "",
+    "Por eso ahora los scripts delegan en frontend/ y la dependencia se quitó. La instalación está",
+    "separada de la compilación a propósito: un paso de compilación que borra y vuelve a crear",
+    "node_modules —que es lo que hace «npm ci»— falla en Windows si algún proceso tiene abierto",
+    "esbuild.exe, y convierte una compilación en un borrado que puede dejarte sin dependencias.",
+    "",
+    "El camino recomendado, y el único que está probado, es configurar el directorio del proyecto",
+    "como frontend/ al desplegar. Los archivos que hay que publicar son los de frontend/dist, y",
+    "ninguna convención deducida de la raíz los va a encontrar sola. Si la plataforma insiste en",
+    "detectar la raíz, ejecuta «npm run preparar» antes de «npm run build». El resultado que hay",
+    "que publicar sigue siendo frontend/dist.",
+    "",
+    "El backend no se instala desde el requirements.txt de la raíz, que es el de la aplicación",
+    "anterior todavía en servicio. Sus dependencias están en backend/pyproject.toml."
+  ]
+}

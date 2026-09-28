@@ -1,0 +1,47 @@
+# Entornos virtuales
+venv/
+.venv/
+backend/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Variables de entorno — NUNCA versionar credenciales
+.env
+.env.*
+!.env.example
+
+# Bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Registros y temporales
+*.log
+*.tmp
+backups/
+
+# Túneles y certificados
+.devtunnels*
+certs/
+*.pem
+*.key
+
+# Editores y sistema
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Panel de contratación pública: busca por palabras clave, explora por provincia y sigue las contrataciones que te interesan."
+    />
+    <title>Contratación pública — Panel</title>
+
+    <!--
+      El tema se aplica antes de que se pinte nada. Si se hiciera desde el código de la aplicación,
+      el navegador mostraría un instante el tema claro y después saltaría al oscuro: un destello
+      desagradable en cada carga. Este bloque es diminuto y solo hace esto.
+    -->
+    <script>
+      try {
+        const guardado = localStorage.getItem('tema')
+        const prefiereOscuro = window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.tema = guardado || (prefiereOscuro ? 'oscuro' : 'claro')
+      } catch {
+        document.documentElement.dataset.tema = 'claro'
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: system-ui">
+        Este panel necesita JavaScript para mostrar las gráficas y el mapa. Actívalo para continuar.
+      </p>
+    </noscript>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

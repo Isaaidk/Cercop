@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  calidad:
+    name: Estilo, tipado, pruebas y auditoría
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Estilo (ruff)
+        run: ruff check .
+
+      - name: Formato (ruff format)
+        run: ruff format --check .
+
+      - name: Tipado (mypy)
+        run: mypy
+
+      - name: Pruebas (pytest)
+        run: pytest
+
+      # Se excluye el propio paquete editable: no está publicado en PyPI y pip-audit lo marca como
+      # no auditable, lo que devolvería un falso fallo.
+      - name: Auditoría de dependencias (pip-audit)
+        run: |
+          pip freeze --exclude-editable > deps-a-auditar.txt
+          pip-audit -r deps-a-auditar.txt
+
+  # El panel tiene su propia tarea porque hasta ahora nada lo compilaba: el trabajo de arriba solo
+  # mira backend/, así que un error en el panel —un componente que falta, una importación rota, una
+  # variable de plantilla mal escrita— llegaba a la rama principal sin que nada lo detuviera, y el
+  # fallo aparecía al desplegar. Compilarlo aquí convierte ese error en un fallo de integración
+  # continua, que es donde se puede arreglar.
+  panel:
+    name: Compilación del panel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `ci` y no `install`: usa el bloqueo de versiones tal cual y falla si el manifiesto y el
+      # bloqueo no coinciden, que es justo lo que se quiere detectar antes de desplegar.
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Compilar
+        run: npm run build
+
+      # El mapa se carga desde `public/` en tiempo de ejecución, no se empaqueta con el código. Si
+      # el archivo no llegara al resultado de la compilación, el panel arrancaría sin mapa y sin
+      # ningún error: se comprueba que está.
+      - name: Comprobar que el mapa llegó al resultado
+        run: test -f dist/data/ecuador-provincias.geojson
