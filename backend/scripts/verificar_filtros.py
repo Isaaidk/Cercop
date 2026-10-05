@@ -19,9 +19,11 @@ import asyncio
 import sys
 from datetime import date, timedelta
 
+from sqlalchemy import text
+
 sys.path.insert(0, "src")
 
-from contratacion.dominio.busqueda import Filtros, ModoBusqueda, OrdenBusqueda
+from contratacion.dominio.busqueda import Categoria, Filtros, ModoBusqueda, OrdenBusqueda
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
     RepositorioConsultasBd,
 )
@@ -63,6 +65,21 @@ def marca(condicion: bool, texto: str) -> None:
     if not condicion:
         FALLOS.append(texto)
     print(f"  {'OK ' if condicion else 'MAL'} {texto}")
+
+
+async def _contar_con_cpc() -> int:
+    """Cuántos registros tienen ya el CPC leído.
+
+    No es un dato del filtro, pero sin él esta sección sería engañosa: «cpc=lavado -> 0» puede
+    significar que el filtro no funciona o que todavía no se ha leído ninguna ficha, y son dos
+    cosas muy distintas. El CPC llega ficha a ficha, así que tras desplegar esto lo normal es que
+    casi ningún registro lo tenga hasta que el worker haya dado varias vueltas.
+    """
+    async with obtener_motor().connect() as conexion:
+        resultado = await conexion.execute(
+            text("SELECT count(*) FROM registro WHERE cpc_busqueda <> ''")
+        )
+        return int(resultado.scalar_one())
 
 
 async def main() -> None:
@@ -152,9 +169,9 @@ async def main() -> None:
         print(f"  con formato «PROVINCIA - CANTÓN»: {len(con_canton)} de {len(provincias)}")
         suma = 0
         for completa in provincias[:6]:
-            por_completa = await total(filtros(provincia=completa))
+            por_completa = await total(filtros(provincias=(completa,)))
             solo_provincia = completa.split(" - ", 1)[0].strip()
-            por_nombre = await total(filtros(provincia=solo_provincia))
+            por_nombre = await total(filtros(provincias=(solo_provincia,)))
             print(f"  {completa[:34]:34} -> completa={por_completa} | solo provincia={por_nombre}")
             marca(por_completa > 0, f"«{completa}» encuentra algo")
             marca(
@@ -163,11 +180,34 @@ async def main() -> None:
             )
             suma += por_nombre
         marca(suma > 0, f"filtrar por provincia encuentra algo (suma parcial={suma})")
-        provincia_inventada = await total(filtros(provincia="Provincia Que No Existe"))
+        provincia_inventada = await total(filtros(provincias=("Provincia Que No Existe",)))
         marca(
             provincia_inventada == 0,
             f"una provincia inventada devuelve 0 ({provincia_inventada})",
         )
+
+        # Varias provincias a la vez: es el caso nuevo, y su comprobación no es la suma exacta
+        # —dos provincias pueden compartir filas por la forma en que la fuente escribe el campo—
+        # sino que el conjunto tiene que abarcar a cada una por separado y quedarse por debajo del
+        # total. Es lo que distingue «filtra por dos» de «filtró por una y se olvidó de la otra».
+        primera_dos = provincias[0].split(" - ", 1)[0].strip()
+        segunda_dos = provincias[1].split(" - ", 1)[0].strip()
+        solo_primera = await total(filtros(provincias=(primera_dos,)))
+        solo_segunda = await total(filtros(provincias=(segunda_dos,)))
+        las_dos = await total(filtros(provincias=(primera_dos, segunda_dos)))
+        print(f"  {primera_dos} + {segunda_dos} -> {las_dos} ({solo_primera} + {solo_segunda})")
+        marca(las_dos >= solo_primera, "con dos provincias no se pierde la primera")
+        marca(las_dos >= solo_segunda, "con dos provincias no se pierde la segunda")
+        marca(las_dos <= base, "dos provincias no superan el total")
+        marca(
+            las_dos <= solo_primera + solo_segunda,
+            "dos provincias no cuentan nada dos veces",
+        )
+        # El orden de los clics no puede cambiar el resultado: si lo cambiara, la caché guardaría
+        # dos entradas distintas para lo mismo y el panel daría cifras diferentes según cómo se
+        # hubiera pulsado el mapa.
+        al_reves = await total(filtros(provincias=(segunda_dos, primera_dos)))
+        marca(al_reves == las_dos, f"el orden no cambia el resultado ({al_reves} = {las_dos})")
 
         print("\n" + "=" * 66)
         print("6. Solo con plazo abierto (el botón de ocultar vencidas)")
@@ -179,7 +219,7 @@ async def main() -> None:
         marca(con_plazo <= sin_plazo, "activo no puede devolver más que el total")
         marca(con_plazo < sin_plazo, f"el filtro descarta algo ({sin_plazo - con_plazo} fuera)")
         primera = provincias[0].split(" - ", 1)[0].strip()
-        combinado = await total(filtros(solo_con_plazo=True, provincia=primera))
+        combinado = await total(filtros(solo_con_plazo=True, provincias=(primera,)))
         marca(combinado <= con_plazo, "combinar con provincia acota, no amplía")
 
         print("\n" + "=" * 66)
@@ -189,7 +229,7 @@ async def main() -> None:
             filtros(
                 terminos=("servicio", "medicamentos"),
                 modo=ModoBusqueda.CUALQUIERA,
-                provincia=primera,
+                provincias=(primera,),
                 desde=desde,
                 hasta=hoy,
                 solo_con_plazo=True,
@@ -198,6 +238,75 @@ async def main() -> None:
         )
         print(f"  palabras + provincia + fechas + plazo + texto -> {mezcla}")
         marca(mezcla <= base, "la combinación de filtros acota el resultado")
+
+        print("\n" + "=" * 66)
+        print("8. Búsqueda por CPC")
+        print("=" * 66)
+        # El CPC se lee ficha a ficha, así que al principio la mayoría de los registros todavía no
+        # lo tienen. Lo que se comprueba no es un número —cambia con cada tanda— sino la propiedad
+        # que hace útil el filtro: que busque en la clasificación **y no** en el texto libre.
+        leidos = await _contar_con_cpc()
+        print(f"  registros con el CPC ya leído: {leidos}")
+        if leidos == 0:
+            print("  ·  Ejecuta el worker (lee fichas por tandas) y vuelve a pasar esto.")
+        else:
+            por_cpc = await total(filtros(cpc=("lavado",)))
+            por_texto = await total(filtros(terminos=("lavado",)))
+            print(f"  cpc=lavado     -> {por_cpc}")
+            print(f"  termino=lavado -> {por_texto}")
+            marca(por_cpc <= leidos, "el filtro por CPC no devuelve más de lo leído")
+            marca(
+                por_cpc < por_texto,
+                f"el CPC acota frente al texto libre ({por_cpc} < {por_texto})",
+            )
+            # Un criterio imposible tiene que dar cero, y no el total: si devolviera el total, la
+            # condición no estaría llegando a la consulta.
+            imposible = await total(filtros(cpc=("zzzzzz-no-existe",)))
+            marca(imposible == 0, f"un CPC inexistente devuelve 0 ({imposible})")
+            sin_cpc = await total(filtros())
+            marca(sin_cpc == base, f"sin el criterio el total no cambia ({sin_cpc})")
+
+        print("\n" + "=" * 66)
+        print("9. Búsqueda por NIC (el código de la necesidad de ínfima cuantía)")
+        print("=" * 66)
+        # El NIC es el `codigo` de la necesidad NCO: «NIC-...». Se toma uno real de la base en lugar
+        # de inventarlo, porque lo que se comprueba no es un formato sino que el fragmento que una
+        # persona recuerda —unos dígitos, el año— encuentre la fila y que un código inexistente no
+        # devuelva el listado entero.
+        async with obtener_motor().connect() as conexion:
+            fila_nic = await conexion.execute(
+                text(
+                    "SELECT r.datos ->> 'codigo' FROM registro r "
+                    "JOIN fuente f ON f.id = r.fuente_id "
+                    "WHERE f.codigo = 'NCO' AND r.datos ->> 'codigo' LIKE 'NIC-%' "
+                    "ORDER BY r.fecha_publicacion DESC NULLS LAST LIMIT 1"
+                )
+            )
+            nic = fila_nic.scalar_one_or_none()
+
+        if not nic:
+            print("  ·  Todavía no hay ningún NIC en la base; ejecuta el worker y vuelve.")
+        else:
+            print(f"  NIC de muestra: {nic}")
+            exacto = await total(filtros(codigo=nic))
+            fragmento = await total(filtros(codigo=nic[-8:]))
+            inexistente = await total(filtros(codigo="NIC-0000000000000-0000-00000"))
+            en_infimas = await total(filtros(codigo=nic, categoria=Categoria.INFIMAS))
+            print(f"  codigo completo        -> {exacto}")
+            print(f"  codigo={nic[-8:]} (fragmento) -> {fragmento}")
+            print(f"  codigo inexistente     -> {inexistente}")
+            print(f"  codigo + infimas       -> {en_infimas}")
+            marca(exacto >= 1, f"el NIC completo encuentra al menos una fila ({exacto})")
+            marca(fragmento >= 1, f"un fragmento del NIC también la encuentra ({fragmento})")
+            marca(inexistente == 0, f"un NIC inexistente devuelve 0 ({inexistente})")
+            marca(en_infimas >= 1, f"acotar a ínfimas sigue encontrándolo ({en_infimas})")
+            marca(en_infimas <= exacto, "acotar por familia no añade filas")
+            # El NIC lo teclea cada persona, así que no se guarda en el caché, igual que el texto
+            # libre: su espacio de combinaciones es ilimitado y casi ninguna se repite.
+            marca(
+                not filtros(codigo=nic).cacheable,
+                "una búsqueda por NIC no se guarda en el caché",
+            )
     finally:
         await cerrar_bd()
 

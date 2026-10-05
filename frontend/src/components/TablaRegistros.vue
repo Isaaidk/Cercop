@@ -14,12 +14,23 @@
 import { computed, ref } from 'vue'
 
 import { fechaCorta, numero, recortar, sinEtiquetas } from '@/utils/formato'
+import { itemsDe, resumenCpc } from '@/utils/cpc'
 import { diasParaProforma, nivelDePlazo, textoDePlazo } from '@/utils/plazo'
 import { separarProvincia, codigoDeProvincia } from '@/utils/provincias'
 import { guardarArchivo } from '@/utils/descargas'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
+
+/**
+ * La tabla es la misma en dos sitios —la pestaña de ínfimas cuantías y el mapa— y en cada uno se
+ * titula según lo que muestra. El título llega de fuera en lugar de deducirse aquí porque quien
+ * sabe qué familia está mirando es quien fija el filtro, y esta pieza no debería tener dos formas
+ * de averiguarlo.
+ */
+const props = defineProps({
+  titulo: { type: String, default: 'Contrataciones' },
+})
 
 const desplegado = ref(null)
 
@@ -53,9 +64,55 @@ function alternarTodo() {
 
 const registros = computed(() => datos.estado.registros)
 
-const exportando = ref(false)
+const exportando = ref(null)
 const errorExportacion = ref('')
 const avisoExportacion = ref('')
+
+/**
+ * Las formas de descargar el histórico.
+ *
+ * **La principal descarga lo que se está viendo**: la familia de la pestaña —o la del selector del
+ * mapa— con los filtros de la pantalla. Es lo que se espera de un botón que está encima de la tabla:
+ * si la pantalla muestra ínfimas cuantías, el archivo trae ínfimas cuantías. Antes había un botón
+ * «Todo» como principal y el resultado era el contrario: se pulsaba desde la pestaña de ínfimas y
+ * llegaba un archivo con las dos familias dentro, que es lo que el usuario describió como «me
+ * descarga todo».
+ *
+ * La segunda trae **las dos familias a propósito**, cada una en su hoja, y solo aparece cuando hace
+ * algo distinto: con la vista en «Ambas» las dos harían exactamente lo mismo, y dos botones que
+ * hacen lo mismo solo dan motivos para dudar.
+ */
+const OPCIONES_EXPORTACION = computed(() => {
+  const familia = filtros.estado.categoria
+  const principal = {
+    clave: 'vista',
+    categoria: familia,
+    etiqueta: 'Descargar',
+    principal: true,
+    pista: `Descarga ${descripcionDeLaVista.value} con los filtros de la pantalla`,
+  }
+  if (!familia) return [principal]
+  return [
+    principal,
+    {
+      clave: 'todo',
+      categoria: null,
+      etiqueta: 'Todo',
+      pista: 'Un solo archivo con las ínfimas cuantías y las ofertas, cada una en su hoja',
+    },
+  ]
+})
+
+/** Cómo se nombra en el botón lo que se va a descargar. */
+const descripcionDeLaVista = computed(() =>
+  filtros.estado.categoria ? `solo ${ETIQUETA_CATEGORIA[filtros.estado.categoria]}` : 'las dos familias',
+)
+
+/** El nombre de cada categoría, tal como se lee en una frase. */
+const ETIQUETA_CATEGORIA = {
+  infimas: 'las ínfimas cuantías',
+  ofertas: 'las ofertas',
+}
 
 /** El servidor vuelve a comprobarlo; aquí solo se evita ofrecer un botón condenado a un rechazo. */
 const puedeExportar = computed(() => sesion.puedeExportar.value)
@@ -66,23 +123,31 @@ const hayResultados = computed(() => datos.estado.total > 0)
  *
  * El archivo lo arma el servidor con los mismos criterios que la tabla, así que lo que llega al
  * disco y lo que hay en pantalla no pueden discrepar. Aquí solo se le pone nombre y se guarda.
+ *
+ * `categoria` decide qué se lleva: sin él, el libro trae todo con **una hoja por categoría** —las
+ * ínfimas cuantías y las ofertas no se leen igual ni se trabajan igual, así que quien recibe el
+ * archivo las encuentra ya separadas—; con `'infimas'` u `'ofertas'`, una sola hoja con esa.
+ *
+ * `exportando` guarda **cuál** se está generando y no un simple sí o no: con tres botones, un
+ * booleano dejaría girando los tres a la vez y no se sabría cuál se pulsó.
  */
-async function exportar() {
+async function exportar(opcion) {
   if (exportando.value) return
 
-  exportando.value = true
+  exportando.value = opcion.clave
   errorExportacion.value = ''
   avisoExportacion.value = ''
   try {
-    const resultado = await datos.exportar()
+    const resultado = await datos.exportar(opcion.categoria)
     guardarArchivo(resultado.contenido, resultado.nombre)
+    const que = opcion.categoria ? ` de ${ETIQUETA_CATEGORIA[opcion.categoria]}` : ''
     avisoExportacion.value = resultado.filas
-      ? `Se descargaron ${numero(resultado.filas)} contrataciones en ${resultado.nombre}.`
+      ? `Se descargaron ${numero(resultado.filas)} contrataciones${que} en ${resultado.nombre}.`
       : 'El archivo salió vacío: no hay contrataciones con estos filtros.'
   } catch (fallo) {
     errorExportacion.value = fallo.message
   } finally {
-    exportando.value = false
+    exportando.value = null
   }
 }
 
@@ -106,6 +171,11 @@ const COLUMNAS = [
   { clave: 'tipo_necesidad', etiqueta: 'Tipo de compra', tipo: 'texto' },
   { clave: 'entidad', etiqueta: 'Razón social', tipo: 'largo' },
   { clave: 'objeto_compra', etiqueta: 'Objeto de compra', tipo: 'largo' },
+  {
+    clave: 'cpc',
+    etiqueta: 'CPC',
+    tipo: 'largo',
+  },
   { clave: 'funcionario', etiqueta: 'Responsable', tipo: 'largo' },
   { clave: 'provincia', etiqueta: 'Provincia · cantón', tipo: 'ubicacion' },
   { clave: 'estado', etiqueta: 'Estado', tipo: 'estado' },
@@ -115,6 +185,10 @@ const COLUMNAS = [
 ]
 
 function valor(registro, clave) {
+  // El CPC no viene como campo suelto: la API devuelve los ítems de la ficha y el resumen se arma
+  // aquí. Se resuelve dentro de `valor` para que el resto de la tabla —columnas, celda, ficha del
+  // móvil— siga leyendo una clave como cualquier otra, sin ramas repartidas por la plantilla.
+  if (clave === 'cpc') return resumenCpc(registro)
   const crudo = registro[clave]
   return crudo === null || crudo === undefined ? '' : String(crudo)
 }
@@ -154,7 +228,12 @@ function detalles(fila) {
     // `enlace` es la dirección relativa que publica la fuente y `enlace_publico` es esa misma ya
     // resuelta. Las dos se quitan: la primera no lleva a ninguna parte fuera del portal y la segunda
     // ya está en el botón de arriba, así que como par de texto solo añadirían ruido.
-    .filter(([k]) => !['id', 'datos', 'enlace', 'enlace_publico'].includes(k))
+    // `items` y `cpc_codigos` son las piezas con las que se arma el resumen del CPC: volcadas como
+    // texto darían `[object Object]` y una lista de códigos sueltos. El resumen ya está en su
+    // columna y el desglose, en la tabla de ítems de arriba.
+    .filter(
+      ([k]) => !['id', 'datos', 'enlace', 'enlace_publico', 'items', 'cpc_codigos'].includes(k),
+    )
     .map(([clave, v]) => ({ clave, valor: sinEtiquetas(v) }))
 }
 
@@ -169,14 +248,17 @@ function etiquetaEstado(estado) {
 function filtrarPorProvincia(valorCrudo) {
   const { provincia } = separarProvincia(valorCrudo)
   const codigo = codigoDeProvincia(provincia)
-  if (codigo) filtros.alternarProvincia(codigo)
+  // Desde la tabla el gesto es «ver esta provincia»: reemplaza la selección en lugar de sumarse a
+  // ella. Pulsar la celda de una fila esperando ver *esa* provincia y encontrarse cuatro más sería
+  // desconcertante; para comparar ya está el doble clic sobre el mapa.
+  if (codigo) filtros.elegirProvincia(codigo)
 }</script>
 
 <template>
   <section class="tarjeta aparece retardo-5">
     <header class="tarjeta__cabecera">
       <div>
-        <p class="tarjeta__titulo">Contrataciones</p>
+        <p class="tarjeta__titulo">{{ props.titulo }}</p>
         <p class="tarjeta__pista">
           <template v-if="datos.estado.total">
             <span class="numeros">{{ numero(datos.estado.total) }}</span> resultados
@@ -208,21 +290,27 @@ function filtrarPorProvincia(valorCrudo) {
           {{ todosDesplegados ? 'Contraer todo' : 'Desplegar todo' }}
         </button>
 
-        <button
-          v-if="puedeExportar"
-          type="button"
-          class="boton boton--secundario boton--pequeno"
-          :disabled="exportando || !hayResultados"
-          :title="
-            hayResultados
-              ? 'Descarga en Excel todas las contrataciones que cumplen los filtros, no solo esta página'
-              : 'Sin resultados que exportar con los filtros actuales'
-          "
-          @click="exportar"
-        >
-          <span v-if="exportando" class="girador" aria-hidden="true" />
-          {{ exportando ? 'Generando el Excel…' : 'Exportar a Excel' }}
-        </button>
+        <!-- El envoltorio `<template>` no crea ningún elemento: los tres botones quedan como hijos
+             directos de la barra de acciones, que es la que reparte el espacio. Con `v-for` y `v-if`
+             en el mismo botón, Vue evalúa antes el `v-if` y avisa de que la variable del recorrido
+             todavía no existe. -->
+        <template v-if="puedeExportar">
+          <button
+            v-for="opcion in OPCIONES_EXPORTACION"
+            :key="opcion.clave"
+            type="button"
+            class="boton boton--pequeno"
+            :class="opcion.principal ? 'boton--principal' : 'boton--secundario'"
+            :disabled="Boolean(exportando) || !hayResultados"
+            :title="
+              hayResultados ? opcion.pista : 'Sin resultados que exportar con los filtros actuales'
+            "
+            @click="exportar(opcion)"
+          >
+            <span v-if="exportando === opcion.clave" class="girador" aria-hidden="true" />
+            {{ exportando === opcion.clave ? 'Generando…' : opcion.etiqueta }}
+          </button>
+        </template>
       </div>
     </header>
 
@@ -363,6 +451,47 @@ function filtrarPorProvincia(valorCrudo) {
                       <dd>{{ dato.valor }}</dd>
                     </div>
                   </dl>
+
+                  <!--
+                    El desglose del objeto de compra tal y como lo publica la ficha: un renglón por
+                    ítem, con su clasificación CPC. El resumen de la columna dice **de qué** está
+                    clasificada la contratación; esto dice **qué** se compra en cada línea, que es lo
+                    que hace falta para decidir si vale la pena abrir el proceso en el portal.
+
+                    Si no hay ítems puede ser que la ficha aún no se haya leído, y entonces no se
+                    pinta nada: una tabla vacía parecería un error.
+                  -->
+                  <div v-if="itemsDe(fila).length" class="detalle__items">
+                    <p class="detalle__items-titulo">
+                      Detalle del objeto de compra ({{ itemsDe(fila).length }}
+                      {{ itemsDe(fila).length === 1 ? 'ítem' : 'ítems' }})
+                    </p>
+                    <div class="items__marco">
+                      <table class="items">
+                        <thead>
+                          <tr>
+                            <th scope="col">#</th>
+                            <th scope="col">CPC</th>
+                            <th scope="col">Descripción del producto</th>
+                            <th scope="col">Unidad</th>
+                            <th scope="col">Cantidad</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(item, indice) in itemsDe(fila)" :key="`${indice}-${item.codigo}`">
+                            <td class="numeros">{{ item.numero ?? indice + 1 }}</td>
+                            <td class="items__cpc">
+                              <span class="codigo numeros">{{ item.codigo }}</span>
+                              <span class="items__nombre">{{ item.descripcion_cpc }}</span>
+                            </td>
+                            <td>{{ item.descripcion }}</td>
+                            <td>{{ item.unidad }}</td>
+                            <td class="numeros">{{ item.cantidad }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </td>
               </tr>
             </template>
@@ -591,6 +720,65 @@ function filtrarPorProvincia(valorCrudo) {
   font-size: var(--t-sm);
   color: var(--texto-suave);
   overflow-wrap: anywhere;
+}
+
+/* El desglose de ítems: lo que la ficha publica línea a línea. */
+.detalle__items {
+  padding: 0 var(--e-5) var(--e-4);
+  animation: aparecer var(--normal) var(--curva-entrada) both;
+}
+
+.detalle__items-titulo {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--texto-tenue);
+  margin-bottom: var(--e-2);
+}
+
+/*
+ * El marco lleva el desplazamiento y no la página: un desglose de treinta y seis ítems —los hay—
+ * desplazaría la tabla entera de lado en pantallas medianas.
+ */
+.items__marco {
+  overflow-x: auto;
+  border: 1px solid var(--borde);
+  border-radius: var(--r-2);
+}
+
+.items {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.items th,
+.items td {
+  text-align: left;
+  padding: var(--e-2) var(--e-3);
+  border-bottom: 1px solid var(--borde);
+  vertical-align: top;
+}
+
+.items th {
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--texto-tenue);
+  white-space: nowrap;
+}
+
+.items tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.items__cpc {
+  white-space: nowrap;
+}
+
+.items__nombre {
+  color: var(--texto-suave);
 }
 
 .tabla__cargando {

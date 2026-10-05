@@ -54,7 +54,37 @@ export const api = {
 
   estadoTermino: (terminoId) => http.get(`/v1/terminos/${terminoId}/estado`),
 
+  // --- Términos de CPC del negocio -----------------------------------------
+  //
+  // Se guardan en el servidor, como las palabras clave, para que la lista sea la misma para todo el
+  // equipo y siga ahí al recargar. **No disparan ingesta**: solo acotan un histórico ya descargado,
+  // así que no hay cola ni espera.
+  listarCpc: () => http.get('/v1/cpc'),
+
+  agregarCpc: (textos) => http.post('/v1/cpc/lote', { textos }),
+
+  /** Un solo término. Va aparte del lote para no mandar una lista de uno. */
+  agregarUnCpc: (texto) => http.post('/v1/cpc', { texto }),
+
+  /**
+   * Quita un término. Va por `POST /quitar` y no por `DELETE /{texto}` porque el término lleva
+   * espacios y acentos —«LAVADO Y ENGRASADO DE AUTOMOTORES»— y en la ruta dependería de que quien
+   * llama lo escape bien.
+   */
+  quitarCpc: (texto) => http.post('/v1/cpc/quitar', { texto }),
+
+  vaciarCpc: () => http.del('/v1/cpc'),
+
   // --- Datos ---------------------------------------------------------------
+  /**
+   * La versión de los datos: un solo número que sube cuando la ingesta escribe algo.
+   *
+   * Cuesta una lectura de caché —no toca la base—, y es lo que permite que el panel sepa que el
+   * ciclo terminó en lugar de recargar la tabla a ciegas cada minuto. La ingesta la sube también
+   * cuando escribe los **CPC**, así que la recarga trae la clasificación y no solo la necesidad.
+   */
+  versionDatos: () => http.get('/v1/ingestas/version'),
+
   /** `parametros.termino` puede ser una lista: la API acepta `termino=a&termino=b`. */
   buscar: (parametros) => http.get('/v1/registros', parametros),
 
@@ -64,8 +94,38 @@ export const api = {
    * No usa `http.get` porque la respuesta son bytes y no JSON: la descarga pasa por el mismo camino
    * que el resto en cuanto a token, renovación y errores, pero devuelve el archivo en lugar de
    * intentar interpretarlo.
+   *
+   * Los criterios van **envueltos en `{ parametros }`** porque `descargar` recibe un objeto con
+   * opciones, no los parámetros sueltos. Sin la envoltura, `parametros` llegaba `undefined` y la
+   * petición salía sin querystring: el archivo traía el histórico entero —hasta el tope de veinte
+   * mil filas— en vez de lo que estaba filtrado en pantalla, y el usuario no tenía forma de notarlo
+   * salvo contando las filas del Excel.
    */
-  exportarRegistros: (parametros) => http.descargar('/v1/registros/exportacion', parametros),
+  exportarRegistros: (parametros) =>
+    http.descargar('/v1/registros/exportacion', { parametros }),
+
+  // --- Plantilla de Excel de la empresa ------------------------------------
+  //
+  // La plantilla es del negocio, no del usuario: la sube un administrador y la usan todas las
+  // exportaciones de esa empresa. Por eso no lleva ninguna clave en la ruta.
+  verPlantilla: () => http.get('/v1/plantilla'),
+  subirPlantilla: (archivo) => http.enviarArchivo('/v1/plantilla', archivo),
+  quitarPlantilla: () => http.del('/v1/plantilla'),
+
+  /**
+   * Guarda qué columnas llevan las exportaciones de la empresa.
+   *
+   * Se manda la lista **entera**, no un cambio parcial: con «añade esta y quita aquella» habría que
+   * distinguir «no lo envíes» de «bórralo», y dos navegadores abiertos acabarían pisándose la
+   * selección sin que ninguno se entere. La lista vacía significa «todas».
+   */
+  guardarColumnas: (columnas) => http.put('/v1/plantilla/columnas', { columnas }),
+
+  /**
+   * Qué haría el sistema con la plantilla subida: hoja de destino de cada familia, fila de títulos
+   * reconocida y columnas que se van a rellenar. Abre el archivo, así que se pide a propósito.
+   */
+  analizarPlantilla: () => http.get('/v1/plantilla/analisis'),
 
   catalogos: () => http.get('/v1/catalogos'),
 
@@ -140,6 +200,26 @@ export const api = {
   catalogoDeAccesos: () => http.get('/v1/accesos/catalogo'),
 
   listarEmpresas: () => http.get('/v1/plataforma/empresas'),
+
+  /**
+   * Lo que han trabajado los workers: el último ciclo de cada fuente, la serie de los últimos y la
+   * petición que esté pendiente.
+   *
+   * Es de lectura y no cuesta base de datos: el estado y el historial salen de `sincronizacion`, que
+   * los propios ciclos ya escriben.
+   */
+  trabajoDeIngesta: () => http.get('/v1/plataforma/ingesta/historial'),
+
+  /**
+   * Pide un ciclo de ingesta completo. **No ingesta nada**: deja la petición donde el worker la ve y
+   * contesta en cuanto está escrita, para que la pantalla pueda decir «en cola» sin quedarse
+   * esperando minutos a que el ciclo termine.
+   *
+   * Va por aquí y no lo hace el navegador contra el SERCOP por una razón de diseño: ninguna petición
+   * de usuario puede originar tráfico hacia la fuente oficial (R-01), y el único proceso que habla
+   * con ella es el worker.
+   */
+  pedirCiclo: () => http.post('/v1/plataforma/ingesta/solicitud'),
 
   suspenderEmpresa: (negocioId) =>
     http.post(`/v1/plataforma/empresas/${negocioId}/suspension`),

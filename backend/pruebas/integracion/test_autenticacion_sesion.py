@@ -55,6 +55,9 @@ CONTRASENA = "viento-del-sur-2026"
 ACCESO_TTL = 900
 REFRESCO_TTL = 86_400
 MAX_SESIONES = 2
+# La misma ventana que trae el ajuste por defecto: si aquí fuera otra cifra, la prueba diría cosas
+# que en producción no pasan.
+GRACIA = 30
 
 
 class Escenario(NamedTuple):
@@ -251,6 +254,11 @@ async def test_la_renovacion_rota_el_token_y_el_viejo_deja_de_servir(escenario: 
         tokens=tokens,
         acceso_ttl_seg=ACCESO_TTL,
         refresco_ttl_seg=REFRESCO_TTL,
+        # Ventana apagada a propósito: esta prueba comprueba el camino **estricto**, el que cierra
+        # la cuenta entera. Con la ventana puesta, el token viejo presentado un segundo después del
+        # primero es indistinguible de un reintento y se aceptaría, que es justo lo que se comprueba
+        # en la prueba siguiente.
+        gracia_seg=0,
     )
     assert renovada.refresco != inicial.refresco
 
@@ -263,6 +271,7 @@ async def test_la_renovacion_rota_el_token_y_el_viejo_deja_de_servir(escenario: 
             tokens=tokens,
             acceso_ttl_seg=ACCESO_TTL,
             refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=0,
         )
 
     activas = await RepositorioSesionesBd(escenario.motor).vigentes(
@@ -271,6 +280,60 @@ async def test_la_renovacion_rota_el_token_y_el_viejo_deja_de_servir(escenario: 
         momento=datetime.now(UTC),
     )
     assert activas == ()
+
+
+async def test_el_reintento_con_el_token_anterior_se_atiende(escenario: Escenario) -> None:
+    """La ventana de gracia, comprobada contra PostgreSQL de verdad.
+
+    Es la prueba que cubre el SQL: `rotar` tiene que **desplazar** la huella anterior en lugar de
+    pisarla. Si el `SET` estuviera mal escrito, la columna quedaría con el valor nuevo y el
+    reintento se leería como reutilización —cerrando la cuenta entera— sin que nada fallara de forma
+    visible.
+    """
+    inicial = await _entrar(escenario)
+    tokens = TokensJwt(obtener_ajustes().jwt_secreto)
+
+    primera = await renovar_sesion(
+        inicial.refresco,
+        cuentas=RepositorioCuentasBd(escenario.motor),
+        sesiones=RepositorioSesionesBd(escenario.motor),
+        tokens=tokens,
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+    )
+
+    # El reintento: el mismo token de antes, un momento después. No debe cerrar nada.
+    segunda = await renovar_sesion(
+        inicial.refresco,
+        cuentas=RepositorioCuentasBd(escenario.motor),
+        sesiones=RepositorioSesionesBd(escenario.motor),
+        tokens=tokens,
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+    )
+    assert segunda.sesion_id == inicial.sesion_id
+    assert segunda.refresco != primera.refresco
+
+    activas = await RepositorioSesionesBd(escenario.motor).vigentes(
+        negocio_id=escenario.negocio_id,
+        usuario_id=escenario.usuario_id,
+        momento=datetime.now(UTC),
+    )
+    assert len(activas) == 1, "la sesión sigue viva: no se cerró nada por un reintento"
+
+    # Y el par que sí llegó a su destino sigue sirviendo mientras dure la ventana.
+    tercera = await renovar_sesion(
+        primera.refresco,
+        cuentas=RepositorioCuentasBd(escenario.motor),
+        sesiones=RepositorioSesionesBd(escenario.motor),
+        tokens=tokens,
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+    )
+    assert tercera.sesion_id == inicial.sesion_id
 
 
 async def test_las_sesiones_de_un_negocio_no_se_ven_desde_otro(escenario: Escenario) -> None:

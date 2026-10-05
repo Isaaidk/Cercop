@@ -56,6 +56,39 @@ async def principal() -> None:
             for codigo, cuantos, ultima in filas:
                 print(f"  {codigo:<6} {cuantos:>8}   última publicación: {ultima}")
 
+            # El CPC no viene en el listado: llega de la ficha de cada necesidad, una petición por
+            # necesidad. Una fila con la ficha sin leer se ve **sin CPC** en el panel —ni en la
+            # columna ni al filtrar por clasificación— y eso desde fuera parece un dato que falta.
+            # Se cuenta solo NCO porque es la única fuente con ficha: las de OCDS se quedarían
+            # pendientes para siempre y el aviso sería falso.
+            fichas = (
+                await conexion.execute(
+                    text(
+                        """
+                        SELECT count(*) FILTER (WHERE r.items_recogidos_en IS NULL) AS pendientes,
+                               count(*) FILTER (
+                                   WHERE r.cpc_codigos IS NOT NULL
+                                     AND array_length(r.cpc_codigos, 1) > 0
+                               ) AS con_cpc,
+                               count(*) AS total
+                        FROM registro r
+                        JOIN fuente f ON f.id = r.fuente_id
+                        WHERE f.codigo = 'NCO'
+                        """
+                    )
+                )
+            ).one()
+            print(
+                f"\nCPC (NCO): {fichas[1]} con CPC · {fichas[0]} pendientes de leer"
+                f" · {fichas[2]} en total"
+            )
+            if fichas[0]:
+                print(
+                    "  Las fichas pendientes se ven sin CPC en el panel. Las lee el worker\n"
+                    "  por tandas (300 por ciclo); para ponerlas al día de golpe:\n"
+                    "    .\\.venv\\Scripts\\python.exe scripts\\rellenar_items_cpc.py"
+                )
+
             print("\nProvincias y cantones distintos:")
             provincias = (
                 await conexion.execute(

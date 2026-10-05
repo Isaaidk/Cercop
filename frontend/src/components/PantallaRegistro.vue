@@ -22,6 +22,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/endpoints'
+import CampoContrasena from '@/components/CampoContrasena.vue'
 import { contrasenaAceptable, obtenerRequisitos, revisarContrasena } from '@/utils/politica'
 
 const emit = defineEmits(['alternar-tema', 'ir-a-acceso', 'registrada'])
@@ -223,31 +224,23 @@ async function registrar() {
           </label>
 
           <div class="rejilla-dos">
-            <label class="campo">
-              <span class="campo__etiqueta">
-                Contraseña <span class="campo__obligatorio">obligatorio</span>
-              </span>
-              <input
-                v-model="admin.contrasena"
-                class="entrada"
-                type="password"
-                maxlength="128"
-                autocomplete="new-password"
-              />
-            </label>
+            <CampoContrasena
+              id="registro-clave"
+              v-model="admin.contrasena"
+              etiqueta="Contraseña"
+              ajuste="new-password"
+              obligatorio
+              :maxlength="128"
+            />
 
-            <label class="campo">
-              <span class="campo__etiqueta">
-                Repite la contraseña <span class="campo__obligatorio">obligatorio</span>
-              </span>
-              <input
-                v-model="admin.repetida"
-                class="entrada"
-                type="password"
-                maxlength="128"
-                autocomplete="new-password"
-              />
-            </label>
+            <CampoContrasena
+              id="registro-clave-repetida"
+              v-model="admin.repetida"
+              etiqueta="Repite la contraseña"
+              ajuste="new-password"
+              obligatorio
+              :maxlength="128"
+            />
           </div>
 
           <!-- La lista se completa mientras se escribe: es lo que evita descubrir la política al

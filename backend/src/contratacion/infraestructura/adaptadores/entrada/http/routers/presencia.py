@@ -42,7 +42,7 @@ from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.presencia import (
     cerrar_por_ventana,
-    cuadro_del_negocio,
+    cuadro_serializado,
     latir,
 )
 from contratacion.dominio.presencia import SEGUNDOS_ENTRE_INSTANTANEAS, EstadoPresencia
@@ -55,6 +55,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     PresenciaDep,
     SesionesDep,
 )
+from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
 
 router = APIRouter(prefix="/v1/presencia", tags=["Presencia"])
 
@@ -93,7 +94,9 @@ async def marcar_latido(
         sesion_id=cuerpo.sesion_id,
         registro=presencia,
         sesiones=sesiones,
+        cache=obtener_cache(),
         bus=bus,
+        inactividad_seg=ajustes.sesion_inactividad_seg,
         ttl_seg=ajustes.presencia_ttl_seg,
     )
     return cuerpo_json(
@@ -148,15 +151,17 @@ async def consultar_presencia(
     uno distinto para la carga inicial— evita que las dos formas de obtener el mismo dato se
     separen con el tiempo y acaben dando respuestas distintas.
     """
-    cuadro = await cuadro_del_negocio(
-        actor,
-        accesos=accesos,
-        sesiones=sesiones,
-        registro=presencia,
-        ttl_seg=ajustes.presencia_ttl_seg,
-        negocio_solicitado=negocio,
+    return cuerpo_json(
+        await cuadro_serializado(
+            actor,
+            accesos=accesos,
+            sesiones=sesiones,
+            registro=presencia,
+            cache=obtener_cache(),
+            ttl_seg=ajustes.presencia_ttl_seg,
+            negocio_solicitado=negocio,
+        )
     )
-    return cuerpo_json(cuadro.como_diccionario())
 
 
 @router.get(
@@ -197,6 +202,7 @@ async def eventos(
     """
 
     async def transmitir() -> AsyncIterator[str]:
+        cache = obtener_cache()
         # La suscripción se abre **antes** de la primera lectura. Al revés se perdería cualquier
         # aviso ocurrido entre las dos, y el panel arrancaría con un estado que ya no es cierto.
         async with bus.suscribir(negocio_id=actor.negocio_id) as canal:
@@ -207,14 +213,17 @@ async def eventos(
             if await peticion.is_disconnected():
                 return
 
-            cuadro = await cuadro_del_negocio(
-                actor,
-                accesos=accesos,
-                sesiones=sesiones,
-                registro=presencia,
-                ttl_seg=ajustes.presencia_ttl_seg,
+            yield _evento_servidor(
+                "instantanea",
+                await cuadro_serializado(
+                    actor,
+                    accesos=accesos,
+                    sesiones=sesiones,
+                    registro=presencia,
+                    cache=cache,
+                    ttl_seg=ajustes.presencia_ttl_seg,
+                ),
             )
-            yield _evento_servidor("instantanea", cuadro.como_diccionario())
 
             while not await peticion.is_disconnected():
                 aviso = await canal.siguiente(SEGUNDOS_ENTRE_INSTANTANEAS)
@@ -224,14 +233,17 @@ async def eventos(
 
                 # No llegó ningún aviso: se reenvía el cuadro completo. Este es el camino que
                 # descubre los rojos por falta de señal, que por definición no generan ningún aviso.
-                cuadro = await cuadro_del_negocio(
-                    actor,
-                    accesos=accesos,
-                    sesiones=sesiones,
-                    registro=presencia,
-                    ttl_seg=ajustes.presencia_ttl_seg,
+                yield _evento_servidor(
+                    "instantanea",
+                    await cuadro_serializado(
+                        actor,
+                        accesos=accesos,
+                        sesiones=sesiones,
+                        registro=presencia,
+                        cache=cache,
+                        ttl_seg=ajustes.presencia_ttl_seg,
+                    ),
                 )
-                yield _evento_servidor("instantanea", cuadro.como_diccionario())
 
     return StreamingResponse(
         transmitir(),

@@ -21,6 +21,10 @@ const props = defineProps({
   email: { type: String, default: '' },
   admin: { type: Boolean, default: false },
   panelAbierto: { type: Boolean, default: false },
+  /** Si los filtros se están viendo. En escritorio es la columna; en móvil, el cajón abierto. */
+  filtrosAbiertos: { type: Boolean, default: true },
+  /** Si hay algún filtro puesto, para avisar en el propio botón cuando la columna está escondida. */
+  filtrosActivos: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -47,10 +51,20 @@ const iniciales = computed(() => {
     <button
       type="button"
       class="barra__hamburguesa"
-      aria-label="Mostrar u ocultar los filtros"
+      :aria-label="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
+      :aria-expanded="filtrosAbiertos"
+      aria-controls="panel-filtros"
+      :title="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
       @click="emit('alternar-filtros')"
     >
       <span aria-hidden="true">☰</span>
+      <!-- El punto verde avisa de que hay filtros puestos aunque la columna esté escondida: sin
+           él, la única forma de saberlo sería volver a mostrarla. -->
+      <span
+        v-if="filtrosActivos && !filtrosAbiertos"
+        class="barra__hamburguesa-marca"
+        aria-hidden="true"
+      />
     </button>
 
     <div class="marca">
@@ -243,15 +257,29 @@ const iniciales = computed(() => {
   justify-content: flex-start;
 }
 
-/* La hamburguesa solo existe en móvil y tableta: en escritorio el panel de filtros está siempre a
-   la vista, así que un botón para mostrarlo sería un botón que no hace falta. */
+/* La hamburguesa gobierna el panel de filtros en los dos anchos, así que se ve siempre: en móvil
+   abre y cierra el cajón y en escritorio esconde y muestra la columna. Antes solo existía en móvil
+   —en escritorio el panel estaba siempre a la vista y no había forma de esconderlo—. */
 .barra__hamburguesa {
-  display: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   padding: 0.4rem;
   border: 1px solid var(--borde);
   border-radius: var(--r-1);
   background: var(--superficie);
   cursor: pointer;
+}
+
+.barra__hamburguesa-marca {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  border: 1px solid var(--superficie);
 }
 
 .fundido-enter-active,
@@ -269,10 +297,6 @@ const iniciales = computed(() => {
 @media (max-width: 1023px) {
   .barra {
     padding: 0 var(--e-4);
-  }
-
-  .barra__hamburguesa {
-    display: block;
   }
 }
 

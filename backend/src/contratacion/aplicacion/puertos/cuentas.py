@@ -66,6 +66,14 @@ class SesionGuardada:
 
     sesion: Sesion
     refresh_hash: str
+    # La huella que había justo antes de la última rotación, y cuándo se rotó.
+    #
+    # Están para poder distinguir un **reintento** de un robo. Sin ellas, presentar el token viejo
+    # una vez —porque la respuesta con el nuevo se perdió por el camino, o porque hay una segunda
+    # pestaña— se interpreta como «hay dos copias en circulación» y se cierran todas las sesiones de
+    # la cuenta. Ver la migración `0010` para el razonamiento completo.
+    refresh_hash_anterior: str | None = None
+    refresh_anterior_desde: datetime | None = None
 
 
 class RepositorioCuentas(Protocol):
@@ -144,6 +152,24 @@ class RepositorioCuentas(Protocol):
         ...
 
 
+class SesionPorId(Protocol):
+    """Leer una sesión por su identificador. Puerto **estrecho**.
+
+    Lo único que necesita la comprobación de la clave ausente es leer la fila para saber si la
+    sesión seguía viva y cuándo se usó por última vez. Declararlo aparte, en lugar de pedir el
+    repositorio entero, evita que los dobles de esa prueba tengan que implementar una docena de
+    métodos que no usan —y varios de esos dobles existen justamente para comprobar que **no** se
+    llama a nada más—.
+
+    Un objeto que ya sepa leer una sesión por su identificador lo cumple sin cambiar una línea: la
+    comprobación es estructural.
+    """
+
+    async def por_id(self, *, negocio_id: UUID, sesion_id: UUID) -> SesionGuardada | None:
+        """Sesión e huella de su token de renovación, o `None` si no existe."""
+        ...
+
+
 class RepositorioSesiones(Protocol):
     """Ciclo de vida de las sesiones."""
 
@@ -186,7 +212,12 @@ class RepositorioSesiones(Protocol):
         refresh_hash: str,
         ultimo_uso_en: datetime,
     ) -> None:
-        """Guarda la huella del token de renovación nuevo y actualiza el último uso."""
+        """Guarda la huella del token de renovación nuevo y actualiza el último uso.
+
+        La huella que había antes **se conserva** en un segundo hueco, junto con el instante de la
+        rotación. Es lo que permite admitir un reintento con el token anterior durante unos segundos
+        en lugar de cerrar todas las sesiones de la cuenta por una respuesta que se perdió.
+        """
         ...
 
     async def revocar(

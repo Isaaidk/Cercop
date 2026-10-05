@@ -25,22 +25,31 @@ from contratacion.aplicacion.casos_uso.presencia import (
     NO_ENCONTRADA,
     cerrar_por_ventana,
     cuadro_del_negocio,
+    cuadro_serializado,
     latir,
 )
 from contratacion.aplicacion.puertos.cuentas import SesionGuardada
 from contratacion.aplicacion.puertos.presencia import Suscripcion
 from contratacion.dominio.errores import SinPermiso
 from contratacion.dominio.presencia import (
+    AMBITO_TODOS,
     EstadoPresencia,
     EventoPresencia,
     Latido,
     Motivo,
     TipoEvento,
+    clave_cuadro,
 )
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion, Sesion
+from contratacion.dominio.sesiones_vivas import clave_de_sesion, valor_de_sesion
+from contratacion.infraestructura.adaptadores.salida.cache.nula import CacheNula
 
 AHORA = datetime(2026, 10, 5, 15, 0, tzinfo=UTC)
 TTL = 60
+
+# Plazo de inactividad de las pruebas. Cualquier valor sirve: lo que se comprueba aquí es por dónde
+# se pregunta, no cuándo caduca.
+INACTIVIDAD = 480 * 60
 
 NEGOCIO = UUID("22222222-2222-2222-2222-222222222222")
 USUARIO = UUID("11111111-1111-1111-1111-111111111111")
@@ -121,8 +130,12 @@ class AccesosFalsos:
 
     def __init__(self, usuarios: list[dict[str, Any]]) -> None:
         self._usuarios = usuarios
+        # Cuántas veces se fue a buscar el listado. Es lo que permite afirmar que la instantánea
+        # guardada ahorró el trabajo, que es el motivo entero de que exista.
+        self.consultas = 0
 
     async def usuarios(self, *, negocio_id: UUID, limite: int = 200) -> list[dict[str, Any]]:
+        self.consultas += 1
         return list(self._usuarios)
 
     async def conceder(self, **_: Any) -> UUID:
@@ -239,7 +252,9 @@ async def test_latir_anota_la_senal_y_anuncia_la_conexion() -> None:
         sesion_id=sesion.id,
         registro=registro,
         sesiones=SesionesFalsas(por_id={sesion.id: sesion}),
+        cache=CacheNula(),
         bus=bus,
+        inactividad_seg=INACTIVIDAD,
         momento=AHORA,
         ttl_seg=TTL,
     )
@@ -269,13 +284,15 @@ async def test_latir_no_toca_el_ultimo_uso_de_la_sesion() -> None:
         sesion_id=sesion.id,
         registro=RegistroFalso(),
         sesiones=sesiones,
+        cache=CacheNula(),
         bus=BusFalso(),
+        inactividad_seg=INACTIVIDAD,
         momento=AHORA,
         ttl_seg=TTL,
     )
 
     assert "rotar" not in sesiones.llamadas
-    assert sesiones.llamadas == ["por_id"], "el latido solo debe leer la sesión"
+    assert sesiones.llamadas == ["por_id"], "sin almacén, el latido pregunta a la base"
 
 
 async def test_latir_por_una_sesion_ajena_se_rechaza() -> None:
@@ -289,7 +306,9 @@ async def test_latir_por_una_sesion_ajena_se_rechaza() -> None:
             sesion_id=otra.id,
             registro=registro,
             sesiones=SesionesFalsas(por_id={otra.id: otra}),
+            cache=CacheNula(),
             bus=BusFalso(),
+            inactividad_seg=INACTIVIDAD,
             momento=AHORA,
             ttl_seg=TTL,
         )
@@ -310,7 +329,9 @@ async def test_latir_por_una_sesion_inexistente_se_rechaza_igual() -> None:
             sesion_id=uuid4(),
             registro=RegistroFalso(),
             sesiones=SesionesFalsas(),
+            cache=CacheNula(),
             bus=BusFalso(),
+            inactividad_seg=INACTIVIDAD,
             momento=AHORA,
             ttl_seg=TTL,
         )
@@ -547,3 +568,343 @@ async def test_una_cuenta_deshabilitada_no_aparece_en_verde_aunque_tenga_senal()
 
     assert cuadro.presencias[0].motivo is Motivo.CUENTA_INACTIVA
     assert cuadro.conectados == 0
+
+
+# --------------------------------------------------------------------------- #
+# El latido y el almacén de sesiones vivas
+# --------------------------------------------------------------------------- #
+
+# El latido es el camino más transitado del sistema: uno cada treinta segundos por persona
+# conectada. Antes costaba una consulta a la base cada vez, y en una instalación con miles de
+# paneles eso es el grueso del tráfico. Ahora lo resuelve el almacén, y estas pruebas fijan las tres
+# respuestas posibles, porque confundirlas tiene los dos finales que hay que evitar: echar a todo el
+# mundo cuando el almacén se apaga, o dejar latiendo una sesión que ya se cerró.
+
+
+class CacheFalso:
+    """Almacén en memoria, con la posibilidad de decir que no responde.
+
+    Se implementa el contrato completo aunque el latido solo use una parte: un doble al que le falte
+    un método no falla al escribirlo, falla el día que alguien usa el que falta.
+    """
+
+    def __init__(self, *, habilitada: bool = True, falla: bool = False) -> None:
+        self._habilitada = habilitada
+        self._falla = falla
+        self.contenido: dict[str, str] = {}
+        self.lecturas = 0
+        self.escrituras = 0
+
+    @property
+    def habilitada(self) -> bool:
+        return self._habilitada
+
+    async def obtener(self, clave: str) -> str | None:
+        self.lecturas += 1
+        if self._falla:
+            raise RuntimeError("el almacén no responde")
+        return self.contenido.get(clave)
+
+    async def obtener_renovando(self, clave: str, ttl_seg: int) -> str | None:
+        return await self.obtener(clave)
+
+    async def guardar(self, clave: str, valor: str, ttl_seg: int) -> None:
+        self.escrituras += 1
+        self.contenido[clave] = valor
+
+    async def eliminar(self, clave: str) -> None:
+        self.contenido.pop(clave, None)
+
+    async def incrementar(self, clave: str) -> int:
+        raise AssertionError("el latido no debe incrementar contadores")
+
+    async def ping(self) -> bool:
+        return not self._falla
+
+    async def cerrar(self) -> None:
+        return None
+
+
+def _cache_con(sesion: Sesion, usuario_id: UUID = USUARIO) -> CacheFalso:
+    cache = CacheFalso()
+    cache.contenido[clave_de_sesion(sesion.id)] = valor_de_sesion(usuario_id)
+    return cache
+
+
+async def test_con_almacen_el_latido_no_toca_la_base() -> None:
+    """Es el objetivo de todo esto: una señal de vida sin ninguna consulta.
+
+    El doble de sesiones revienta si le llaman, así que esta prueba falla ruidosamente si alguien
+    vuelve a meter una lectura de la base en el camino del latido.
+    """
+    sesion = _sesion()
+    sesiones = SesionesFalsas()
+
+    evento = await latir(
+        ADMIN,
+        sesion_id=sesion.id,
+        registro=RegistroFalso(),
+        sesiones=sesiones,
+        cache=_cache_con(sesion),
+        bus=BusFalso(),
+        inactividad_seg=INACTIVIDAD,
+        momento=AHORA,
+        ttl_seg=TTL,
+    )
+
+    assert sesiones.llamadas == [], "el latido no debe preguntar a la base si el almacén contesta"
+    assert evento.presencia is not None
+    assert evento.presencia.estado is EstadoPresencia.VERDE
+
+
+async def test_una_sesion_que_no_consta_en_el_almacen_no_late() -> None:
+    """Con el almacén funcionando, la ausencia **es** una respuesta: la sesión se cerró.
+
+    Es la prueba que impide que una sesión cerrada por inactividad siga latiendo para siempre, que
+    es exactamente lo que pasaría si la ausencia se tratara como «no se sabe».
+    """
+    sesion = _sesion()
+    registro = RegistroFalso()
+    sesiones = SesionesFalsas(por_id={sesion.id: sesion})
+
+    with pytest.raises(SinPermiso):
+        await latir(
+            ADMIN,
+            sesion_id=sesion.id,
+            registro=registro,
+            sesiones=sesiones,
+            cache=CacheFalso(),
+            bus=BusFalso(),
+            inactividad_seg=INACTIVIDAD,
+            momento=AHORA,
+            ttl_seg=TTL,
+        )
+
+    assert registro.marcados == [], "no se deja señal de una sesión cerrada"
+    assert sesiones.llamadas == [], "y no hace falta preguntar a la base para saberlo"
+
+
+async def test_un_almacen_roto_no_impide_latir() -> None:
+    """Un problema del almacén no puede dejar sin presencia a toda la instalación.
+
+    Se degrada a la base, que es lo que se hacía antes de que existiera el almacén. La diferencia
+    con la prueba anterior es todo: aquí la ausencia de la clave **no significa nada**, porque nadie
+    pudo contestar.
+    """
+    sesion = _sesion()
+    registro = RegistroFalso()
+    sesiones = SesionesFalsas(por_id={sesion.id: sesion})
+
+    evento = await latir(
+        ADMIN,
+        sesion_id=sesion.id,
+        registro=registro,
+        sesiones=sesiones,
+        cache=CacheFalso(falla=True),
+        bus=BusFalso(),
+        inactividad_seg=INACTIVIDAD,
+        momento=AHORA,
+        ttl_seg=TTL,
+    )
+
+    assert sesiones.llamadas == ["por_id"], "con el almacén caído se pregunta a la base"
+    assert evento.presencia is not None
+    assert evento.presencia.estado is EstadoPresencia.VERDE
+    assert registro.marcados == [sesion.id]
+
+
+async def test_una_sesion_de_otro_usuario_en_el_almacen_se_rechaza() -> None:
+    """El valor de la clave lleva el dueño justamente para poder comprobarlo."""
+    sesion = _sesion()
+
+    with pytest.raises(SinPermiso):
+        await latir(
+            ADMIN,
+            sesion_id=sesion.id,
+            registro=RegistroFalso(),
+            sesiones=SesionesFalsas(),
+            cache=_cache_con(sesion, usuario_id=uuid4()),
+            bus=BusFalso(),
+            inactividad_seg=INACTIVIDAD,
+            momento=AHORA,
+            ttl_seg=TTL,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# La instantánea guardada del cuadro
+# --------------------------------------------------------------------------- #
+
+# El cuadro de presencia es, con diferencia, lo que más consulta la base: se recalcula cada quince
+# segundos por cada panel abierto. Guardarlo unos segundos es el arreglo de capacidad más rentable
+# que tiene el sistema, y estas pruebas defienden las dos cosas que pueden salir mal al hacerlo:
+# servir a alguien un listado que no le corresponde, y servir una entrada que ya no es válida.
+
+
+def _cuadro(actor: Actor, cache: Any, accesos: AccesosFalsos) -> Any:
+    return cuadro_serializado(
+        actor,
+        accesos=accesos,
+        sesiones=SesionesFalsas(),
+        registro=RegistroFalso(),
+        cache=cache,
+        momento=AHORA,
+        ttl_seg=TTL,
+    )
+
+
+async def test_la_segunda_consulta_se_sirve_de_la_instantanea() -> None:
+    """Dos paneles releyendo a la vez cuestan un solo cálculo. Es el objetivo de todo esto."""
+    cache = CacheFalso()
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")])
+
+    primero = await _cuadro(ADMIN, cache, accesos)
+    segundo = await _cuadro(ADMIN, cache, accesos)
+
+    assert accesos.consultas == 1, "la segunda relectura no debe tocar la base"
+    assert primero == segundo
+    assert cache.escrituras == 1
+
+
+async def test_lo_guardado_para_un_administrador_no_se_le_sirve_a_un_lector() -> None:
+    """La prueba que justifica meter el alcance **dentro** de la clave.
+
+    El administrador calcula el cuadro de toda la empresa y queda guardado. Si la clave fuera solo
+    el negocio, el lector recibiría ese mismo listado —con sus compañeros dentro— y vería justo lo
+    que la regla de alcance existe para no enseñarle. Aquí se comprueba que ve solo lo suyo.
+    """
+    cache = CacheFalso()
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")])
+
+    del_administrador = await _cuadro(ADMIN, cache, accesos)
+    del_lector = await _cuadro(LECTOR, cache, accesos)
+
+    assert len(del_administrador["usuarios"]) == 2
+    assert len(del_lector["usuarios"]) == 1
+    assert accesos.consultas == 2, "el lector no puede aprovechar el cálculo del administrador"
+
+
+async def test_cada_persona_sin_permiso_tiene_su_propia_entrada() -> None:
+    """Dos lectores distintos tampoco comparten: cada uno se ve a sí mismo y a nadie más."""
+    cache = CacheFalso()
+    otro = Actor(usuario_id=uuid4(), negocio_id=NEGOCIO, rol="lector")
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(otro.usuario_id, "Luis")])
+
+    primero = await _cuadro(LECTOR, cache, accesos)
+    segundo = await _cuadro(otro, cache, accesos)
+
+    assert primero != segundo
+    assert primero["usuarios"][0]["usuario_id"] == str(USUARIO)
+    assert segundo["usuarios"][0]["usuario_id"] == str(otro.usuario_id)
+
+
+async def test_el_cuadro_guardado_conserva_lo_que_el_panel_necesita() -> None:
+    """Ida y vuelta por el almacén: el panel recibe exactamente las mismas claves.
+
+    Un campo que se pierda al guardar no daría un error, daría un panel incompleto: el color sin el
+    motivo, o el resumen sin el total. Por eso se comparan las dos respuestas enteras.
+    """
+    cache = CacheFalso()
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+    sesion = _sesion(usuario_id=USUARIO)
+    sesiones = SesionesFalsas()
+    sesiones.a_devolver_activas = [sesion]
+    senales = RegistroFalso()
+    await senales.marcar(
+        usuario_id=USUARIO, sesion_id=sesion.id, negocio_id=NEGOCIO, momento=AHORA, ttl_seg=TTL
+    )
+
+    def _una_vez() -> Any:
+        return cuadro_serializado(
+            ADMIN,
+            accesos=accesos,
+            sesiones=sesiones,
+            registro=senales,
+            cache=cache,
+            momento=AHORA,
+            ttl_seg=TTL,
+        )
+
+    sin_guardar = await _una_vez()
+    guardado = await _una_vez()
+
+    assert guardado == sin_guardar
+    assert guardado["conectados"] == 1
+    assert guardado["total"] == 1
+    assert guardado["alcance"] == "compartido"
+
+
+async def test_un_cuadro_de_otro_negocio_no_se_guarda() -> None:
+    """Con un negocio ajeno el resultado depende de quién pregunta, así que no puede compartirse.
+
+    El aislamiento de la base decide qué ve cada administrador sobre una empresa que no es la suya.
+    Una entrada común haría que el segundo en preguntar leyera lo que se calculó para el primero.
+    """
+    cache = CacheFalso()
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+    de_plataforma = Actor(usuario_id=USUARIO, negocio_id=OTRO_NEGOCIO, rol="super_admin")
+
+    def _ajeno() -> Any:
+        return cuadro_serializado(
+            de_plataforma,
+            accesos=accesos,
+            sesiones=SesionesFalsas(),
+            registro=RegistroFalso(),
+            cache=cache,
+            momento=AHORA,
+            ttl_seg=TTL,
+            negocio_solicitado=NEGOCIO,
+        )
+
+    await _ajeno()
+    await _ajeno()
+
+    assert accesos.consultas == 2, "el cuadro de un negocio ajeno se calcula siempre"
+    assert cache.escrituras == 0
+
+
+async def test_sin_almacen_se_calcula_cada_vez() -> None:
+    """Sin Redis el sistema funciona igual, solo cuesta más. Es la degradación que ya se aceptó."""
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+
+    await _cuadro(ADMIN, CacheNula(), accesos)
+    await _cuadro(ADMIN, CacheNula(), accesos)
+
+    assert accesos.consultas == 2
+
+
+async def test_un_almacen_roto_no_deja_sin_cuadro_al_panel() -> None:
+    """Un problema del almacén no puede vaciar la pantalla de quién está conectado."""
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+    cuadro = await _cuadro(ADMIN, CacheFalso(falla=True), accesos)
+
+    assert accesos.consultas == 1
+    assert len(cuadro["usuarios"]) == 1
+
+
+async def test_una_entrada_ilegible_se_descarta_en_vez_de_servirse() -> None:
+    """Un valor corrupto no puede llegar al panel disfrazado de cuadro.
+
+    Se prefiere gastar el cálculo a devolver algo que no es la respuesta: el panel pintaría una
+    lista sin saber que no lo es, y el fallo aparecería lejos de su causa.
+    """
+    cache = CacheFalso()
+    cache.contenido[clave_cuadro(NEGOCIO, AMBITO_TODOS)] = "esto no es un cuadro"
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+
+    cuadro = await _cuadro(ADMIN, cache, accesos)
+
+    assert accesos.consultas == 1
+    assert len(cuadro["usuarios"]) == 1
+
+
+async def test_una_lista_json_tampoco_cuela_como_cuadro() -> None:
+    """JSON válido pero de la forma equivocada. Se descarta por la misma razón."""
+    cache = CacheFalso()
+    cache.contenido[clave_cuadro(NEGOCIO, AMBITO_TODOS)] = "[1, 2, 3]"
+    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
+
+    cuadro = await _cuadro(ADMIN, cache, accesos)
+
+    assert accesos.consultas == 1
+    assert "usuarios" in cuadro

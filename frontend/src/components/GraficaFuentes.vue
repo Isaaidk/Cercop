@@ -15,6 +15,7 @@ import { numero } from '@/utils/formato'
 import { opcionesBase, paletaSeries, useGrafica } from '@/composables/useGrafica'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
+import { nombreDeFamilia } from '@/utils/familias'
 
 const fuentes = computed(() => datos.estado.estadisticas.por_fuente || [])
 const seleccionada = computed(() => filtros.estado.fuente)
@@ -85,7 +86,10 @@ function elegir(fuente) {
     <header class="tarjeta__cabecera">
       <div>
         <p class="tarjeta__titulo">Origen de los datos</p>
-        <p class="tarjeta__pista">Pulsa un segmento para filtrar por esa fuente</p>
+        <p class="tarjeta__pista">
+          {{ nombreDeFamilia(filtros.estado.categoria) }} · pulsa un segmento para filtrar por esa
+          fuente
+        </p>
       </div>
     </header>
 

@@ -30,6 +30,7 @@ from contratacion.dominio.busqueda import (
     expresion_busqueda,
     huella_filtros,
     limitar_elementos,
+    normalizar_provincias,
     normalizar_terminos,
     palabras_de,
 )
@@ -166,8 +167,26 @@ def test_la_huella_ignora_el_orden_de_los_terminos() -> None:
 
 def test_la_huella_cambia_al_cambiar_un_filtro() -> None:
     base = Filtros(terminos=("obras",))
-    con_provincia = Filtros(terminos=("obras",), provincia="Azuay")
+    con_provincia = Filtros(terminos=("obras",), provincias=("Azuay",))
     assert huella_filtros(base) != huella_filtros(con_provincia)
+
+
+def test_la_huella_ignora_el_orden_de_las_provincias() -> None:
+    """El mapa se pulsa en el orden que sea, y el resultado no depende de él.
+
+    Sin esto, «Azuay y Pichincha» y «Pichincha y Azuay» ocuparían dos entradas de caché para
+    devolver exactamente la misma página, y el acierto se perdería justo cuando más se usa.
+    """
+    una = Filtros(provincias=normalizar_provincias(["Azuay", "Pichincha"]))
+    otra = Filtros(provincias=normalizar_provincias(["Pichincha", "Azuay"]))
+    assert huella_filtros(una) == huella_filtros(otra)
+
+
+def test_dos_provincias_no_comparten_huella_con_una() -> None:
+    """El fallo de caché más caro aquí: servir la página de una provincia al que pidió dos."""
+    una = Filtros(provincias=("Azuay",))
+    dos = Filtros(provincias=normalizar_provincias(["Azuay", "Pichincha"]))
+    assert huella_filtros(una) != huella_filtros(dos)
 
 
 def test_la_huella_incluye_la_pagina() -> None:
@@ -285,3 +304,83 @@ def test_el_criterio_de_orden_forma_parte_de_la_huella() -> None:
     recientes = Filtros(orden=OrdenBusqueda.RECIENTES)
     antiguos = Filtros(orden=OrdenBusqueda.ANTIGUOS)
     assert huella_filtros(recientes) != huella_filtros(antiguos)
+
+
+# --------------------------------------------------------------------------- #
+# Qué consultas se guardan en el caché y cuáles no
+#
+# La regla no es de corrección —la respuesta sería la misma— sino de coste: el caché solo sirve
+# para lo que se repite. El texto libre lo teclea cada persona, así que su espacio de claves es
+# ilimitado y cada entrada que se guardara ocuparía sitio hasta caducar sin acertar nunca.
+# --------------------------------------------------------------------------- #
+
+
+def test_una_consulta_con_desplegables_y_terminos_se_cachea() -> None:
+    """Los términos son un catálogo compartido y los desplegables se repiten entre usuarios."""
+    assert Filtros(terminos=("obras",), provincias=("Pichincha",), estado="En Curso").cacheable
+
+
+def test_una_busqueda_por_codigo_no_se_cachea() -> None:
+    assert not Filtros(codigo="NCORegistro-2026-001").cacheable
+
+
+def test_una_busqueda_libre_no_se_cachea() -> None:
+    assert not Filtros(texto="lo que se me ocurra").cacheable
+
+
+# --------------------------------------------------------------------------- #
+# El filtro por CPC
+#
+# Es un criterio propio y no una variante de `terminos`, y las pruebas de aquí protegen las dos
+# consecuencias de que lo sea: que la huella lo distinga —o dos vigilancias distintas compartirían
+# entrada de caché y una vería los resultados de la otra— y que se pueda buscar **solo** por
+# clasificación, que es lo que evita traer todo lo que menciona la palabra en el texto libre.
+# --------------------------------------------------------------------------- #
+
+
+def test_la_huella_distingue_los_terminos_de_los_criterios_de_cpc() -> None:
+    """«lavado» en el objeto y «lavado» en el CPC son dos consultas distintas. No pueden compartir
+    entrada de caché: devuelven conjuntos distintos y la primera en preguntar decidiría lo que ve
+    la otra durante todo un TTL, sin ningún error que mirar."""
+    por_texto = Filtros(terminos=("lavado",))
+    por_cpc = Filtros(cpc=("lavado",))
+
+    assert huella_filtros(por_texto) != huella_filtros(por_cpc)
+    assert huella_filtros(Filtros(cpc=("lavado",))) != huella_filtros(Filtros(cpc=("aseo",)))
+
+
+def test_la_huella_ignora_el_orden_de_los_criterios_de_cpc() -> None:
+    uno = Filtros(cpc=normalizar_terminos(["lavado", "engrasado"]))
+    otro = Filtros(cpc=normalizar_terminos(["engrasado", "lavado"]))
+    assert huella_filtros(uno) == huella_filtros(otro)
+
+
+def test_los_operadores_de_busqueda_no_llegan_al_cpc() -> None:
+    """El cuadro de texto es del usuario: un `|` o un `&` cambiarían la consulta si pasaran."""
+    filtros = Filtros(cpc=normalizar_terminos(["lavado|engrasado", "a & b"]))
+    for termino in filtros.cpc:
+        assert "|" not in termino
+        assert "&" not in termino
+
+
+def test_filtrar_por_cpc_se_cachea() -> None:
+    """Los términos de CPC llegan normalizados, así que se repiten entre personas."""
+    assert Filtros(cpc=("lavado",), provincias=("Pichincha",)).cacheable
+
+
+def test_sin_cpc_la_huella_no_cambia() -> None:
+    """Incluir un campo nuevo no puede volver inestable la huella de las consultas de siempre."""
+    assert huella_filtros(Filtros(terminos=("obras",))) == huella_filtros(
+        Filtros(terminos=("obras",), cpc=())
+    )
+
+
+def test_un_espacio_suelto_no_desactiva_la_cache() -> None:
+    """Un espacio no es un filtro: si contara, escribir y borrar dejaría la caché apagada."""
+    assert Filtros(codigo="   ", texto="  ").cacheable
+
+
+def test_la_regla_no_depende_de_otros_filtros() -> None:
+    """Un rango de fechas o una palabra clave no cambian la decisión: la decide el texto libre."""
+    assert Filtros(desde=date(2026, 1, 1), hasta=date(2026, 6, 30), terminos=("obras",)).cacheable
+    assert not Filtros(desde=date(2026, 1, 1), terminos=("obras",), texto="viales").cacheable

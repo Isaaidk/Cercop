@@ -91,19 +91,24 @@ class LimitadorTasa:
         espera: float = min(self._espera_base * factor, MAX_ESPERA)
         return espera
 
-    async def solicitar_json(
+    async def _solicitar(
         self,
         url: str,
         params: dict[str, Any] | None = None,
         *,
         etiqueta: str = "",
         tiempo_limite: float = TIEMPO_LIMITE,
-    ) -> dict[str, Any] | None:
+    ) -> httpx.Response | None:
         """GET con reintentos y control de tasa.
 
-        Devuelve el JSON, o `None` si se agotaron los intentos. El llamador decide cómo informar del
-        fallo; aquí nunca se lanza excepción por un problema de la fuente, porque la ingesta debe
-        poder terminar de forma parcial y avisar.
+        Devuelve la respuesta, o `None` si se agotaron los intentos. El llamador decide cómo
+        informar del fallo; aquí nunca se lanza excepción por un problema de la fuente, porque la
+        ingesta debe poder terminar de forma parcial y avisar.
+
+        La respuesta se devuelve **sin leer**. Quien llama sabe si espera JSON o HTML, y leerla aquí
+        obligaría a duplicar todo el control de tasa para el otro caso: es lo que permite que el
+        listado de necesidades (JSON) y su ficha (HTML) compartan el mismo mecanismo, la misma
+        cuota y el mismo enfriamiento cuando la fuente responde 429.
         """
         cliente = self._obtener_cliente(tiempo_limite)
         async with self._semaforo:
@@ -113,8 +118,7 @@ class LimitadorTasa:
                     respuesta = await cliente.get(url, params=params)
                     self.codigos_recibidos.append(respuesta.status_code)
                     respuesta.raise_for_status()
-                    datos = respuesta.json()
-                    return datos if isinstance(datos, dict) else {"data": datos}
+                    return respuesta
                 except httpx.HTTPStatusError as exc:
                     codigo = exc.response.status_code
                     self.codigos_recibidos.append(codigo)
@@ -134,9 +138,62 @@ class LimitadorTasa:
                     )
                     await asyncio.sleep(espera)
                 except Exception as exc:  # noqa: BLE001 - un fallo de red no debe tumbar la ingesta
-                    registro.error("Error consultando la fuente (%s): %s", etiqueta, exc)
+                    # Con el tipo además del texto: hay fallos de red que llegan con el mensaje
+                    # vacío —`ReadError`, `ConnectTimeout` sin detalle— y un renglón que solo dice
+                    # «Error consultando la fuente (NCO listado): » no dice nada. Se vio en
+                    # operación, en una vuelta de vigilancia que quedó en «parcial · 0 iguales».
+                    registro.error(
+                        "Error consultando la fuente (%s): %s: %s",
+                        etiqueta,
+                        type(exc).__name__,
+                        exc,
+                    )
                     return None
         return None
+
+    async def solicitar_json(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        etiqueta: str = "",
+        tiempo_limite: float = TIEMPO_LIMITE,
+    ) -> dict[str, Any] | None:
+        """GET que devuelve JSON, o `None` si no se pudo obtener.
+
+        Un cuerpo que no sea JSON se trata como un fallo de la fuente y devuelve `None`, que es lo
+        que ya hacía cuando la lectura vivía aquí dentro: la respuesta se guarda en un registro y
+        quien llama avisa de un ciclo parcial, en lugar de dejar escapar una excepción que tumbara
+        la ingesta entera por una página de error mal servida.
+        """
+        respuesta = await self._solicitar(
+            url, params, etiqueta=etiqueta, tiempo_limite=tiempo_limite
+        )
+        if respuesta is None:
+            return None
+        try:
+            datos = respuesta.json()
+        except ValueError:
+            registro.error("La fuente no devolvió JSON válido (%s)", etiqueta or url)
+            return None
+        return datos if isinstance(datos, dict) else {"data": datos}
+
+    async def solicitar_texto(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        etiqueta: str = "",
+        tiempo_limite: float = TIEMPO_LIMITE,
+    ) -> str | None:
+        """GET que devuelve el cuerpo como texto, o `None` si no se pudo obtener.
+
+        Lo necesita la ficha de la necesidad, que la fuente publica como HTML de servidor.
+        """
+        respuesta = await self._solicitar(
+            url, params, etiqueta=etiqueta, tiempo_limite=tiempo_limite
+        )
+        return None if respuesta is None else respuesta.text
 
     async def cerrar(self) -> None:
         if self._cliente is not None and not self._cliente.is_closed:

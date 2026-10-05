@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from contratacion.infraestructura.adaptadores.salida.bd.ingesta import RepositorioIngesta
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import normalizar_url_bd
+from contratacion.infraestructura.adaptadores.salida.bd.terminos import RepositorioTerminosBd
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
 
 pytestmark = pytest.mark.skipif(
@@ -156,6 +157,31 @@ async def test_el_conteo_de_suscriptores_funciona_sin_contexto_de_negocio(
     por_id = {fila["termino_id"]: fila for fila in pendientes}
 
     assert por_id[primero]["suscriptores"] == 0
+
+
+async def test_los_suscriptores_de_varios_terminos_se_leen_de_una_vez(motor: AsyncEngine) -> None:
+    """La consulta en lote, contra la base de verdad.
+
+    Es la que sustituye al N+1 que tardaba segundos en pintar la lista de palabras clave. Se
+    comprueba con identificadores que existen y con uno inventado, porque lo que puede fallar de una
+    consulta en lote es justo el caso raro: un identificador que no está, o una lista vacía.
+    """
+    primero = await _crear_termino(motor, "lote uno", ultima=None)
+    segundo = await _crear_termino(motor, "lote dos", ultima=None)
+    inventado = uuid.uuid4()
+
+    leidos = await RepositorioTerminosBd(motor).suscriptores_de([primero, segundo, inventado])
+
+    # Los tres aparecen, y el inventado con cero. **Esto no es un descuido**: se preguntó por él y
+    # se responde, en lugar de devolver un mapa al que le falta una clave y obligar a quien consulta
+    # a tratar la ausencia. Un término que se borre entre que se lee el listado y se piden los
+    # conteos —o un identificador mal formado que llegue de fuera— no puede tumbar la pantalla.
+    assert leidos == {primero: 0, segundo: 0, inventado: 0}
+
+
+async def test_una_lista_vacia_de_identificadores_no_consulta_nada(motor: AsyncEngine) -> None:
+    """Sin identificadores, la respuesta es un mapa vacío y no una ida y vuelta a la base."""
+    assert await RepositorioTerminosBd(motor).suscriptores_de([]) == {}
 
 
 # --------------------------------------------------------------------------- #

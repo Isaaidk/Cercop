@@ -8,7 +8,8 @@
  * dato completo de una ínfima cuantía sin cambiar de pestaña y volver a buscar.
  *
  * Ahora este componente solo pinta el encabezado —qué provincia es y cuántas hay— y la tabla que va
- * debajo es **la misma** de la pestaña Registros, con su detalle desplegable y su paginación. Reusarla
+ * debajo es **la misma** de la pestaña de ínfimas cuantías, con su detalle desplegable y su
+ * paginación. Reusarla
  * en lugar de copiarla es lo que garantiza que las dos pantallas no se separen: si mañana cambia una
  * columna, cambia en las dos.
  *
@@ -25,7 +26,22 @@ import { nombreDeProvincia } from '@/utils/provincias'
 
 const emit = defineEmits(['ver-todos'])
 
-const provincia = computed(() => filtros.estado.provincia)
+const provincias = computed(() => filtros.estado.provincias)
+
+/**
+ * Cómo se nombra la selección en el encabezado.
+ *
+ * Con una sola provincia se dice su nombre —«Contrataciones en Azuay»—, que es lo natural. Con
+ * varias no se enumeran todas: con seis, el titular ocuparía tres lineas y dejaría de leerse. Se
+ * dice cuántas son, y el detalle está a un clic de distancia en el propio mapa.
+ */
+const titulo = computed(() => {
+  if (!provincias.value.length) return 'Contrataciones de una provincia'
+  if (provincias.value.length === 1) return `Contrataciones en ${nombreDeProvincia(provincias.value[0])}`
+  const nombres = provincias.value.map(nombreDeProvincia).join(' + ')
+  return nombres.length <= 60 ? `Contrataciones en ${nombres}` : `Contrataciones en ${provincias.value.length} provincias`
+})
+
 const total = computed(() => datos.estado.total)
 const cargando = computed(() => datos.estado.cargando)
 </script>
@@ -35,11 +51,10 @@ const cargando = computed(() => datos.estado.cargando)
     <header class="provincia__cabecera">
       <div>
         <p class="provincia__titulo">
-          <template v-if="provincia">Contrataciones en {{ nombreDeProvincia(provincia) }}</template>
-          <template v-else>Contrataciones de una provincia</template>
+          {{ titulo }}
         </p>
         <p class="provincia__pista">
-          <template v-if="!provincia">
+          <template v-if="!provincias.length">
             Pulsa una provincia en el mapa para ver solo sus contrataciones. Mientras no elijas
             ninguna, esta tabla muestra todo lo que cumple los filtros.
           </template>
@@ -52,12 +67,12 @@ const cargando = computed(() => datos.estado.cargando)
       </div>
 
       <button
-        v-if="provincia"
+        v-if="provincias.length"
         type="button"
         class="boton boton--fantasma boton--pequeno"
         @click="emit('ver-todos')"
       >
-        Ir a Registros
+        Ir a ínfimas cuantías
       </button>
     </header>
   </section>

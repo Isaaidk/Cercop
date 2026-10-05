@@ -14,9 +14,11 @@
 import { computed } from 'vue'
 
 import { opcionesBase, paletaSeries, useGrafica } from '@/composables/useGrafica'
-import { abreviado, numero } from '@/utils/formato'
-import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
+import { filtros } from '@/stores/filtros'
+import { nombreDeFamilia } from '@/utils/familias'
+import { abreviado, numero } from '@/utils/formato'
+import { nombreDeProvincia } from '@/utils/provincias'
 
 const LIMITE = 10
 
@@ -27,7 +29,12 @@ const ocultas = computed(() =>
   listaCompleta.value.slice(LIMITE).reduce((suma, p) => suma + p.total, 0),
 )
 
-const seleccionada = computed(() => filtros.estado.provincia)
+const seleccionadas = computed(() => filtros.estado.provincias)
+
+/** La provincia de una barra está filtrada, con un valor o con varios. */
+function estaElegida(codigo) {
+  return seleccionadas.value.includes(codigo)
+}
 
 const { lienzo } = useGrafica(
   () => {
@@ -44,7 +51,7 @@ const { lienzo } = useGrafica(
             // La provincia filtrada se pinta con el color de acento y las demás con el degradado
             // normal: así se ve de un vistazo qué filtro está puesto sin leer la ficha de al lado.
             backgroundColor: visibles.value.map((p) =>
-              seleccionada.value === p.codigo ? series[1] : `${series[0]}b3`,
+              estaElegida(p.codigo) ? series[1] : `${series[0]}b3`,
             ),
             // El resaltado al pasar el cursor lo hace Chart.js con estos dos colores. Escribirlo a
             // mano obligaría a reconstruir la gráfica en cada movimiento del ratón: se destruiría y
@@ -63,12 +70,12 @@ const { lienzo } = useGrafica(
         // etiquetas de abajo acabarían superpuestas.
         //
         // El filtro se aplica cambiando el estado del almacén y **nada más**. La gráfica se vuelve a
-        // dibujar sola, porque el vigilante de `useGrafica` observa `seleccionada`. Redibujarla aquí
+        // dibujar sola, porque el vigilante de `useGrafica` observa la selección. Redibujarla aquí
         // dentro, además, significaría destruirla mientras Chart.js está gestionando su propio clic.
         onClick: (evento, elementos) => {
           if (!elementos.length) return
           const provincia = visibles.value[elementos[0].index]
-          if (provincia) filtros.alternarProvincia(provincia.codigo)
+          if (provincia) filtros.elegirProvincia(provincia.codigo)
         },
         onHover: (evento, elementos) => {
           const puntero = elementos.length ? 'pointer' : 'default'
@@ -96,11 +103,11 @@ const { lienzo } = useGrafica(
       },
     }
   },
-  () => [visibles.value, seleccionada.value],
+  () => [visibles.value, seleccionadas.value],
 )
 
 function elegir(codigo) {
-  filtros.alternarProvincia(codigo)
+  filtros.elegirProvincia(codigo)
 }
 </script>
 
@@ -109,9 +116,17 @@ function elegir(codigo) {
     <header class="tarjeta__cabecera">
       <div>
         <p class="tarjeta__titulo">Contrataciones por provincia</p>
-        <p class="tarjeta__pista">Pulsa una barra para elegir la provincia y aplica los filtros</p>
+        <p class="tarjeta__pista">
+          <!-- La familia se dice **aquí**, porque la fija la pestaña desde la que se llega y desde la
+               gráfica no se puede adivinar: sin esto, la misma gráfica podría estar contando ínfimas
+               o procesos con oferta y parecería lo mismo. -->
+          {{ nombreDeFamilia(filtros.estado.categoria) }} · pulsa una barra para elegir la provincia
+          y aplica los filtros
+        </p>
       </div>
-      <span v-if="seleccionada" class="etiqueta etiqueta--acento">{{ seleccionada }}</span>
+      <span v-if="seleccionadas.length" class="etiqueta etiqueta--acento">
+        {{ seleccionadas.map((codigo) => nombreDeProvincia(codigo)).join(' + ') }}
+      </span>
     </header>
 
     <div class="tarjeta__cuerpo">
@@ -144,7 +159,7 @@ function elegir(codigo) {
             :key="provincia.codigo"
             type="button"
             class="boton boton--pequeno"
-            :class="seleccionada === provincia.codigo ? 'boton--principal' : 'boton--secundario'"
+            :class="estaElegida(provincia.codigo) ? 'boton--principal' : 'boton--secundario'"
             @click="elegir(provincia.codigo)"
           >
             {{ provincia.nombre }}
@@ -166,27 +181,15 @@ function elegir(codigo) {
 </template>
 
 <style scoped>
-.grafica {
-  display: flex;
-  flex-direction: column;
-}
-
-.grafica__lienzo {
-  position: relative;
-  width: 100%;
-}
-
+/* El alto del lienzo lo pone el componente en línea, según el número de barras; aquí solo queda lo
+   que es de esta gráfica. Los estilos que comparte con el resto de gráficas —`.grafica`,
+   `.grafica__lienzo`, `.grafica__vacio` y `.grafica__nota`— viven en `main.css`: estaban aquí con
+   `scoped`, y un estilo con `scoped` no cruza a otro componente, así que la gráfica nueva los
+   necesitaba copiados y una copia se queda vieja sin avisar. */
 .grafica__esqueleto {
   display: block;
   height: 260px;
   border-radius: var(--r-2);
-}
-
-.grafica__vacio {
-  padding: var(--e-6) var(--e-4);
-  text-align: center;
-  color: var(--texto-tenue);
-  font-size: var(--t-sm);
 }
 
 .grafica__atajos {
@@ -196,12 +199,5 @@ function elegir(codigo) {
   margin-top: var(--e-4);
   padding-top: var(--e-4);
   border-top: 1px solid var(--borde);
-}
-
-.grafica__nota {
-  margin-top: var(--e-3);
-  font-size: var(--t-xs);
-  color: var(--texto-tenue);
-  line-height: 1.5;
 }
 </style>

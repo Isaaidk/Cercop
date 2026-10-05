@@ -623,6 +623,35 @@ a {
   border: 0;
 }
 
+/* Piezas compartidas de las gráficas.
+ *
+ * Viven aquí y no en cada componente porque las usan varias (provincias y el reparto por tipo de
+ * procedimiento, y las que vengan): con `scoped`, un estilo no cruza a otro componente, así que la
+ * segunda gráfica necesitaba su copia y una copia se queda vieja sin que nadie lo note. */
+.grafica {
+  display: flex;
+  flex-direction: column;
+}
+
+.grafica__lienzo {
+  position: relative;
+  width: 100%;
+}
+
+.grafica__vacio {
+  padding: var(--e-6) var(--e-4);
+  text-align: center;
+  color: var(--texto-tenue);
+  font-size: var(--t-sm);
+}
+
+.grafica__nota {
+  margin-top: var(--e-3);
+  font-size: var(--t-xs);
+  color: var(--texto-tenue);
+  line-height: 1.5;
+}
+
 .numeros {
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum';

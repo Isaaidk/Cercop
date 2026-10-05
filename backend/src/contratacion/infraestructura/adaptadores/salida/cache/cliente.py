@@ -15,10 +15,14 @@ Estados posibles, tal y como se informan en `/listo`:
 
 from __future__ import annotations
 
+import logging
+
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.infraestructura.adaptadores.salida.cache.nula import CacheNula
 from contratacion.infraestructura.adaptadores.salida.cache.redis import CacheRedis
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
+
+registro = logging.getLogger(__name__)
 
 ESTADO_OK = "ok"
 ESTADO_DESHABILITADA = "deshabilitada"
@@ -53,8 +57,23 @@ async def verificar_cache() -> bool:
 
 
 async def cerrar_cache() -> None:
-    """Cierra el cliente al apagar el proceso."""
+    """Cierra el cliente y **siempre** olvida la referencia.
+
+    El cierre es *de mejor esfuerzo*, y eso no es descuido. Cuando el bucle de eventos al que
+    pertenecía el cliente ya no existe, sus conexiones murieron con él y no queda nada que cerrar:
+    intentarlo lanza «Event loop is closed» y convierte una limpieza en un error. Le pasa a las
+    pruebas —donde cada caso puede tener su propio bucle, y el cliente nace dentro del que usa el
+    cliente de pruebas de la aplicación— y le pasaría a un apagado abrupto. En ninguno de los dos
+    casos hay nada que recuperar.
+
+    Lo que **sí** importa es soltar la referencia, y por eso va fuera del `try`: la siguiente
+    llamada tiene que construir un cliente del bucle vivo, no reutilizar el de uno muerto. Dejar la
+    referencia puesta sería peor que no cerrar, porque el fallo reaparecería en cada apagado.
+    """
     global _cache
     if _cache is not None:
-        await _cache.cerrar()
+        try:
+            await _cache.cerrar()
+        except Exception:  # noqa: BLE001 - apagar no puede fallar
+            registro.warning("No se pudo cerrar el caché al apagar", exc_info=False)
     _cache = None

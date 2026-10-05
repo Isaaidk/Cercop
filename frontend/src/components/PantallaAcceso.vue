@@ -14,6 +14,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/endpoints'
+import CampoContrasena from '@/components/CampoContrasena.vue'
 import { sesion } from '@/stores/sesion'
 
 const props = defineProps({
@@ -110,30 +111,13 @@ async function entrar() {
             />
           </div>
 
-          <div class="campo">
-            <label class="campo__etiqueta" for="contrasena">Contraseña</label>
-            <div class="acceso__contrasena">
-              <input
-                id="contrasena"
-                v-model="contrasena"
-                class="entrada"
-                :type="mostrarContrasena ? 'text' : 'password'"
-                autocomplete="current-password"
-                required
-                @focus="enfocado = 'contrasena'"
-                @blur="enfocado = ''"
-              />
-              <button
-                type="button"
-                class="acceso__ojo"
-                :aria-label="mostrarContrasena ? 'Ocultar la contraseña' : 'Mostrar la contraseña'"
-                :aria-pressed="mostrarContrasena"
-                @click="mostrarContrasena = !mostrarContrasena"
-              >
-                {{ mostrarContrasena ? 'Ocultar' : 'Ver' }}
-              </button>
-            </div>
-          </div>
+          <CampoContrasena
+            id="contrasena"
+            v-model="contrasena"
+            v-model:visible="mostrarContrasena"
+            etiqueta="Contraseña"
+            ajuste="current-password"
+          />
 
           <p v-if="sesion.estado.error" class="acceso__error" role="alert">
             {{ sesion.estado.error }}
@@ -324,35 +308,6 @@ async function entrar() {
   color: var(--texto-tenue);
   text-align: center;
   line-height: 1.5;
-}
-
-.acceso__contrasena {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.acceso__contrasena .entrada {
-  padding-right: 4.2rem;
-}
-
-.acceso__ojo {
-  position: absolute;
-  right: var(--e-2);
-  padding: 4px 8px;
-  border: 0;
-  border-radius: var(--r-1);
-  background: transparent;
-  color: var(--texto-suave);
-  font-size: var(--t-xs);
-  font-weight: 600;
-  cursor: pointer;
-  transition: color var(--rapido) var(--curva), background-color var(--rapido) var(--curva);
-}
-
-.acceso__ojo:hover {
-  color: var(--acento);
-  background: var(--acento-tenue);
 }
 
 .acceso__error {

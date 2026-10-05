@@ -18,7 +18,6 @@ Requisitos que se comprueban y que son imprescindibles para que RLS sirva de alg
 from __future__ import annotations
 
 import os
-import secrets
 import uuid
 from collections.abc import AsyncIterator
 from typing import NamedTuple
@@ -47,6 +46,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 ROL_APLICACION = "app_contratacion_pruebas"
+# Fija a propósito: el agrupador de Supabase reutiliza conexiones por usuario y una clave rotada en
+# cada prueba hace que la conexión reutilizada deje de valer (`password authentication failed`).
+# El motivo completo está explicado en `test_acceso_vistas.py`. El rol es de solo lectura.
+CLAVE_ROL = "pruebas-rol-aplicacion"
 TABLAS_CON_NEGOCIO = (
     "usuario",
     "sesion",
@@ -66,8 +69,24 @@ def _url_admin() -> str:
     return url.render_as_string(hide_password=False)
 
 
+def _usuario_del_rol(rol: str) -> str:
+    """El nombre del rol **con el sufijo del proyecto**, que es lo que enruta el agrupador.
+
+    Supabase recibe las conexiones en Supavisor, que deduce de qué proyecto son a partir del sufijo
+    del nombre de usuario (`rol.referencia_del_proyecto`). Un rol suelto —el de aplicación de estas
+    pruebas— no le dice nada y responde `ENOIDENTIFIER: no tenant identifier provided (external_id
+    or sni_hostname required)`, un error de **enrutado** que se lee como si fueran las credenciales
+    y hace fallar las pruebas del archivo por un motivo que no está en ninguna de ellas. El sufijo
+    se toma del usuario de administración, que sí lo trae, y así sigue valiendo si el proyecto
+    cambia.
+    """
+    usuario_admin = make_url(_url_admin()).username or ""
+    _, _, sufijo = usuario_admin.partition(".")
+    return f"{rol}.{sufijo}" if sufijo else rol
+
+
 def _url_como_rol(password: str) -> str:
-    url = make_url(_url_admin()).set(username=ROL_APLICACION, password=password)
+    url = make_url(_url_admin()).set(username=_usuario_del_rol(ROL_APLICACION), password=password)
     return url.render_as_string(hide_password=False)
 
 
@@ -84,11 +103,15 @@ async def _contar(motor: AsyncEngine, negocio_id: uuid.UUID | None) -> int:
 
 
 async def _asegurar_rol(conexion: AsyncConnection, clave_sql: str) -> None:
-    """Crea el rol de aplicación o le refresca la clave, y concede los permisos.
+    """Crea el rol de aplicación y concede los permisos; si ya existe, **no lo toca**.
 
     No se elimina al terminar: `DROP ROLE` falla mientras el rol conserve privilegios, y revocarlos
-    exige permisos que el usuario administrador de un proveedor gestionado no siempre tiene. Crear o
-    actualizar es idempotente y no deja basura.
+    exige permisos que el usuario administrador de un proveedor gestionado no siempre tiene. Crear
+    es idempotente y no deja basura.
+
+    Tampoco se le refresca la clave: `ALTER ROLE ... PASSWORD` rehace el verificador SCRAM aunque la
+    clave sea la misma, y el agrupador de Supabase tiene memorizada la credencial de ese usuario (el
+    fallo y el remedio están explicados en `test_acceso_vistas.py::_asegurar_rol`).
     """
     existe = (
         await conexion.execute(
@@ -96,13 +119,11 @@ async def _asegurar_rol(conexion: AsyncConnection, clave_sql: str) -> None:
         )
     ).scalar_one_or_none()
 
-    # Cambiar los atributos privilegiados de un rol exige superusuario, así que al actualizar
-    # solo se refresca la clave. Los atributos seguros (no superusuario, sin BYPASSRLS, sin crear
-    # bases ni roles) se fijan al crear, y la prueba los verifica después.
+    # Cambiar los atributos privilegiados de un rol exige superusuario, así que la clave solo se
+    # fija al crear. Los atributos seguros (no superusuario, sin BYPASSRLS, sin crear bases ni
+    # roles) también se fijan al crear, y la prueba los verifica después.
     clave = f"LOGIN PASSWORD '{clave_sql}'"
-    if existe:
-        await conexion.execute(text(f"ALTER ROLE {ROL_APLICACION} WITH {clave}"))
-    else:
+    if not existe:
         await conexion.execute(
             text(
                 f"CREATE ROLE {ROL_APLICACION} WITH "
@@ -125,14 +146,14 @@ async def _asegurar_rol(conexion: AsyncConnection, clave_sql: str) -> None:
 @pytest.fixture
 async def escenario() -> AsyncIterator[Escenario]:
     """Crea un rol de aplicación real y dos negocios con un usuario cada uno."""
-    password = secrets.token_urlsafe(24)
+    password = CLAVE_ROL
     negocio_a, negocio_b = uuid.uuid4(), uuid.uuid4()
     admin = create_async_engine(_url_admin(), pool_pre_ping=True)
 
     async with admin.begin() as conexion:
         # Las sentencias DDL no admiten parámetros, así que hay que componer el literal. La clave se
         # genera aquí y se escapa por si contuviera comillas.
-        await _asegurar_rol(conexion, password.replace("'", "''"))
+        await _asegurar_rol(conexion, password)
         for identificador, nombre in ((negocio_a, "Negocio A"), (negocio_b, "Negocio B")):
             # El contexto se fija antes de insertar: las políticas exigen que quien escribe sea el
             # propio negocio. Así la prueba no depende de que el administrador se salte RLS.

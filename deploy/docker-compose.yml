@@ -1,0 +1,229 @@
+# Despliegue de un solo servidor: PostgreSQL, Redis, API, worker de ingesta y Caddy.
+#
+# Por qué todo junto y no en servicios gestionados separados
+# ----------------------------------------------------------
+# Lo que hace lento este sistema no es la capacidad de PostgreSQL: son los ~280 ms que cuesta cada
+# bloque de consulta cuando la base está al otro lado de la red, medidos y documentados en
+# `docs/`. Con la base en el mismo host ese coste baja a ~1 ms, y esa diferencia pesa más que
+# cualquier optimización de código.
+#
+# Redis local añade una segunda ventaja de coste: el caché de este sistema hace varios comandos por
+# petición, y los proveedores gestionados suelen facturar por comando. En local no se factura.
+#
+# El panel (Vue) NO va aquí: se compila y se sirve desde un CDN, apuntando `VITE_API_BASE` a este
+# host. Así el TLS y el reparto global los hace la CDN, que es lo que hace bien.
+#
+# Puesta en marcha
+# ----------------
+#   1. Copiar `.env.example` a `.env` en la raíz y completar los valores obligatorios.
+#   2. Definir BD_CLAVE, DOMINIO y CORREO_TLS (ver `deploy/README.md`).
+#   3. docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
+#   4. Comprobar que está listo:  curl -s http://127.0.0.1:8001/listo
+
+name: contratacion
+
+services:
+  # ---------------------------------------------------------------------------
+  # Datos
+  # ---------------------------------------------------------------------------
+  bd:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${BD_NOMBRE:-contratacion}
+      POSTGRES_USER: ${BD_USUARIO:-contratacion}
+      POSTGRES_PASSWORD: ${BD_CLAVE:?falta BD_CLAVE en el entorno}
+    command:
+      # Una máquina dedicada no necesita los valores por defecto de PostgreSQL, pensados para un
+      # servidor compartido. `max_connections` es el que decide cuántos workers caben: el techo real
+      # del sistema es la suma de los pools de todos los procesos de API.
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=16MB
+    volumes:
+      - datos-bd:/var/lib/postgresql/data
+    # No se publica el puerto a propósito: PostgreSQL solo se ve dentro de la red del compose.
+    # Exponerlo a internet convierte un descuido de configuración en una brecha.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BD_USUARIO:-contratacion} -d ${BD_NOMBRE:-contratacion}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Persistencia **activa**, y es un cambio de criterio que conviene entender.
+    #
+    # Mientras Redis solo guardaba caché, presencia y avisos, no persistir era lo correcto: todo se
+    # podía reconstruir o volver a pedir, y un fichero que crece sin que nadie lo mire no aporta.
+    #
+    # Pero aquí viven también las **sesiones abiertas**. La ausencia de esa clave significa «sesión
+    # cerrada», que es lo que hace funcionar el cierre por inactividad sin ninguna tarea que recorra
+    # sesiones. Y esa virtud tiene un precio: si Redis arranca en blanco, **todas** las sesiones
+    # dejan de constar y todo el mundo aparece en la pantalla de acceso a la vez. Sin persistencia,
+    # cada reinicio del contenedor —o del servidor— es un cierre de sesión general.
+    #
+    # `appendfsync everysec` pierde como mucho un segundo de escrituras en una caída dura: unos
+    # pocos inicios de sesión, que se resuelven volviendo a entrar. El fichero RDB periódico se deja
+    # con los valores por defecto, que aceleran el arranque.
+    #
+    # `maxmemory` es obligatorio, no un adorno: la política de expulsión **solo actúa cuando hay un
+    # límite**. Sin él, Redis crecería hasta agotar la memoria del servidor, y lo haría compitiendo
+    # con PostgreSQL, que es quien no puede permitirse quedarse sin memoria.
+    #
+    # 512 MB son unas doscientas veces el consumo medido con cientos de usuarios, así que la
+    # expulsión no llega a dispararse: el límite está como red de seguridad, no como régimen de
+    # funcionamiento.
+    #
+    # **`allkeys-lru` no distingue la caché de las sesiones, y hay que decirlo.** Una versión
+    # anterior de este comentario afirmaba que lo único que se podía perder eran entradas de caché, y
+    # era falso: la política no mira para qué sirve cada clave, así que con el límite alcanzado
+    # también desaloja claves de sesión. Lo que se pierde entonces no es un dato, es la respuesta a
+    # «¿sigue viva esta sesión?».
+    #
+    # Eso dejó de ser un cierre de sesión general cuando la comprobación aprendió a distinguir una
+    # clave **perdida** de una sesión **inactiva**: si la sesión se usó hace poco, la clave se repone
+    # y la persona no nota nada. No hay que elegir entre `noeviction` —que ante la misma presión haría
+    # fallar las escrituras, empezando por el propio inicio de sesión— y esta política: con la
+    # reparación, la expulsión se queda en una consulta extra y un aviso en el registro.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    # El diario del AOF tiene que vivir en un volumen y no en la capa de escritura del contenedor.
+    # Sin esto, la persistencia solo sobreviviría a un `restart`: una actualización de imagen, un
+    # `down` o un `up --build` recrean el contenedor y se llevarían por delante las sesiones, que es
+    # exactamente lo que el AOF viene a evitar.
+    volumes:
+      - datos-cache:/data
+
+  # ---------------------------------------------------------------------------
+  # Procesos
+  # ---------------------------------------------------------------------------
+  migraciones:
+    build:
+      context: ../backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${BD_USUARIO:-contratacion}:${BD_CLAVE}@bd:5432/${BD_NOMBRE:-contratacion}
+    # Se ejecuta una vez y termina. Sin `restart`, un fallo se ve en los registros en vez de
+    # reintentarse en silencio hasta que alguien mire.
+    restart: "no"
+    depends_on:
+      bd:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # Estas dos se construyen aquí a partir de las variables del entorno para que no haya que
+      # repetir credenciales en `.env` con el nombre del servicio interno.
+      DATABASE_URL: postgresql+asyncpg://${BD_USUARIO:-contratacion}:${BD_CLAVE}@bd:5432/${BD_NOMBRE:-contratacion}
+      REDIS_URL: redis://cache:6379/0
+      # Dónde viven las plantillas de Excel que sube cada empresa. Apunta al volumen de abajo y no al
+      # directorio de trabajo: sin esto se escribirían en la capa del contenedor, y una actualización
+      # de imagen —que recrea el contenedor— se llevaría por delante las plantillas de los clientes
+      # sin ningún error y sin que nadie lo notara hasta la siguiente exportación.
+      PLANTILLAS_DIR: /app/plantillas
+    volumes:
+      - datos-plantillas:/app/plantillas
+    command:
+      - uvicorn
+      - contratacion.asgi:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --workers
+      - ${API_WORKERS:-4}
+    ports:
+      # Solo en la interfaz local: quien atiende a internet es Caddy. Publicarlo en todas las
+      # interfaces saltaría el TLS y el límite de tamaño de las peticiones.
+      - 127.0.0.1:8001:8001
+    # Cada panel abierto mantiene una conexión al flujo de eventos, y cada conexión es un descriptor
+    # de fichero. El límite del contenedor no se hereda de una sesión de shell: si no se fija, puede
+    # quedarse en 1.024, y entonces el techo llega en mil conexiones repartidas entre los procesos con
+    # un «too many open files» en una petición cualquiera, sin relación aparente con la presencia. Es
+    # la primera pared al escalar y la que menos se ve venir.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      bd:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      migraciones:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${BD_USUARIO:-contratacion}:${BD_CLAVE}@bd:5432/${BD_NOMBRE:-contratacion}
+      REDIS_URL: redis://cache:6379/0
+    # Un solo worker de ingesta: el ciclo se protege con un bloqueo de asesoría de PostgreSQL, así
+    # que un segundo proceso no duplicaría el trabajo, solo esperaría.
+    command: ["python", "-m", "contratacion.tareas.worker"]
+    depends_on:
+      bd:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Borde
+  # ---------------------------------------------------------------------------
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Caddy es quien **mantiene** todas las conexiones abiertas de los clientes: cada flujo de
+    # eventos vive aquí y en el proceso de API que lo atiende. Es el que antes se queda sin
+    # descriptores, así que el límite se le pone explícito igual que al API.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMINIO: ${DOMINIO:?falta DOMINIO en el entorno}
+      CORREO_TLS: ${CORREO_TLS:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - datos-caddy:/data
+      - config-caddy:/config
+    depends_on:
+      - api
+
+volumes:
+  datos-bd:
+  datos-cache:
+  datos-plantillas:
+  datos-caddy:
+  config-caddy:

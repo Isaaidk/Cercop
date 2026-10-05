@@ -410,6 +410,42 @@ class RepositorioTerminosBd:
             ).scalar_one()
         return int(valor)
 
+    async def suscriptores_de(self, termino_ids: Sequence[UUID]) -> Mapping[UUID, int]:
+        """Los suscriptores de todos los términos en **una** consulta.
+
+        Se reutiliza la función `conteo_suscriptores` —que es la que atraviesa el aislamiento
+        devolviendo solo un número— pero llamándola desde una sola sentencia sobre la lista de
+        identificadores. Llamarla una vez por término era el N+1: cuarenta idas y vueltas de 120 ms
+        para pintar una lista de palabras clave.
+
+        Se devuelve una entrada por identificador preguntado, también para los que no existen en el
+        catálogo: `unnest` genera una fila por elemento y el conteo de un término inexistente es
+        cero. Es el contrato del puerto, y es el útil: quien consulta nunca tiene que distinguir
+        «cuenta cero» de «no me lo has devuelto».
+        """
+        if not termino_ids:
+            # Sin identificadores no se consulta nada: `unnest` de una lista vacía funciona, pero
+            # gastaría una ida y vuelta para devolver cero filas.
+            return {}
+
+        async with sin_contexto(self._motor) as conexion:
+            filas = (
+                (
+                    await conexion.execute(
+                        text(
+                            """
+                            SELECT t.id AS termino_id, conteo_suscriptores(t.id) AS suscriptores
+                            FROM unnest(CAST(:ids AS uuid[])) AS t(id)
+                            """
+                        ),
+                        {"ids": list(termino_ids)},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return {fila["termino_id"]: int(fila["suscriptores"]) for fila in filas}
+
     async def marcar_ingestado(self, termino_id: UUID, momento: datetime) -> None:
         async with sin_contexto(self._motor) as conexion:
             await conexion.execute(

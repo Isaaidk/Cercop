@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from contratacion.dominio.busqueda import Filtros
+from contratacion.dominio.busqueda import Filtros, ModoBusqueda
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
     PROVINCIA_NORMALIZADA,
     _condiciones,
@@ -42,7 +42,7 @@ def _condicion_de_provincia(
     provincia: str = "Manabí", **cambios: Any
 ) -> tuple[str, dict[str, Any]]:
     """Devuelve la condición unida y los parámetros del filtro por provincia."""
-    condiciones, parametros = _condiciones(Filtros(provincia=provincia, **cambios))
+    condiciones, parametros = _condiciones(Filtros(provincias=(provincia,), **cambios))
     return " AND ".join(condiciones), parametros
 
 
@@ -108,7 +108,35 @@ def test_compara_normalizado_por_los_dos_lados() -> None:
     assert condicion.count("lower(translate(") == 2
     # El valor que viaja como parámetro ya está normalizado: comparar contra «Manabí» tal cual no
     # encontraría «MANABI».
-    assert parametros["provincia"] == "manabi"
+    assert parametros["provincias"] == ["manabi"]
+
+
+def test_varias_provincias_viajan_en_un_solo_parametro() -> None:
+    """Dos provincias se comparan con `ANY`, no con dos condiciones enlazadas.
+
+    Con una condición por provincia, elegir cuatro en el mapa alargaría la consulta y —peor— el
+    parámetro tendría que llamarse distinto en cada una, así que añadir una provincia sería añadir
+    una rama de código. Con `ANY`, la consulta es la misma y solo cambia la lista.
+    """
+    condiciones, parametros = _condiciones(Filtros(provincias=("Manabi", "Pichincha", "Azuay")))
+    de_provincia = [c for c in condiciones if "lower(translate(" in c]
+
+    assert len(de_provincia) == 1, "las tres provincias se comparan en una sola condición"
+    assert de_provincia[0].count("ANY(:provincias)") == 2
+    assert parametros["provincias"] == ["manabi", "pichincha", "azuay"]
+
+
+def test_mas_provincias_no_puede_devolver_menos() -> None:
+    """La comprobación de fondo: serán más filas, nunca menos.
+
+    Se verifica sobre el SQL generado y no contra la base —eso lo hace el script de verificación
+    con datos reales—, pero basta para cubrir el fallo que se quiere evitar: una condición que se
+    olvide de parte de la lista y devuelva menos de lo pedido.
+    """
+    _, una = _condiciones(Filtros(provincias=("Azuay",)))
+    _, dos = _condiciones(Filtros(provincias=("Azuay", "Pichincha")))
+
+    assert set(una["provincias"]) <= set(dos["provincias"])
 
 
 def test_acepta_el_valor_completo_y_solo_la_provincia() -> None:
@@ -123,13 +151,13 @@ def test_el_valor_no_se_interpola_en_el_sql() -> None:
     """El texto del filtro viaja como parámetro, nunca dentro de la consulta."""
     condicion, _ = _condicion_de_provincia(provincia="'; DROP TABLE registro; --")
     assert "DROP TABLE" not in condicion
-    assert ":provincia" in condicion
+    assert ":provincias" in condicion
 
 
 def test_sin_provincia_no_se_anade_ninguna_condicion() -> None:
     condiciones, parametros = _condiciones(Filtros())
     assert all("translate(" not in condicion for condicion in condiciones)
-    assert "provincia" not in parametros
+    assert "provincias" not in parametros
 
 
 def test_el_filtro_no_depende_del_resto_de_criterios() -> None:
@@ -142,7 +170,7 @@ def test_el_filtro_no_depende_del_resto_de_criterios() -> None:
         fuente="NCO",
         fuentes_permitidas=("NCO",),
     )
-    assert parametros["provincia"] == "manabi"
+    assert parametros["provincias"] == ["manabi"]
     assert "translate(" in con_mas
     assert ":desde" in con_mas
     assert ":hasta" in con_mas
@@ -166,7 +194,8 @@ def test_sqlalchemy_reconoce_todos_los_parametros() -> None:
     condiciones, parametros = _condiciones(
         Filtros(
             terminos=("medicamentos",),
-            provincia="Manabí",
+            cpc=("lavado",),
+            provincias=("Manabí", "Pichincha"),
             estado="En Curso",
             desde=date(2026, 9, 1),
             hasta=date(2026, 9, 30),
@@ -179,3 +208,57 @@ def test_sqlalchemy_reconoce_todos_los_parametros() -> None:
     reconocidos = set(text(" AND ".join(condiciones)).compile().params)
 
     assert set(parametros) == reconocidos
+
+
+# --------------------------------------------------------------------------- #
+# El filtro por CPC
+#
+# La decisión que se protege aquí es dónde busca. El CPC tiene que consultarse contra **su**
+# columna: si se buscara en `texto_busqueda`, el filtro devolvería lo mismo que ya devuelve el de
+# palabras clave y no resolvería nada —seguiría apareciendo todo lo que menciona la palabra en el
+# objeto de compra—. Es un fallo que pasaría todas las pruebas que solo miraran «¿devuelve filas?».
+# --------------------------------------------------------------------------- #
+
+
+def test_sin_cpc_no_se_anade_ninguna_condicion() -> None:
+    condiciones, parametros = _condiciones(Filtros(terminos=("lavado",)))
+
+    assert "expr_cpc" not in parametros
+    assert not any("cpc_busqueda" in condicion for condicion in condiciones)
+
+
+def test_el_cpc_usa_su_propia_columna_y_no_la_del_texto() -> None:
+    condiciones, parametros = _condiciones(Filtros(cpc=("lavado",)))
+    unida = " AND ".join(condiciones)
+
+    assert "cpc_busqueda" in unida
+    assert "texto_busqueda" not in unida
+    assert parametros["expr_cpc"] == "(lavado:*)"
+
+
+def test_los_dos_criterios_de_texto_se_suman() -> None:
+    """Enviar los dos pide la intersección, y cada uno viaja en su propio parámetro."""
+    condiciones, parametros = _condiciones(Filtros(terminos=("hospital",), cpc=("lavado",)))
+    unida = " AND ".join(condiciones)
+
+    assert "texto_busqueda" in unida
+    assert "cpc_busqueda" in unida
+    assert parametros["expr"] == "(hospital:*)"
+    assert parametros["expr_cpc"] == "(lavado:*)"
+
+
+def test_el_cpc_respeta_el_modo() -> None:
+    """«Todas» y «cualquiera» significan lo mismo aquí que en el filtro de palabras clave."""
+    _, todas = _condiciones(Filtros(cpc=("lavado", "engrasado"), modo=ModoBusqueda.TODAS))
+    _, cualquiera = _condiciones(Filtros(cpc=("lavado", "engrasado"), modo=ModoBusqueda.CUALQUIERA))
+
+    assert " & " in todas["expr_cpc"]
+    assert " | " in cualquiera["expr_cpc"]
+
+
+def test_un_cpc_sin_palabras_buscables_no_filtra() -> None:
+    """Un cuadro de texto con «###» no puede dejar la lista vacía: no filtra nada."""
+    condiciones, parametros = _condiciones(Filtros(cpc=("###",)))
+
+    assert "expr_cpc" not in parametros
+    assert not any("cpc_busqueda" in condicion for condicion in condiciones)

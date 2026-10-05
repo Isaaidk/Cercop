@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import sys
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -246,6 +247,104 @@ async def main() -> None:
                 print(
                     f"  (abiertas y permitidas: {[p[0] for p in abiertos if p not in inesperadas]})"
                 )
+
+            _seccion("10. El trabajo del worker: historial y petición de un ciclo")
+            r = await c.get("/v1/plataforma/ingesta/historial", headers=cab_plataforma)
+            _marca(r.status_code == 200, f"GET /v1/plataforma/ingesta/historial -> {r.status_code}")
+            tablero = r.json() if r.status_code == 200 else {}
+            fuentes = tablero.get("fuentes") or []
+            ciclos = tablero.get("historial") or {}
+            _marca(bool(fuentes), f"fuentes informadas: {[f['codigo'] for f in fuentes]}")
+            _marca(
+                all(
+                    {"iniciada_en", "estado", "nuevos"} <= set(ciclo)
+                    for lista in ciclos.values()
+                    for ciclo in lista
+                ),
+                "cada ciclo trae al menos cuándo arrancó, cómo acabó y cuánto escribió",
+            )
+            print(f"  ciclos por fuente: { {k: len(v) for k, v in ciclos.items()} }")
+            print(f"  cadencia de comprobación: {tablero.get('cadencia_seg')} s")
+            _marca(
+                tablero.get("solicitud") is None, "no hay petición pendiente antes de pedir nada"
+            )
+
+            # Ordenar un ciclo es una decisión de la plataforma: un administrador de empresa no la
+            # toma aunque su empresa esté activa y con todas sus vistas concedidas.
+            r = await c.get("/v1/plataforma/ingesta/historial", headers=cab_empresa)
+            _marca(
+                r.status_code == 403 and r.json().get("codigo") == "sin_permiso",
+                f"un admin de empresa -> {r.status_code} | {r.json().get('codigo')}",
+            )
+            r = await c.post("/v1/plataforma/ingesta/solicitud", headers=cab_empresa)
+            _marca(
+                r.status_code == 403 and r.json().get("codigo") == "sin_permiso",
+                f"un admin de empresa no puede pedir un ciclo -> {r.status_code}",
+            )
+
+            pedido_en = datetime.now(UTC)
+            r = await c.post("/v1/plataforma/ingesta/solicitud", headers=cab_plataforma)
+            _marca(
+                r.status_code == 201, f"POST /v1/plataforma/ingesta/solicitud -> {r.status_code}"
+            )
+            if r.status_code != 201:
+                print(f"  respuesta: {r.text[:200]}")
+            else:
+                print(f"  petición: {r.json().get('solicitud')}")
+
+                # Y ahora lo que de verdad se comprueba: que el worker la ve. Es la costura entre
+                # los dos procesos —una petición HTTP que acaba en un ciclo de ingesta—, y sin el
+                # worker levantado lo único que se puede decir es que la petición quedó esperando.
+                empezado = time.monotonic()
+                recogida: float | None = None
+                # Dos minutos de paciencia y no treinta segundos: el worker mira la petición
+                # **entre** ciclos, así que si está dentro de uno —y un ciclo completo tarda
+                # minutos— la atiende al terminar. Medido: pedida durante un ciclo, seguía en cola a
+                # los 30 s.
+                while time.monotonic() - empezado < 120:
+                    await asyncio.sleep(2)
+                    seguimiento = await c.get(
+                        "/v1/plataforma/ingesta/historial", headers=cab_plataforma
+                    )
+                    if (
+                        seguimiento.status_code == 200
+                        and seguimiento.json().get("solicitud") is None
+                    ):
+                        recogida = time.monotonic() - empezado
+                        break
+
+                if recogida is None:
+                    print(
+                        "  AVISO: la petición sigue en cola tras 120 s. Si el worker está "
+                        "levantado y libre, esto es un fallo; si no lo está, es lo esperado."
+                    )
+                else:
+                    print(f"  el worker la recogió en {recogida:.1f} s")
+
+                    # Y que el ciclo quede escrito, que es lo que dibuja la gráfica. Se insiste
+                    # porque hay una carrera de verdad entre las dos mitades: el worker
+                    # consume la petición y **después** abre la fila de la sincronización, así que
+                    # preguntar en el mismo suspiro en que desaparece la petición la encuentra sin
+                    # escribir todavía. Se vio: la petición recogida en 3,2 s y cero ciclos nuevos,
+                    # cuando el ciclo estaba arrancando en ese momento (`worker.err.log` lo enseña).
+                    arrancados: list[str] = []
+                    esperando = time.monotonic()
+                    while time.monotonic() - esperando < 20 and not arrancados:
+                        await asyncio.sleep(2)
+                        tablero = (
+                            await c.get("/v1/plataforma/ingesta/historial", headers=cab_plataforma)
+                        ).json()
+                        arrancados = [
+                            ciclo["iniciada_en"]
+                            for lista in (tablero.get("historial") or {}).values()
+                            for ciclo in lista
+                            if ciclo.get("iniciada_en")
+                            and datetime.fromisoformat(ciclo["iniciada_en"]) >= pedido_en
+                        ]
+                    _marca(
+                        bool(arrancados),
+                        f"ciclos arrancados después de la petición: {sorted(arrancados)}",
+                    )
     finally:
         if negocio_empresa is not None:
             await _borrar_empresa(negocio_empresa)

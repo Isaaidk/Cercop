@@ -18,6 +18,7 @@ ciclo.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import obtener_motor
+
+registro = logging.getLogger(__name__)
 
 
 def clave_de_bloqueo(codigo: str) -> int:
@@ -66,4 +69,42 @@ async def bloqueo_de_ingesta(
         try:
             yield conexion
         finally:
-            await conexion.execute(text("SELECT pg_advisory_unlock(:clave)"), {"clave": clave})
+            await _soltar(conexion, clave)
+
+
+async def _soltar(conexion: AsyncConnection, clave: int) -> None:
+    """Suelta el bloqueo. Que falle **no puede tumbar el ciclo**.
+
+    El bloqueo es de sesión, así que vive en una conexión que queda ociosa mientras el ciclo habla
+    con la fuente oficial —minutos, con el límite de ritmo—. Si el servidor cierra esa conexión por
+    inactividad, soltar el bloqueo lanza y, sin este `try`, la excepción saldría del ciclo entero
+    aunque la ingesta hubiera terminado bien. Soltar un recurso no puede convertir una operación
+    correcta en un fallo.
+
+    `pg_advisory_unlock` devuelve si el bloqueo **era nuestro**, y eso se comprueba a propósito: un
+    `false` significa que se perdió a mitad de camino, y entonces la exclusión mutua no estaba
+    garantizando nada. Es la única señal barata que existe de ese caso, y merece un aviso aunque el
+    ciclo haya ido bien: con una sola réplica no rompe nada, con dos significa que pueden estar
+    ingestando la misma fuente a la vez.
+    """
+    try:
+        soltado = bool(
+            (
+                await conexion.execute(text("SELECT pg_advisory_unlock(:clave)"), {"clave": clave})
+            ).scalar_one()
+        )
+    except Exception:  # noqa: BLE001 - soltar no puede tumbar el ciclo
+        registro.warning(
+            "No se pudo soltar el bloqueo de ingesta: la conexión se cerró mientras estaba ociosa. "
+            "Lo habrá soltado el servidor al cerrar la sesión. Revisa si el ciclo tarda más que la "
+            "inactividad máxima del servidor.",
+            exc_info=False,
+        )
+        return
+
+    if not soltado:
+        registro.warning(
+            "El bloqueo de ingesta ya no era nuestro al terminar el ciclo. Con una sola réplica no "
+            "rompe nada; con dos, puede que hayan ingestado la misma fuente a la vez.",
+            exc_info=False,
+        )

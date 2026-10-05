@@ -19,6 +19,15 @@ const FECHA_LARGA = new Intl.DateTimeFormat(LOCALE, {
 })
 const MES_CORTO = new Intl.DateTimeFormat(LOCALE, { month: 'short', year: '2-digit' })
 
+// Hora y minuto, en la zona del negocio. Es la etiqueta de los ciclos de ingesta: quince ciclos
+// separados por minutos se distinguen por la hora, y con los segundos el eje se vuelve ilegible.
+const HORA_CORTA = new Intl.DateTimeFormat(LOCALE, {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  timeZone: 'America/Guayaquil',
+})
+
 /** Entero con separador de miles. Un valor ausente se muestra como raya, no como cero. */
 export function numero(valor) {
   if (valor === null || valor === undefined || Number.isNaN(Number(valor))) return '—'
@@ -70,6 +79,12 @@ export function fechaLarga(valor) {
 export function mesCorto(valor) {
   const fecha = aFecha(valor)
   return fecha ? MES_CORTO.format(fecha).replace('.', '') : '—'
+}
+
+/** «14:35», la etiqueta con la que se dibuja cada ciclo de ingesta. */
+export function horaCorta(valor) {
+  const fecha = aFecha(valor)
+  return fecha ? HORA_CORTA.format(fecha) : '—'
 }
 
 /**
@@ -127,4 +142,32 @@ export function recortar(texto, limite = 120) {
   const corte = limpio.slice(0, limite)
   const ultimoEspacio = corte.lastIndexOf(' ')
   return `${corte.slice(0, ultimoEspacio > 40 ? ultimoEspacio : limite)}…`
+}
+
+/**
+ * Tamaño de un archivo, en unidades que se entienden.
+ *
+ * Se usa 1024 y no 1000 porque es lo que muestra cualquier sistema de archivos: un archivo de 1 MB
+ * viene del sistema como 1.048.576 bytes, y dividir por 1000 diría «1,05 MB» de algo que el usuario
+ * ve como «1 MB». La diferencia es pequeña y suficiente para que los números no cuadren.
+ *
+ * El decimal solo aparece cuando aporta: «1,5 MB» sí, «512,0 KB» no.
+ */
+export function bytesLegibles(bytes) {
+  const valor = Number(bytes)
+  if (!Number.isFinite(valor) || valor <= 0) return '—'
+
+  const unidades = ['B', 'KB', 'MB', 'GB']
+  let tamano = valor
+  let indice = 0
+  while (tamano >= 1024 && indice < unidades.length - 1) {
+    tamano /= 1024
+    indice += 1
+  }
+
+  const decimales = indice === 0 || tamano >= 10 ? 0 : 1
+  return `${tamano.toLocaleString('es-EC', {
+    minimumFractionDigits: decimales,
+    maximumFractionDigits: decimales,
+  })} ${unidades[indice]}`
 }

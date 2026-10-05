@@ -14,6 +14,14 @@
  *
  * 3. **Filtra las animaciones si el sistema pide menos movimiento.** Chart.js anima por su cuenta y
  *    no mira `prefers-reduced-motion`.
+ *
+ * 4. **Dibuja la gráfica cuando su sección se ve.** El panel tiene todas las pestañas en el documento
+ *    a la vez —se ocultan con `v-show`, no se desmontan—, así que una gráfica puede nacer con su
+ *    sección en `display: none`. En ese caso Chart.js **no se entera** de que el contenedor aparece:
+ *    su observador de tamaño vigila el lienzo, y el lienzo del taller mide 300×150 antes y después
+ *    de mostrarse, así que el tamaño no cambia y no hay nada que redimensionar. La gráfica se queda
+ *    en blanco hasta que algo la refresca —un filtro, el tema o una recarga de datos—, y desde
+ *    fuera parece aleatorio: la misma pestaña se ve a veces y a veces no.
  */
 import { onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 
@@ -83,6 +91,7 @@ export function useGrafica(construir, depende) {
   const lienzo = shallowRef(null)
   let grafica = null
   let observador = null
+  let visible = null
 
   function dibujar() {
     if (!lienzo.value) return
@@ -100,6 +109,41 @@ export function useGrafica(construir, depende) {
         ...(sinMovimiento ? { animation: false, transitions: {} } : {}),
       },
     })
+
+    vigilarVisibilidad(lienzo.value)
+  }
+
+  /**
+   * Redibuja la gráfica cuando su lienzo entra en pantalla **si nunca llegó a dibujarse de verdad**.
+   *
+   * Es lo que saca del blanco a una gráfica que nació escondida. Las pestañas del panel conviven en
+   * el documento con `v-show`, así que una gráfica puede montarse con su sección en `display: none`;
+   * entonces Chart.js no se entera de que el contenedor aparece, porque su observador de tamaño
+   * vigila el lienzo y el lienzo mide 300×150 antes y después de mostrarse: el tamaño no cambia y no
+   * hay nada que redimensionar. Medido: `width: 300, height: 150` y **cero píxeles pintados** después
+   * de mostrar la pestaña, hasta que algo la refrescaba (un filtro, el tema, una recarga) — y por eso
+   * parecía aleatorio.
+   *
+   * `width` y `height` en cero son la firma de «nací escondida y nadie me ha medido». En los cambios
+   * de visibilidad normales, con la gráfica ya medida, no se toca nada: rehacerla en cada ida y
+   * vuelta perdería la animación y el estado del cursor.
+   *
+   * Se ata al lienzo que se acaba de dibujar y no al que hubiera al montar, y ahí estuvo un fallo que
+   * tumbó el panel entero: una tarjeta con el lienzo detrás de un `v-if` monta **sin** canvas, así que
+   * `observe(null)` lanzaba `parameter 1 is not of type 'Element'` dentro del `onMounted` y la
+   * excepción se llevaba por delante el resto del montaje —el panel se quedaba pintado y sin datos,
+   * sin una sola petición en la red—.
+   */
+  function vigilarVisibilidad(elemento) {
+    visible?.disconnect()
+    visible = new IntersectionObserver((entradas) => {
+      for (const entrada of entradas) {
+        if (entrada.isIntersecting && grafica && (!grafica.width || !grafica.height)) {
+          dibujar()
+        }
+      }
+    })
+    visible.observe(elemento)
   }
 
   /**
@@ -151,12 +195,16 @@ export function useGrafica(construir, depende) {
 
   onBeforeUnmount(() => {
     observador?.disconnect()
+    visible?.disconnect()
     grafica?.destroy()
     grafica = null
   })
 
   if (depende) {
-    watch(depende, () => actualizar(), { deep: true })
+    // `post` para dibujar **después** de que el navegador haya aplicado el cambio: si el aviso llega
+    // junto con el de un `v-if` que acaba de crear el lienzo, en `pre` el canvas todavía no existe y
+    // la gráfica nueva se quedaría sin dibujar hasta el siguiente cambio de datos.
+    watch(depende, () => actualizar(), { deep: true, flush: 'post' })
   }
 
   return { lienzo, redibujar: dibujar }

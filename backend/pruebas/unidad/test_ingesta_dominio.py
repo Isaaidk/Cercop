@@ -61,6 +61,18 @@ def test_la_huella_admite_valores_no_serializables() -> None:
     assert hash_contenido({"fecha": datetime(2026, 9, 27, tzinfo=UTC)}) != ""
 
 
+def test_la_huella_ignora_los_campos_que_la_fuente_regenera() -> None:
+    """El token de la ficha cambia en cada respuesta y no significa que el dato haya cambiado.
+
+    Sin excluirlo, cada ciclo clasificaba las 1.700 necesidades como «actualizadas»: las reescribía
+    todas y les añadía una versión al histórico (9.536 versiones para 2.873 registros).
+    """
+    base = {"codigo": "NIC-1", "objeto_compra": "Obra", "enlace": "../NCO/Detalle.cpe?id=AAA"}
+
+    assert hash_contenido(base) == hash_contenido({**base, "enlace": "../NCO/Detalle.cpe?id=BBB"})
+    assert hash_contenido(base) != hash_contenido({**base, "objeto_compra": "Otra obra"})
+
+
 # --------------------------------------------------------------------------- #
 # Clasificación
 # --------------------------------------------------------------------------- #

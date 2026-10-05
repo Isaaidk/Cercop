@@ -243,6 +243,14 @@ async def listar_terminos(
     instante = momento or datetime.now(UTC)
     suscritos = await repositorio.terminos_del_negocio(actor.negocio_id)
 
+    # Los suscriptores se piden **una vez para todos**, no uno por término dentro del bucle. Con
+    # cuarenta palabras clave y la base al otro lado de la red, la versión con una consulta por
+    # término tardaba segundos en pintar la lista —lo medido: 16,7 s— y no fallaba nada, así que
+    # parecía que el panel se había colgado.
+    suscriptores = await repositorio.suscriptores_de(
+        [identificador for fila in suscritos if (identificador := _identificador(fila)) is not None]
+    )
+
     resultado: list[EstadoTermino] = []
     for fila in suscritos:
         termino_id = _identificador(fila)
@@ -255,7 +263,9 @@ async def listar_terminos(
                 texto=str(fila.get("texto", "")),
                 ultima_ingesta=ultima,
                 en_cola=ultima is None or (instante - ultima) > timedelta(minutes=intervalo_min),
-                suscriptores=await repositorio.suscriptores(termino_id),
+                # Un término sin entrada en el mapa no tiene suscriptores: la ausencia es un cero,
+                # no un dato que falte.
+                suscriptores=suscriptores.get(termino_id, 0),
                 activo=bool(fila.get("activo", True)),
             )
         )

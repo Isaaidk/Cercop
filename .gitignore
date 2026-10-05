@@ -35,6 +35,27 @@ dist/
 *.tmp
 backups/
 
+# Salida de `levantar.ps1`: los registros de cada proceso (cubiertos por `*.log`) y la ficha con
+# los identificadores de lo que está corriendo, que solo tiene sentido en la máquina que lo lanzó.
+registros/
+
+# Copias de seguridad y la clave que las abre
+#
+# Las copias llevan datos personales —correos, consentimientos, solicitudes de acceso— y las escribe
+# `deploy/copias.sh` en `deploy/copias/`. Un `git add -A` en el servidor las subiría al repositorio
+# y, con él, a todas las copias del historial de Git, de donde ya no se pueden quitar.
+#
+# La clave privada de `age` va aquí por lo mismo y con más motivo: es lo único que separa una copia
+# cifrada de un fichero legible. Si entra en el repositorio, el cifrado deja de valer para lo que
+# estaba puesto.
+deploy/copias/
+*.dump
+*.dump.zst
+*.dump.zst.age
+*.pgc
+deploy/clave-copias.txt
+age-keygen.txt
+
 # Túneles y certificados
 .devtunnels*
 certs/

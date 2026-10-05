@@ -11,9 +11,14 @@
  * modelo: el permiso es de una persona para una vista y con un vencimiento concreto, así que el plazo
  * se elige por cuenta. Concederlo «a la empresa» obligaría a inventar qué significa eso cuando dentro
  * hay gente con permisos distintos.
+ *
+ * Arriba del todo va el trabajo de los workers, que es lo otro que se administra desde aquí: la
+ * ingesta no la lanza un cliente ni el navegador, así que su estado y su botón viven en la pantalla
+ * de quien responde por el sistema.
  */
 import { computed, onMounted, ref } from 'vue'
 
+import TrabajoWorkers from '@/components/TrabajoWorkers.vue'
 import { api } from '@/api/endpoints'
 import { fechaCorta } from '@/utils/formato'
 
@@ -135,6 +140,8 @@ function textoEstado(empresa) {
 
 <template>
   <section class="plataforma">
+    <TrabajoWorkers />
+
     <header class="plataforma__cabecera">
       <div>
         <h2 class="plataforma__titulo">Empresas de la plataforma</h2>

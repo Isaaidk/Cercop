@@ -90,6 +90,23 @@ class RepositorioTerminos(Protocol):
         """Número de negocios suscritos, que decide la prioridad en la cola."""
         ...
 
+    async def suscriptores_de(self, termino_ids: Sequence[UUID]) -> Mapping[UUID, int]:
+        """Los suscriptores de **varios** términos, en una sola lectura.
+
+        Existe porque su hermana de arriba se llamaba una vez por término dentro de un bucle, y cada
+        llamada es una ida y vuelta a la base: con cuarenta palabras clave, el listado tardaba
+        **segundos** en pintarse y no había ningún error que lo explicara, solo una pantalla que
+        parecía colgada. Es el N+1 de manual, y la forma de que no vuelva es tener una operación que
+        pida todo junto.
+
+        Se devuelve un mapa y no una lista para que quien consulta no tenga que recorrer nada: busca
+        por identificador. **Cada identificador preguntado aparece en el mapa**, con cero si el
+        término no existe o si nadie está suscrito: no hay claves ausentes, así que quien consulta
+        no tiene que tratar la ausencia como un caso aparte. Y un término que se borre entre que se
+        lee el listado y se piden los conteos no puede tumbar la pantalla.
+        """
+        ...
+
     async def marcar_ingestado(self, termino_id: UUID, momento: datetime) -> None:
         """Registra que el término se acaba de consultar en la fuente."""
         ...

@@ -33,9 +33,6 @@ CONTROLADORES_ACEPTADOS = frozenset(
     {"postgres", "postgresql", "postgresql+psycopg2", "postgresql+asyncpg"}
 )
 
-# Minutos tras los cuales una conexión del pool se cierra y se reabre. Ver `obtener_motor`.
-RECICLADO_CONEXION_SEG = 180
-
 _motor: AsyncEngine | None = None
 _fabrica_sesiones: async_sessionmaker[AsyncSession] | None = None
 
@@ -86,6 +83,11 @@ def obtener_motor() -> AsyncEngine:
     sin pagar nada por operación. El reciclado tiene que ser **más corto** que la inactividad máxima
     del servidor: si fuera más largo, la conexión moriría antes de reciclarse y volvería a hacer
     falta la comprobación previa.
+
+    El resto de las dimensiones del pool (tamaño, desbordamiento y espera máxima) se leen de
+    `Ajustes` y no se escriben aquí: son decisiones de despliegue, no de código. Con varias
+    réplicas, el techo contra PostgreSQL es la suma de todos los procesos, así que un número fijo
+    en este módulo sería idéntico en cada réplica y nadie podría ajustarlo desde el entorno.
     """
     global _motor
     if _motor is None:
@@ -93,7 +95,10 @@ def obtener_motor() -> AsyncEngine:
         _motor = create_async_engine(
             normalizar_url_bd(ajustes.database_url),
             pool_pre_ping=False,
-            pool_recycle=RECICLADO_CONEXION_SEG,
+            pool_size=ajustes.bd_pool_size,
+            max_overflow=ajustes.bd_max_overflow,
+            pool_timeout=ajustes.bd_pool_timeout_seg,
+            pool_recycle=ajustes.bd_pool_recycle_seg,
         )
     return _motor
 
@@ -121,9 +126,21 @@ async def verificar_bd() -> bool:
 
 
 async def cerrar_bd() -> None:
-    """Libera el pool de conexiones al apagar el proceso."""
+    """Libera el pool de conexiones y **siempre** olvida la referencia.
+
+    El cierre es *de mejor esfuerzo*, por el mismo motivo que en el caché: si el bucle de eventos
+    que creó el motor ya no existe, sus conexiones murieron con él y liberarlas es una operación
+    sobre un objeto muerto. Ocurre en las pruebas, donde cada caso puede tener su propio bucle, y al
+    apagar de forma abrupta.
+
+    Soltar las referencias va fuera del `try` a propósito: si se quedaran puestas, la siguiente
+    llamada reutilizaría un motor de un bucle muerto y el fallo aparecería más lejos y peor.
+    """
     global _motor, _fabrica_sesiones
     if _motor is not None:
-        await _motor.dispose()
+        try:
+            await _motor.dispose()
+        except Exception:  # noqa: BLE001 - apagar no puede fallar
+            registro.warning("No se pudo liberar el pool al apagar", exc_info=False)
     _motor = None
     _fabrica_sesiones = None

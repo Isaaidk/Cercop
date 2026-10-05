@@ -119,6 +119,13 @@ class CacheEspia:
     async def obtener(self, clave: str) -> str | None:
         return None
 
+    @property
+    def habilitada(self) -> bool:
+        return True
+
+    async def obtener_renovando(self, clave: str, ttl_seg: int) -> str | None:
+        return None
+
     async def guardar(self, clave: str, valor: str, ttl_seg: int) -> None:
         return None
 
@@ -409,3 +416,155 @@ async def test_la_generacion_de_cache_solo_sube_cuando_hay_cambios(motor: AsyncE
 
     await _ciclo(repositorio, await _definicion(registros), cache)
     assert cache.incrementos == esperado
+
+
+# --------------------------------------------------------------------------- #
+# La vigencia: lo que deja de aparecer se cerró
+#
+# El estado que guarda `datos` se queda congelado en «En Curso» desde el día en que se capturó, así
+# que sin esta marca todo el histórico parecería abierto para siempre y un informe no podría
+# distinguir lo que sigue admitiendo proformas de lo que ya se cerró.
+# --------------------------------------------------------------------------- #
+
+
+def _definicion_completa(
+    registros: Sequence[dict[str, Any]], *, parcial: bool = False
+) -> DefinicionFuente:
+    """Fuente cuyo listado es la foto entera de lo vigente, como el de necesidades."""
+    return DefinicionFuente(
+        codigo=CODIGO,
+        nombre="Fuente de prueba",
+        endpoint_base="http://localhost/prueba",
+        adaptador=FuenteFalsa(registros, parcial=parcial),
+        mapeos_por_defecto=MAPEOS,
+        listado_completo=True,
+    )
+
+
+async def test_lo_que_deja_de_aparecer_en_el_listado_se_marca_cerrado(
+    motor: AsyncEngine,
+) -> None:
+    repositorio = RepositorioIngesta(motor)
+    cache = CacheEspia()
+
+    await _ciclo(
+        repositorio,
+        _definicion_completa([_registro_base("A"), _registro_base("B")]),
+        cache,
+    )
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 2
+    )
+
+    # Segundo ciclo: B ya no está en el listado, así que se cerró.
+    resultado = await _ciclo(repositorio, _definicion_completa([_registro_base("A")]), cache)
+
+    assert resultado.cerrados == 1
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND r.clave_natural = 'B' AND NOT r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 1
+    )
+    # Y A, que sigue apareciendo, sigue vigente.
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND r.clave_natural = 'A' AND r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 1
+    )
+
+
+async def test_una_necesidad_que_reaparece_vuelve_a_estar_vigente(motor: AsyncEngine) -> None:
+    """Cerrar y reabrir son las dos mitades de lo mismo, y la segunda es la que se olvida.
+
+    Reabrir **no** puede colgar de la escritura del registro: si la necesidad vuelve con el mismo
+    contenido, la clasificación la da por «igual» y no se escribe, así que el `upsert` no llega a
+    tocarla. Por eso la reconciliación con el listado hace las dos direcciones. Sin esto, un cierre
+    equivocado —una lectura del listado truncada por la fuente, que llega sin error y sin marca de
+    parcial— sería definitivo, y el informe daría por terminada una necesidad que sigue viva.
+    """
+    repositorio = RepositorioIngesta(motor)
+    cache = CacheEspia()
+
+    await _ciclo(
+        repositorio, _definicion_completa([_registro_base("A"), _registro_base("B")]), cache
+    )
+    await _ciclo(repositorio, _definicion_completa([_registro_base("A")]), cache)
+
+    # Vuelve tal cual estaba: mismo contenido, así que el ciclo no la reescribe.
+    resultado = await _ciclo(
+        repositorio, _definicion_completa([_registro_base("A"), _registro_base("B")]), cache
+    )
+
+    assert resultado.iguales == 2, "sin cambios de contenido, las dos siguen siendo «iguales»"
+    assert resultado.cerrados == 0, "en esta vuelta no desaparece ninguna"
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND r.clave_natural = 'B' AND r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 1
+    )
+
+
+async def test_un_ciclo_parcial_no_cierra_lo_que_no_se_leyo(motor: AsyncEngine) -> None:
+    """Dar por cerrado lo que solo no se pudo leer es peor que no actualizar el estado."""
+    repositorio = RepositorioIngesta(motor)
+    cache = CacheEspia()
+
+    await _ciclo(
+        repositorio,
+        _definicion_completa([_registro_base("A"), _registro_base("B")]),
+        cache,
+    )
+
+    # Ciclo parcial que solo trae A: B no está porque la extracción quedó a medias.
+    resultado = await _ciclo(
+        repositorio, _definicion_completa([_registro_base("A")], parcial=True), cache
+    )
+
+    assert resultado.cerrados == 0
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND NOT r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 0
+    )
+
+
+async def test_una_fuente_consultada_por_partes_no_cierra_nada(motor: AsyncEngine) -> None:
+    """OCDS se lee por término y página: lo que falta en una vuelta es casi todo."""
+    repositorio = RepositorioIngesta(motor)
+    cache = CacheEspia()
+
+    await _ciclo(repositorio, await _definicion([_registro_base("A"), _registro_base("B")]), cache)
+    resultado = await _ciclo(repositorio, await _definicion([_registro_base("A")]), cache)
+
+    assert resultado.cerrados == 0
+    assert (
+        await _escalar(
+            motor,
+            "SELECT count(*) FROM registro r JOIN fuente f ON f.id = r.fuente_id "
+            "WHERE f.codigo = :codigo AND NOT r.es_vigente",
+            codigo=CODIGO,
+        )
+        == 0
+    )

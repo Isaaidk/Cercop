@@ -105,7 +105,13 @@ class Suscripcion(Protocol):
         ...
 
     async def cerrar(self) -> None:
-        """Cierra el canal y libera su conexión."""
+        """Cierra el canal.
+
+        Se libere o no una conexión depende de la implementación: la de memoria no tiene ninguna, y
+        la de Redis comparte una sola entre todos los paneles del proceso. El gestor de contexto
+        que abrió el canal ya lo cierra, así que esto es para quien necesite soltarlo antes; tiene
+        que ser idempotente.
+        """
         ...
 
 

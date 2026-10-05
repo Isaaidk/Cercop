@@ -41,6 +41,45 @@ import { filtros } from '@/stores/filtros'
  */
 const DEMO_ACTIVO = import.meta.env.VITE_DATOS_DEMO === '1'
 
+/**
+ * A qué familia pertenece cada fuente, solo para los totales de las pestañas.
+ *
+ * La tabla de verdad está en el servidor —`FUENTES_POR_CATEGORIA` del dominio— y la respuesta trae
+ * los totales ya calculados en `por_categoria`. Este mapa existe únicamente como respaldo para los
+ * datos de ejemplo, que se arman en el navegador y no pasan por la API; si algún día discrepan, el
+ * que manda es el servidor.
+ */
+const FAMILIA_DE_FUENTE = { NCO: 'infimas', OCDS: 'ofertas' }
+
+/** Los totales por familia, en cero. Se usa como valor inicial y al vaciar el estado. */
+function totalesEnCero() {
+  return { infimas: 0, ofertas: 0 }
+}
+
+/**
+ * Traduce la respuesta de las gráficas a los totales que llevan las pestañas.
+ *
+ * El número de cada pestaña tiene que ser **el de su propia familia**, y el del servidor llega ya
+ * calculado con los mismos filtros que la tabla pero sin la familia puesta: por eso abrir la pestaña
+ * de ofertas ya no cambia el número que se lee junto a las ínfimas. El respaldo por `por_fuente`
+ * solo hace falta con los datos de ejemplo.
+ */
+function totalesDeCategoria(respuesta) {
+  const totales = totalesEnCero()
+  const porCategoria = respuesta?.por_categoria
+  if (Array.isArray(porCategoria) && porCategoria.length) {
+    for (const fila of porCategoria) {
+      if (fila.categoria in totales) totales[fila.categoria] = fila.total || 0
+    }
+    return totales
+  }
+  for (const fila of respuesta?.por_fuente || []) {
+    const familia = FAMILIA_DE_FUENTE[fila.fuente]
+    if (familia) totales[familia] += fila.total || 0
+  }
+  return totales
+}
+
 const estado = reactive({
   registros: [],
   total: 0,
@@ -51,6 +90,14 @@ const estado = reactive({
   generacion: 0,
 
   estadisticas: { por_fuente: [], serie_mensual: [], por_provincia: [] },
+  /**
+   * El total de **cada** familia, con los mismos filtros que la tabla.
+   *
+   * No se usa `total` para el número de las pestañas: ese es el total de la consulta en curso y
+   * cambia al cambiar de pestaña, porque la pestaña fija la familia. Un solo contador compartido
+   * hacía que el número de las ínfimas se convirtiera en el de las ofertas al abrir esa pestaña.
+   */
+  totalesPorCategoria: totalesEnCero(),
   catalogos: { fuente: [], provincia: [], estado: [] },
   resumenProvincias: { total: 0, porProvincia: [], sinUbicar: [] },
 
@@ -88,6 +135,9 @@ export const datos = {
       estado.registros = []
       estado.total = 0
       estado.paginas = 0
+      // Los contadores de las pestañas no pueden quedarse con las cifras de unos filtros que no se
+      // han podido evaluar: el panel ya avisa del fallo y un número viejo al lado lo contradiría.
+      estado.totalesPorCategoria = totalesEnCero()
     } finally {
       estado.cargando = false
     }
@@ -104,11 +154,21 @@ export const datos = {
    *
    * Devuelve el nombre propuesto y el número de filas, para que quien llama pueda avisar. De guardar
    * el archivo se encarga la interfaz, que es la única que puede tocar el navegador.
+   *
+   * `categoria` decide qué se lleva el archivo: `null` (lo normal) trae todo y el servidor reparte
+   * una hoja por categoría; `'infimas'` u `'ofertas'` restringe la consulta a esa y genera una sola
+   * hoja. No es una opción de presentación: cambia las filas que se piden, y por eso viaja con los
+   * criterios y entra en la clave de caché.
    */
-  async exportar() {
+  async exportar(categoria = null) {
     const criterios = { ...filtros.parametros.value }
     delete criterios.pagina
     delete criterios.tamano
+    // La familia se decide en el botón que se pulsa, no en la pestaña. Con la pestaña diciendo
+    // «ínfimas» y los criterios arrastrándola, el botón de «todo» habría descargado solo las
+    // ínfimas: un archivo que no coincide con lo que su etiqueta promete, y sin ningún aviso.
+    delete criterios.categoria
+    if (categoria) criterios.categoria = categoria
     return api.exportarRegistros(criterios)
   },
 
@@ -125,6 +185,7 @@ export const datos = {
         const ejemplo = datosDeEjemplo(filtros.estado.seleccionadas)
         estado.estadisticas = ejemplo.estadisticas
         estado.resumenProvincias = ejemplo.resumenProvincias
+        estado.totalesPorCategoria = totalesDeCategoria(ejemplo.estadisticas)
         estado.usandoEjemplo = true
         return
       }
@@ -134,12 +195,14 @@ export const datos = {
         serie_mensual: respuesta.serie_mensual || [],
         por_provincia: respuesta.por_provincia || [],
       }
+      estado.totalesPorCategoria = totalesDeCategoria(respuesta)
       estado.resumenProvincias = agrupado
       estado.usandoEjemplo = false
     } catch (error) {
       // Un fallo en las gráficas no puede tumbar la tabla, que ya se cargó. Se avisa y se sigue.
       estado.estadisticas = { por_fuente: [], serie_mensual: [], por_provincia: [] }
       estado.resumenProvincias = { total: 0, porProvincia: [], sinUbicar: [] }
+      estado.totalesPorCategoria = totalesEnCero()
       if (!estado.error) estado.error = error.message
     } finally {
       estado.cargandoGraficas = false
@@ -160,12 +223,35 @@ export const datos = {
     }
   },
 
+  /**
+   * Recarga si la ingesta escribió algo desde la última lectura.
+   *
+   * Se pregunta por la **versión**, no por los datos: la respuesta es un número que sale de la caché,
+   * cuesta una lectura y no toca la base de datos. Comparar ese número con la generación de la última
+   * respuesta es lo que distingue «hay algo nuevo» de «vuelve a pedir lo mismo», y es lo que permite
+   * mirarlo cada minuto en lugar de recargar la tabla a ciegas.
+   *
+   * Que los dos números coincidan cuando el caché está apagado no es un problema: en ese caso la
+   * versión es siempre cero y no se recarga nunca de más. Y si la comprobación falla, se reintenta en
+   * la vuelta siguiente mientras la pantalla se queda con lo que ya tenía.
+   *
+   * Devuelve `true` solo si llegó a recargar.
+   */
+  async revisarNovedades() {
+    if (estado.cargando) return false
+    const { generacion } = await api.versionDatos()
+    if (Number(generacion) === Number(estado.generacion)) return false
+    await this.cargar()
+    return true
+  },
+
   limpiar() {
     estado.registros = []
     estado.total = 0
     estado.paginas = 0
     estado.estadisticas = { por_fuente: [], serie_mensual: [], por_provincia: [] }
     estado.resumenProvincias = { total: 0, porProvincia: [], sinUbicar: [] }
+    estado.totalesPorCategoria = totalesEnCero()
     estado.usandoEjemplo = false
   },
 }

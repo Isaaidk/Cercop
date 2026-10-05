@@ -21,6 +21,10 @@ dependencies = [
     "pyjwt>=2.10",
     "pandas>=2.2",
     "openpyxl>=3.1",
+    # Lector de `multipart/form-data`, que es como llega un archivo subido. FastAPI no lo trae en sus
+    # dependencias y falla al arrancar si falta: el error —«Form data requires python-multipart»—
+    # aparece al declarar la ruta, no al usarla, así que sin él no arrancaría la aplicación entera.
+    "python-multipart>=0.0.9",
     # Base de datos horaria para Windows, donde no existe la del sistema: `zoneinfo` la necesita.
     "tzdata>=2024.1",
 ]

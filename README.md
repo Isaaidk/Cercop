@@ -20,6 +20,23 @@ palabras clave vigiladas y gestión de usuarios por empresa.
 
 ## Puesta en marcha
 
+### 0 · Todo de una vez (recomendado)
+
+```powershell
+.\levantar.ps1              # API + worker de ingesta + panel
+.\levantar.ps1 -Detener     # los para todos
+```
+
+Levanta los tres procesos, espera a que respondan, comprueba las dependencias con `/listo` y deja la
+salida de cada uno en `registros\`. En el explorador de Windows se puede hacer doble clic en
+`levantar.cmd`, que es lo mismo sin pelearse con la política de ejecución de PowerShell.
+
+Existe porque levantar el sistema son tres comandos en tres carpetas, y la forma de perder datos es
+olvidarse del worker: sin él el panel sigue funcionando y el histórico se queda quieto, así que el
+olvido no se nota. Los tres arrancan juntos o no arranca ninguno.
+
+Los pasos manuales de abajo siguen siendo la referencia de qué hace cada uno.
+
 ### 1 · Configuración
 
 ```powershell
@@ -53,6 +70,15 @@ python -m contratacion.tareas.worker             # bucle continuo (recomendado)
 python -m contratacion.tareas.worker --una-vez   # un solo ciclo, para cron externo
 ```
 
+El bucle lleva **dos cadencias**, y la razón de que sean dos es que la fuente no publica histórico:
+
+- el **listado de necesidades** se relee cada `INTERVALO_VIGILANCIA_SEG` (150 s por defecto). Es una
+  sola petición y es lo único irrecuperable: una necesidad puede estar publicada un día y desaparecer
+  en cuanto vence su plazo de proformas. Con el worker parado 49 horas se perdieron 19 necesidades
+  que ya no se pudieron recuperar de ninguna forma;
+- el **ciclo completo** —búsquedas por palabra clave en los datos abiertos, fichas de CPC y
+  precalentado de catálogos— sigue cada `INTERVALO_INGESTA_MIN` (15 min).
+
 ### 4 · Frontend
 
 ```powershell
@@ -83,7 +109,15 @@ $env:PRUEBAS_INTEGRACION = 1; pytest pruebas/integracion
 # Guiones de comprobación contra la base real
 python scripts/verificar_exportacion.py
 python scripts/verificar_terminos_lote.py
+
+# Contraste de un listado del cliente contra el histórico (solo lectura, no escribe nada)
+python scripts/comparar_listado_excel.py "C:\ruta\listado.xlsx"
 ```
+
+`comparar_listado_excel.py` responde a «¿coincide mi listado con lo que hay?»: dice qué códigos están
+en la base, cuáles no y en qué campos discrepa lo guardado, con los dos valores uno debajo del otro.
+Existe porque la fuente solo publica lo vigente y no guarda histórico, así que una necesidad que ya
+venció solo se puede comprobar contra nuestra copia.
 
 | Ruta | Qué comprueba |
 |---|---|

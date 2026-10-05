@@ -134,6 +134,7 @@ async def renovar(
         tokens=obtener_tokens(),
         acceso_ttl_seg=ajustes.acceso_ttl_min * SEGUNDOS_POR_MINUTO,
         refresco_ttl_seg=ajustes.refresh_ttl_dias * SEGUNDOS_POR_DIA,
+        gracia_seg=ajustes.refresh_gracia_seg,
     )
     return cuerpo_json(resultado.como_diccionario())
 

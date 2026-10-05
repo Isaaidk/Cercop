@@ -42,7 +42,14 @@ AUDIENCIA = "contratacion-web"
 CAMPO_PERIODO = "exp"
 CAMPO_EMITIDO = "iat"
 
-MENSAJE_INVALIDO = "El token no es válido o ha caducado. Vuelve a iniciar sesión."
+# El mensaje que ve una persona. **No habla de tokens**, y es deliberado: este texto llega a la
+# pantalla cuando la sesión no se puede revalidar, y un usuario no tiene por qué saber qué es un
+# token ni qué se hace con él. Lo que necesita saber es que tiene que volver a entrar.
+#
+# Al servidor y a quien depura les sirve igual: el motivo real queda en el registro, donde sí
+# interesa. Un mensaje técnico en la pantalla no ayuda a nadie —a quien ataca tampoco, porque desde
+# luego ya sabe lo que estaba intentando— y sí asusta a quien no ha hecho nada.
+MENSAJE_INVALIDO = "Tu sesión ha caducado. Vuelve a entrar."
 
 
 class TokensJwt:

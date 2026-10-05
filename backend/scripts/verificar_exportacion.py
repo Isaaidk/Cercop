@@ -34,9 +34,18 @@ import httpx
 from openpyxl import load_workbook
 from sqlalchemy import text
 
-from contratacion.aplicacion.casos_uso.exportar_registros import COLUMNA_PLAZO, TIPO_LIBRO
+from contratacion.aplicacion.casos_uso.exportar_registros import (
+    COLUMNA_PLAZO,
+    NOMBRE_HOJA_CRITERIOS,
+    TIPO_LIBRO,
+)
 from contratacion.aplicacion.puertos.negocios import AltaEmpresa
 from contratacion.dominio.acceso import Plazo, Vista
+from contratacion.dominio.busqueda import (
+    ETIQUETA_OTRAS,
+    ETIQUETA_POR_CATEGORIA,
+    Categoria,
+)
 from contratacion.dominio.negocios import construir_datos_empresa
 from contratacion.dominio.roles import Rol
 from contratacion.infraestructura.adaptadores.salida.bd.contexto import contexto_negocio
@@ -157,15 +166,28 @@ async def main() -> None:
                 _marca(False, "no hay archivo que abrir")
             else:
                 libro = load_workbook(io.BytesIO(r.content))
+                # Una hoja por familia más la de criterios. Antes era una sola hoja con todo
+                # mezclado, y esta comprobación se quedó esperando la forma vieja.
+                esperadas = {
+                    *ETIQUETA_POR_CATEGORIA.values(),
+                    ETIQUETA_OTRAS,
+                    "Contrataciones",
+                    NOMBRE_HOJA_CRITERIOS,
+                }
                 _marca(
-                    libro.sheetnames == ["Contrataciones", "Filtros aplicados"],
+                    libro.sheetnames[-1] == NOMBRE_HOJA_CRITERIOS
+                    and set(libro.sheetnames) <= esperadas,
                     f"hojas: {libro.sheetnames}",
                 )
-                hoja = libro["Contrataciones"]
+                hojas_datos = [n for n in libro.sheetnames if n != NOMBRE_HOJA_CRITERIOS]
+                filas_en_hojas = sum(libro[n].max_row - 1 for n in hojas_datos)
                 _marca(
-                    hoja.max_row == total_tabla + 1,
-                    f"filas del archivo sin la cabecera: {hoja.max_row - 1}",
+                    filas_en_hojas == total_tabla,
+                    f"filas entre todas las hojas de datos: {filas_en_hojas} de {total_tabla}",
                 )
+                hoja = libro[hojas_datos[0]]
+
+                _seccion("5. El semáforo viaja en el archivo")
                 cabecera = [celda.value for celda in hoja[1]]
                 _marca(len(cabecera) > 10, f"columnas: {len(cabecera)}")
                 _marca(
@@ -178,7 +200,6 @@ async def main() -> None:
                 )
                 _marca(hoja.freeze_panes == "A2", f"cabecera fija: {hoja.freeze_panes}")
 
-                _seccion("5. El semáforo viaja en el archivo")
                 columna = cabecera.index(COLUMNA_PLAZO[1]) + 1
                 colores: dict[str, Any] = {}
                 for numero in range(2, hoja.max_row + 1):
@@ -207,6 +228,33 @@ async def main() -> None:
                     "la hoja de criterios nombra el término buscado",
                 )
 
+            _seccion("6b. Pedir una familia deja solo esa familia")
+            r = await c.get(
+                "/v1/registros/exportacion",
+                params={**filtros, "categoria": "infimas"},
+                headers=cab_admin,
+            )
+            _marca(r.status_code == 200, f"exportar solo ínfimas -> {r.status_code}")
+            if r.status_code == 200:
+                solo = load_workbook(io.BytesIO(r.content))
+                _marca(
+                    ETIQUETA_POR_CATEGORIA[Categoria.INFIMAS] in solo.sheetnames,
+                    f"hojas: {solo.sheetnames}",
+                )
+                _marca(
+                    ETIQUETA_POR_CATEGORIA[Categoria.OFERTAS] not in solo.sheetnames,
+                    "la hoja de ofertas no aparece cuando solo se piden ínfimas",
+                )
+                hoja_infimas = solo[ETIQUETA_POR_CATEGORIA[Categoria.INFIMAS]]
+                _marca(
+                    all(
+                        celda.value != "OCDS"
+                        for celda in hoja_infimas["A"]
+                        if celda.value is not None
+                    ),
+                    "ninguna fila de la hoja de ínfimas es del portal de ofertas",
+                )
+
             _seccion("7. Sin resultados también sale un archivo válido")
             r = await c.get(
                 "/v1/registros/exportacion",
@@ -215,8 +263,12 @@ async def main() -> None:
             )
             _marca(r.status_code == 200, f"con un término que no existe -> {r.status_code}")
             if r.status_code == 200:
-                hoja = load_workbook(io.BytesIO(r.content))["Contrataciones"]
-                _marca(hoja.max_row == 1, f"el archivo solo lleva la cabecera: {hoja.max_row} fila")
+                vacio = load_workbook(io.BytesIO(r.content))
+                hojas_datos = [n for n in vacio.sheetnames if n != NOMBRE_HOJA_CRITERIOS]
+                _marca(
+                    all(vacio[n].max_row == 1 for n in hojas_datos),
+                    f"las hojas de datos solo llevan la cabecera: {hojas_datos}",
+                )
 
             _seccion("8. Un rol de solo lectura no exporta")
             r = await c.post(

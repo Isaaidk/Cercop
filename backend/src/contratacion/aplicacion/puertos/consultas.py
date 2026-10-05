@@ -57,11 +57,28 @@ class RepositorioConsultas(Protocol):
         usuario no tendría forma de saber cuál de los dos números es el equivocado.
 
         La paginación y el orden no se tienen en cuenta: se resume todo lo que cumple los criterios.
+
+        Las claves son un contrato de facto: `por_fuente`, `serie_mensual` y `por_provincia` son las
+        gráficas, y **`por_fuente_sin_familia`** es el mismo conteo por fuente pero con la familia
+        filtrada excluida. El caso de uso la convierte en los totales de cada pestaña —el número que
+        se ve junto a «Ínfimas cuantías» y junto a «Ofertas»— y la retira de la respuesta, porque el
+        panel no tiene por qué saber qué fuente alimenta cada familia. Si no se devuelve, los dos
+        contadores salen en cero: se degrada, no se rompe.
         """
         ...
 
     async def estado_fuentes(self) -> Sequence[Mapping[str, Any]]:
         """Estado del último ciclo de cada fuente, para el tablero administrativo."""
+        ...
+
+    async def historial_sincronizaciones(self, por_fuente: int = 24) -> Sequence[Mapping[str, Any]]:
+        """Los últimos ciclos de **cada** fuente, del más reciente al más antiguo.
+
+        Es lo que dibuja la gráfica del trabajo de los workers: no el último ciclo —eso ya lo da
+        `estado_fuentes`— sino la serie, para poder ver si la ingesta late, si un ciclo se quedó a
+        medias o si uno de cada tres falla. Se piden por fuente y no un histórico global porque las
+        dos fuentes tienen cadencias distintas y mezclarlas en la misma lista las desordenaría.
+        """
         ...
 
     async def estado_fuente(self, codigo: str) -> Mapping[str, Any] | None:

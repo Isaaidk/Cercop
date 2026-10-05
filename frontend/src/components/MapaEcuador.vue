@@ -6,6 +6,17 @@
  * solo las contrataciones de esa provincia **y de las palabras clave que ya estuvieran puestas**. Es
  * la pieza que hace que el mapa sea un filtro y no un adorno.
  *
+ * Un solo clic marca la provincia, y otro clic en la misma la desmarca
+ * --------------------------------------------------------------------
+ * Marcar tres provincias son tres clics, y quitar una es volver a pulsarla. No hay un modo para
+ * elegir una sola y otro para elegir varias: la selección es una lista y el clic la va construyendo.
+ *
+ * Antes había dos gestos —uno simple para reemplazar y uno doble para sumar— y se quitó por dos
+ * razones que se pudieron ver en pantalla: obligaba a esperar 220 ms cada clic para poder distinguir
+ * si era el primero de un doble, y el doble clic seleccionaba texto por encima del mapa y dibujaba
+ * un rectángulo oscuro que parecía un fallo del dibujo. Con el teclado, Intro marca y desmarca igual
+ * que el ratón.
+ *
  * Tres decisiones sobre la accesibilidad y la lectura
  * --------------------------------------------------
  * **Cada provincia es un botón de verdad.** Se dibuja con un `path`, pero lleva `role="button"` y
@@ -36,7 +47,29 @@ const mapa = ref({ provincias: [], viewBox: '0 0 620 520', recuadroIslas: null }
 /** Guarda el **código** de la provincia bajo el cursor, no su nombre en el mapa. */
 const resaltada = ref(null)
 
-const seleccionada = computed(() => filtros.estado.provincia)
+const seleccionadas = computed(() => filtros.estado.provincias)
+
+function estaElegida(codigo) {
+  return seleccionadas.value.includes(codigo)
+}
+
+/**
+ * Un clic marca la provincia, y otro clic en la misma la desmarca.
+ *
+ * Antes había dos gestos —uno para elegir una sola y otro doble para sumar— y el precio era alto
+ * para lo que aportaba: un navegador **no avisa** de que un clic es el primero de un doble clic, así
+ * que había que esperar 220 ms antes de aplicar el clic simple. El mapa se sentía lento, el doble
+ * clic seleccionaba texto por encima del mapa —un recuadro oscuro que aparecía de la nada— y el
+ * gesto de doble clic no se descubre: hay que saber que existe.
+ *
+ * Con un solo gesto que suma y quita, marcar tres provincias son tres clics y quitar una es volver
+ * a pulsarla. No hay nada que aprender, la respuesta es inmediata y ya no hay dos formas de decir
+ * «esta y solo esta»: para eso está la tabla, pulsando la celda de la provincia, y el desplegable
+ * del lateral.
+ */
+function alPulsar(codigo) {
+  filtros.alternarProvincia(codigo)
+}
 
 /** Totales indexados por código de provincia, que es la clave canónica del panel. */
 const totales = computed(() => {
@@ -87,15 +120,13 @@ function colorDe(total) {
   return `color-mix(in srgb, var(--mapa-seleccion) ${Math.round(18 + fuerza * 78)}%, var(--mapa-tierra))`
 }
 
-function elegir(codigo) {
-  filtros.alternarProvincia(codigo)
-}
-
 function conTeclado(evento, codigo) {
-  if (evento.key === 'Enter' || evento.key === ' ') {
-    evento.preventDefault()
-    elegir(codigo)
-  }
+  // Intro y la barra espaciadora hacen lo mismo que el clic, incluido desmarcar. Antes Mayús
+  // cambiaba el gesto porque el ratón tenía dos; ahora no hay dos que distinguir, y una tecla
+  // modificadora que hiciera lo mismo que la tecla suelta solo daría motivos para dudar.
+  if (evento.key !== 'Enter' && evento.key !== ' ') return
+  evento.preventDefault()
+  filtros.alternarProvincia(codigo)
 }
 
 onMounted(async () => {
@@ -131,16 +162,16 @@ onMounted(async () => {
             :d="provincia.d"
             class="provincia"
             :class="{
-              'provincia--seleccionada': seleccionada === provincia.codigo,
+              'provincia--seleccionada': estaElegida(provincia.codigo),
               'provincia--resaltada': resaltada === provincia.codigo,
               'provincia--vacia': !provincia.total,
             }"
             :fill="colorDe(provincia.total)"
             role="button"
             tabindex="0"
-            :aria-pressed="seleccionada === provincia.codigo"
+            :aria-pressed="estaElegida(provincia.codigo)"
             :aria-label="`${nombreDeProvincia(provincia.codigo)}: ${numero(provincia.total)} contrataciones`"
-            @click="elegir(provincia.codigo)"
+            @click="alPulsar(provincia.codigo)"
             @keydown="conTeclado($event, provincia.codigo)"
             @mouseenter="resaltada = provincia.codigo"
             @mouseleave="resaltada = null"
@@ -171,7 +202,9 @@ onMounted(async () => {
           </text>
         </g>
 
-        <text :x="12" :y="16" class="mapa__nota">Selecciona una provincia para filtrar</text>
+        <text :x="12" :y="16" class="mapa__nota">
+          Clic para marcar o desmarcar provincias
+        </text>
       </svg>
 
       <!-- Etiqueta emergente: da la cifra exacta del sombreado que se está mirando. -->
@@ -180,7 +213,7 @@ onMounted(async () => {
           <strong>{{ nombreDeProvincia(resaltada) }}</strong>
           <span class="numeros">{{ numero(totales.get(resaltada) || 0) }}</span>
           <small>contrataciones</small>
-          <span v-if="seleccionada === resaltada" class="etiqueta etiqueta--acento">Filtrando</span>
+          <span v-if="estaElegida(resaltada)" class="etiqueta etiqueta--acento">Filtrando</span>
         </div>
       </Transition>
 
@@ -217,6 +250,11 @@ onMounted(async () => {
   height: auto;
   max-height: 460px;
   overflow: visible;
+  /* Sin esto, un doble clic selecciona lo que pille por encima del mapa y aparece un rectángulo
+     oscuro que parece un fallo del dibujo. Es un gesto que la gente hace para ampliar o por
+     costumbre, y no hay nada que seleccionar aquí. */
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .provincia {
@@ -224,6 +262,10 @@ onMounted(async () => {
   stroke-width: 1.1;
   stroke-linejoin: round;
   cursor: pointer;
+  /* El contorno de foco del navegador se dibuja alrededor de la **caja** de la provincia, que en un
+     trazado ancho es un rectángulo enorme y negro por encima del mapa. Se apaga, y en su lugar el
+     foco se ve con el borde de la provincia —que es lo que de verdad señala dónde está uno—. */
+  outline: none;
   transition:
     fill var(--normal) var(--curva),
     stroke var(--rapido) var(--curva),
@@ -237,6 +279,7 @@ onMounted(async () => {
   stroke-width: 1.8;
 }
 
+.provincia:focus,
 .provincia:focus-visible {
   outline: none;
   stroke: var(--acento);

@@ -14,6 +14,8 @@ import { computed } from 'vue'
 import { abreviado, mesCorto, numero } from '@/utils/formato'
 import { colorDeToken, opcionesBase, useGrafica } from '@/composables/useGrafica'
 import { datos } from '@/stores/datos'
+import { filtros } from '@/stores/filtros'
+import { nombreDeFamilia } from '@/utils/familias'
 
 const serie = computed(() => datos.estado.estadisticas.serie_mensual || [])
 
@@ -98,7 +100,12 @@ const { lienzo } = useGrafica(
     <header class="tarjeta__cabecera">
       <div>
         <p class="tarjeta__titulo">Publicaciones por mes</p>
-        <p class="tarjeta__pista">Evolución de los últimos doce meses</p>
+        <!-- Veinticuatro y no doce: es la ventana que devuelve el servidor (`MESES_SERIE`) y lo que
+             se está dibujando. La pista decía «doce meses» y era falso; una cifra que no coincide
+             con lo que se ve hace dudar de todo lo demás de la tarjeta. -->
+        <p class="tarjeta__pista">
+          {{ nombreDeFamilia(filtros.estado.categoria) }} · evolución de los últimos 24 meses
+        </p>
       </div>
       <div class="resumen">
         <span class="resumen__cifra numeros">{{ numero(total) }}</span>

@@ -29,8 +29,10 @@ from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     accesos,
     autenticacion,
     busqueda,
+    cpc,
     ingestas,
     negocios,
+    plantilla,
     plataforma,
     politicas,
     presencia,
@@ -160,7 +162,9 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     aplicacion.include_router(politicas.router)
     aplicacion.include_router(presencia.router)
     aplicacion.include_router(busqueda.router)
+    aplicacion.include_router(plantilla.router)
     aplicacion.include_router(terminos.router)
+    aplicacion.include_router(cpc.router)
     aplicacion.include_router(ingestas.router)
     aplicacion.include_router(accesos.router)
     aplicacion.include_router(usuarios.router)

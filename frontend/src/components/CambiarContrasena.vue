@@ -15,6 +15,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/endpoints'
+import CampoContrasena from '@/components/CampoContrasena.vue'
 import { sesion } from '@/stores/sesion'
 import { contrasenaAceptable, obtenerRequisitos, revisarContrasena } from '@/utils/politica'
 
@@ -81,29 +82,28 @@ async function guardar() {
       </header>
 
       <form class="dialogo__cuerpo" @submit.prevent="guardar">
-        <label class="campo">
-          <span class="campo__etiqueta">Contraseña actual</span>
-          <input
-            v-model="actual"
-            class="entrada"
-            type="password"
-            autocomplete="current-password"
-            autofocus
-          />
-          <span class="campo__ayuda">
-            Se pide para que nadie con una sesión abierta pueda quedarse con tu cuenta.
-          </span>
-        </label>
+        <CampoContrasena
+          id="clave-actual"
+          v-model="actual"
+          etiqueta="Contraseña actual"
+          ajuste="current-password"
+          ayuda="Se pide para que nadie con una sesión abierta pueda quedarse con tu cuenta."
+          :autofocus="true"
+        />
 
-        <label class="campo">
-          <span class="campo__etiqueta">Contraseña nueva</span>
-          <input v-model="nueva" class="entrada" type="password" autocomplete="new-password" />
-        </label>
+        <CampoContrasena
+          id="clave-nueva"
+          v-model="nueva"
+          etiqueta="Contraseña nueva"
+          ajuste="new-password"
+        />
 
-        <label class="campo">
-          <span class="campo__etiqueta">Repite la contraseña nueva</span>
-          <input v-model="repetida" class="entrada" type="password" autocomplete="new-password" />
-        </label>
+        <CampoContrasena
+          id="clave-repetida"
+          v-model="repetida"
+          etiqueta="Repite la contraseña nueva"
+          ajuste="new-password"
+        />
 
         <ul class="requisitos">
           <li

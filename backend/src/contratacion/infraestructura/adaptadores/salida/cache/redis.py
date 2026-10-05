@@ -23,13 +23,26 @@ class CacheRedis:
     def __init__(self, url: str) -> None:
         self._cliente: Redis = Redis.from_url(url, decode_responses=True)
 
-    async def obtener(self, clave: str) -> str | None:
-        valor = await self._cliente.get(clave)
+    @property
+    def habilitada(self) -> bool:
+        return True
+
+    @staticmethod
+    def _texto(valor: object) -> str | None:
         if valor is None:
             return None
         # El cliente se crea con `decode_responses=True`, pero se contempla el caso de `bytes` para
         # no depender de esa opción.
-        return valor.decode() if isinstance(valor, bytes) else valor
+        return valor.decode() if isinstance(valor, bytes) else str(valor)
+
+    async def obtener(self, clave: str) -> str | None:
+        return self._texto(await self._cliente.get(clave))
+
+    async def obtener_renovando(self, clave: str, ttl_seg: int) -> str | None:
+        # `GETEX` lee y reinicia el tiempo de vida en una sola operación, y **no crea la clave si no
+        # existe**. Esa segunda mitad es la que importa: con un `SET` posterior a la lectura, un
+        # cierre de sesión que ocurriera entre las dos operaciones quedaría deshecho.
+        return self._texto(await self._cliente.getex(clave, ex=ttl_seg))
 
     async def guardar(self, clave: str, valor: str, ttl_seg: int) -> None:
         await self._cliente.set(clave, valor, ex=ttl_seg)

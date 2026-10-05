@@ -71,6 +71,53 @@ class OrdenBusqueda(StrEnum):
     NUEVOS = "nuevos"
 
 
+class Categoria(StrEnum):
+    """Las dos familias de contratación que el panel trata por separado.
+
+    No son «fuentes» aunque hoy coincidan con ellas, y la distinción importa. Una fuente es por
+    dónde entra el dato; una categoría es **qué es** el proceso para quien lo lee, y es lo que
+    decide en qué hoja del Excel acaba. Si hoy se confundieran, el día que una fuente publicara las
+    dos cosas habría que cambiar la API, el panel y las claves de caché a la vez.
+    """
+
+    INFIMAS = "infimas"
+    OFERTAS = "ofertas"
+
+
+# Qué fuentes alimentan cada categoría.
+#
+# «Ínfimas cuantías» se identifica hoy por la fuente, y está comprobado contra los datos reales: las
+# 2.210 filas de NCO traen `tipo_necesidad = "Ínfimas Cuantías"` y las demás lo traen vacío. Se
+# filtra por `fuente` y no por ese campo porque la fuente está indexada y el campo vive dentro de un
+# `jsonb`; el día que NCO publique necesidades que no sean ínfimas, el criterio pasa a
+# `tipo_necesidad` y **solo se cambia aquí**.
+FUENTES_POR_CATEGORIA: dict[Categoria, tuple[str, ...]] = {
+    Categoria.INFIMAS: ("NCO",),
+    Categoria.OFERTAS: ("OCDS",),
+}
+
+# Nombre de la hoja de cada categoría. Es lo que verá quien abra el archivo, así que va en el idioma
+# del negocio y no en el del código.
+ETIQUETA_POR_CATEGORIA: dict[Categoria, str] = {
+    Categoria.INFIMAS: "Ínfimas cuantías",
+    Categoria.OFERTAS: "Ofertas",
+}
+
+# Las filas cuya fuente no pertenece a ninguna categoría no se tiran ni se disfrazan: van a su
+# propia hoja. Puede pasar con una fuente nueva antes de clasificarla, y esconderla sería peor que
+# un nombre raro: quien exporta da por hecho que el archivo lleva todo lo que cumple los filtros.
+ETIQUETA_OTRAS = "Otras fuentes"
+
+
+def categoria_de_fuente(fuente: str | None) -> Categoria | None:
+    """A qué categoría pertenece una fila según de dónde vino. `None` si no es de ninguna."""
+    codigo = (fuente or "").strip().upper()
+    for categoria, fuentes in FUENTES_POR_CATEGORIA.items():
+        if codigo in fuentes:
+            return categoria
+    return None
+
+
 # Todo lo que no sea letra o dígito se descarta antes de tocar el motor de búsqueda. No es
 # cosmética: en `tsquery` los símbolos `&`, `|`, `!`, `(`, `)`, `:` y `*` tienen significado propio,
 # así que un término como «a|b» dejaría de ser una búsqueda y pasaría a ser otra consulta distinta.
@@ -119,6 +166,22 @@ def normalizar_terminos(entrada: Iterable[str] | str | None) -> tuple[str, ...]:
             if palabras:
                 unicos.add(" ".join(sorted(palabras)))
     return tuple(sorted(unicos))
+
+
+def normalizar_provincias(entrada: Iterable[str] | str | None) -> tuple[str, ...]:
+    """Provincias normalizadas, sin repetir y en orden estable.
+
+    Se ordenan por el mismo motivo que los términos: el mapa permite elegir varias y el orden en
+    que se pulsan no cambia el resultado. Sin ordenar, «Azuay y Pichincha» y «Pichincha y Azuay»
+    serían dos consultas distintas y ocuparían dos entradas de caché para lo mismo.
+
+    Se recortan y se descartan las vacías: una provincia en blanco no filtra nada, y dejarla pasar
+    añadiría una condición que no se corresponde con lo que pidió nadie.
+    """
+    if entrada is None:
+        return ()
+    partes: list[str] = [entrada] if isinstance(entrada, str) else [str(p) for p in entrada]
+    return tuple(sorted({parte.strip() for parte in partes if parte and parte.strip()}))
 
 
 def _coincide_termino(palabras_texto: Sequence[str], termino: str) -> bool:
@@ -183,8 +246,26 @@ class Filtros:
 
     terminos: tuple[str, ...] = ()
     modo: ModoBusqueda = ModoBusqueda.TODAS
+    # Términos que se buscan **solo** en el CPC: el código y el nombre estándar de cada ítem de la
+    # necesidad. Es un filtro aparte de `terminos` y no una variante suya por una razón de negocio:
+    # `terminos` busca en el texto libre de la convocatoria —el objeto de compra, la entidad— y por
+    # eso trae todo lo que menciona la palabra, tenga o no que ver con lo que se busca. Quien vigila
+    # «lavado» recibe así desde un servicio de lavado de vehículos hasta una capacitación sobre
+    # prevención de lavado de activos. El CPC es la clasificación normalizada del Estado: filtrar
+    # por él deja fuera lo que solo lo menciona de pasada.
+    #
+    # Los dos criterios **se suman**, no se sustituyen: quien envíe los dos pide la intersección, y
+    # el panel decide cuál usar.
+    cpc: tuple[str, ...] = ()
     fuente: str | None = None
-    provincia: str | None = None
+    # Familia de contratación. Es un filtro de verdad —restringe las filas— y no una opción de
+    # presentación, y por eso vive aquí con los demás criterios y no en el exportador.
+    categoria: Categoria | None = None
+    # Una o **varias** provincias. Es una tupla y no un valor suelto porque el mapa del panel
+    # permite elegir varias a la vez: comparar cómo se comporta lo mismo en tres provincias es un
+    # uso real, y con un valor único esa comparación obligaría a tres consultas separadas y a
+    # sumar mentalmente los resultados.
+    provincias: tuple[str, ...] = ()
     estado: str | None = None
     # Criterios del listado de ofertas, que reproduce los filtros del buscador del portal.
     #
@@ -235,6 +316,17 @@ class Filtros:
             raise DatoInvalido(f"El tamaño de página no puede superar {TAMANO_MAXIMO}.")
         if self.desde and self.hasta and self.desde > self.hasta:
             raise DatoInvalido("La fecha inicial no puede ser posterior a la final.")
+        if self.categoria is not None and self.fuente:
+            # Dos criterios que se contradicen. Se rechaza en lugar de devolver una tabla vacía: un
+            # archivo sin ninguna fila parece un fallo del sistema, y quien lo mira no tiene forma
+            # de saber que fue él quien pidió dos cosas incompatibles.
+            admitidas = FUENTES_POR_CATEGORIA[self.categoria]
+            if self.fuente.strip().upper() not in admitidas:
+                raise DatoInvalido(
+                    f"La categoría «{ETIQUETA_POR_CATEGORIA[self.categoria]}» no incluye la fuente "
+                    f"{self.fuente!r}. Con esos dos criterios juntos no hay ningún resultado: "
+                    f"quita uno de los dos."
+                )
         return self
 
     @property
@@ -246,6 +338,35 @@ class Filtros:
     def sin_terminos(self) -> bool:
         return not self.terminos
 
+    @property
+    def cacheable(self) -> bool:
+        """¿Merece la pena guardar esta consulta en el caché?
+
+        Dos criterios quedan fuera: `codigo` y `texto` libre. Los dos son lo que la persona escribe,
+        así que su espacio de combinaciones es ilimitado y casi ninguna se repite. Guardarlas
+        llenaría el almacén de entradas que nadie volvería a pedir, y cada una ocupa memoria
+        mientras las demás siguen ocupando la suya: el caché dejaría de acelerar y pasaría a ser un
+        residuo que crece con cada usuario.
+
+        No es una regla de corrección —la respuesta sería igual de buena— sino de coste, y por eso
+        vive aquí y no en el caso de uso: es una propiedad de los criterios, no del camino que los
+        recorre.
+
+        Los términos **sí** se cachean: son un catálogo compartido y normalizado, así que dos
+        personas que vigilan lo mismo comparten entrada.
+
+        Los términos de CPC se cachean igual, y conviene decir por qué: llegan normalizados
+        —minúsculas, sin acentos, sin repetir y ordenados—, así que dos formas de escribirlos no
+        crean dos entradas, y son un criterio pensado para repetirse: la lista de clasificaciones
+        que un negocio vigila. Se parecen al catálogo de términos y no al texto libre. Si algún día
+        se usaran como caja de búsqueda «mientras se escribe», esta decisión habría que revisarla:
+        ese es exactamente el caso de `texto`, y llenaría el almacén de entradas que nadie repite.
+
+        Se comparan los valores ya recortados porque un espacio suelto no es un filtro: si contara,
+        escribir y borrar el mismo texto dejaría la caché desactivada sin que nadie lo notara.
+        """
+        return not ((self.codigo or "").strip() or (self.texto or "").strip())
+
     def canonico(self) -> dict[str, Any]:
         """Forma estable para calcular la huella.
 
@@ -254,9 +375,19 @@ class Filtros:
         return {
             "t": list(self.terminos),
             "m": str(self.modo),
+            "cc": list(self.cpc),
             "f": self.fuente or "",
+            # La categoría **tiene** que estar aquí. Faltando, una exportación de ínfimas y otra de
+            # ofertas con los mismos filtros compartirían entrada de caché, y la segunda recibiría
+            # la del primero: un archivo de ínfimas con las ofertas del compañero, o al revés. Es el
+            # mismo fallo que ya se documentó con `solo_con_plazo` y no deja ningún rastro.
+            "g": str(self.categoria) if self.categoria else "",
             "fp": list(self.fuentes_permitidas),
-            "p": normalizar(self.provincia),
+            # Las provincias van **ordenadas** y no en el orden en que se pulsaron. Sin ordenar, el
+            # mapa guardaría una entrada de caché distinta según el orden de los clics —Pichincha
+            # y luego Azuay frente a Azuay y luego Pichincha— para exactamente el mismo resultado.
+            # El acierto de caché se perdería justo cuando más se usa el filtro.
+            "p": sorted(normalizar(provincia) or "" for provincia in self.provincias),
             "e": normalizar(self.estado),
             # Los cuatro criterios del listado de ofertas van aquí por la misma razón que
             # `solo_con_plazo`: sin ellos, dos listados que solo se diferenciaran en la entidad o en
@@ -304,10 +435,14 @@ class Filtros:
         partes = [f"modo={self.modo}"]
         if self.terminos:
             partes.append(f"terminos={','.join(self.terminos)}")
+        if self.cpc:
+            partes.append(f"cpc={','.join(self.cpc)}")
         if self.fuente:
             partes.append(f"fuente={self.fuente}")
-        if self.provincia:
-            partes.append(f"provincia={self.provincia}")
+        if self.categoria:
+            partes.append(f"categoria={self.categoria}")
+        if self.provincias:
+            partes.append(f"provincias={','.join(self.provincias)}")
         if self.estado:
             partes.append(f"estado={self.estado}")
         if self.desde or self.hasta:

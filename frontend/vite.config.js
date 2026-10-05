@@ -28,6 +28,14 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5174,
+      // `dist` queda fuera del vigilante, y no es una optimización: Vite lo mira por defecto porque
+      // está dentro del proyecto, y compilar mientras el servidor de desarrollo está en marcha hace
+      // que los dos toquen el mismo archivo a la vez. El síntoma es que **el servidor de desarrollo
+      // se cae** con `EBUSY: resource busy or locked` sobre un fichero de `dist`, y quien lo estaba
+      // usando ve el panel desaparecer sin haber hecho nada.
+      watch: {
+        ignored: ['**/dist/**'],
+      },
       proxy: {
         '/v1': { target: destino, changeOrigin: true },
         '/salud': { target: destino, changeOrigin: true },

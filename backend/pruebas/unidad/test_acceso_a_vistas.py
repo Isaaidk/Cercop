@@ -108,6 +108,13 @@ class CacheFalsa:
     async def obtener(self, clave: str) -> str | None:
         return self.guardadas.get(clave)
 
+    @property
+    def habilitada(self) -> bool:
+        return True
+
+    async def obtener_renovando(self, clave: str, ttl_seg: int) -> str | None:
+        return self.guardadas.get(clave)
+
     async def guardar(self, clave: str, valor: str, ttl_seg: int) -> None:
         self.guardadas[clave] = valor
 
@@ -149,6 +156,9 @@ class ConsultasEspia:
         return {}
 
     async def estado_fuentes(self) -> Sequence[Mapping[str, Any]]:
+        return ()
+
+    async def historial_sincronizaciones(self, por_fuente: int = 24) -> Sequence[Mapping[str, Any]]:
         return ()
 
     async def estado_fuente(self, codigo: str) -> Mapping[str, Any] | None:

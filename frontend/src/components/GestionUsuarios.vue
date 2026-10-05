@@ -24,6 +24,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/endpoints'
+import CampoContrasena from '@/components/CampoContrasena.vue'
 import { sesion } from '@/stores/sesion'
 import { ETIQUETAS_ROL } from '@/utils/roles'
 import { fechaCorta, haceCuanto } from '@/utils/formato'
@@ -236,11 +237,14 @@ function etiquetaRol(codigo) {
           </span>
         </label>
 
-        <label class="campo">
-          <span class="campo__etiqueta">Contraseña inicial</span>
-          <input v-model="nuevo.contrasena" class="entrada" type="text" maxlength="128" autocomplete="off" />
-          <span class="campo__ayuda">Mínimo 12 caracteres, con 4 distintos.</span>
-        </label>
+        <CampoContrasena
+          id="alta-clave"
+          v-model="nuevo.contrasena"
+          etiqueta="Contraseña inicial"
+          ajuste="new-password"
+          ayuda="Mínimo 12 caracteres, con 4 distintos."
+          :maxlength="128"
+        />
       </div>
 
       <p v-if="errorAlta" class="gestion__error" role="alert">{{ errorAlta }}</p>
@@ -338,13 +342,14 @@ function etiquetaRol(codigo) {
 
         <!-- Restablecer contraseña: panel en línea, sin diálogo, para no perder de vista la lista. -->
         <div v-if="restableciendo === usuario.usuario_id" class="panel-accion aparece">
-          <label class="campo">
-            <span class="campo__etiqueta">Contraseña nueva para esta cuenta</span>
-            <input v-model="contrasenaNueva" class="entrada" type="text" maxlength="128" autocomplete="off" />
-            <span class="campo__ayuda">
-              Se cerrarán todas sus sesiones, incluidas las que tenga abiertas ahora.
-            </span>
-          </label>
+          <CampoContrasena
+            :id="`clave-${usuario.usuario_id}`"
+            v-model="contrasenaNueva"
+            etiqueta="Contraseña nueva para esta cuenta"
+            ajuste="new-password"
+            ayuda="Se cerrarán todas sus sesiones, incluidas las que tenga abiertas ahora."
+            :maxlength="128"
+          />
           <div class="panel-accion__botones">
             <button
               type="button"

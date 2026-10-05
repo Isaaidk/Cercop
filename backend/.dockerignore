@@ -1,0 +1,46 @@
+# Qué NO se le manda al proceso de construcción.
+#
+# No es una optimización cosmética. El contexto de construcción se envía entero al motor de Docker
+# —por SSH, cuando se construye en un servidor remoto— y en esta carpeta hay **299 MB** de entorno
+# virtual y 1,3 MB de pruebas que la imagen no usa para nada. Sin este archivo, cada despliegue
+# transfiere esas trescientas megas antes de empezar a compilar.
+#
+# El `Dockerfile` copia rutas concretas (`pyproject.toml`, `src`, `alembic`, `alembic.ini`), así que
+# nada de lo que hay aquí iba a acabar dentro de la imagen. Pero eso es una propiedad del
+# `Dockerfile` de hoy: el día que alguien añada un `COPY . .` —una forma cómoda y frecuente de
+# añadir una carpeta nueva— lo que hoy solo sería lento pasaría a ser **un entorno virtual y un
+# fichero `.env` dentro de una imagen**, y eso ya no es lentitud.
+#
+# Por eso se excluye también el `.env`: un fichero de secretos que entra en una capa de una imagen
+# es un secreto que sobrevive a borrar el fichero.
+
+# --- Entorno y herramientas -------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff.toml
+pytest.ini
+mypy.ini
+
+# --- Lo que no forma parte del artefacto ------------------------------------
+pruebas/
+scripts/
+docs/
+
+# --- Secretos y entorno local -----------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Control de versiones y editoriales -------------------------------------
+.git/
+.gitignore
+.gitattributes
+*.md

@@ -13,9 +13,10 @@
 import { computed } from 'vue'
 
 import GestorPalabrasClave from '@/components/GestorPalabrasClave.vue'
+import GestorPalabrasCpc from '@/components/GestorPalabrasCpc.vue'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
-import { PROVINCIAS } from '@/utils/provincias'
+import { PROVINCIAS, nombreDeProvincia } from '@/utils/provincias'
 import { numero } from '@/utils/formato'
 
 const estado = filtros.estado
@@ -29,13 +30,18 @@ function limpiarFecha(campo) {
 }
 
 /**
- * Cambiar de provincia descarta el cantón.
+ * Añade una provincia a la selección y descarta el cantón.
  *
  * Un cantón de otra provincia no devolvería nada, y el usuario vería la tabla vacía sin que el
  * filtro que sobra aparezca por ningún lado: el cantón solo se muestra como ficha cuando existe.
+ *
+ * Si la provincia ya estaba elegida no se duplica: `alternarProvincia` la quitaría, así que se
+ * comprueba antes. Elegir dos veces la misma del desplegable no debe borrarla sin querer.
  */
-function actualizarUbicacion(codigo) {
-  filtros.actualizar({ provincia: codigo, canton: null })
+function agregarProvincia(codigo) {
+  if (!codigo) return
+  if (filtros.estado.provincias.includes(codigo)) return
+  filtros.alternarProvincia(codigo)
 }
 
 /**
@@ -89,27 +95,65 @@ const pistaAplicar = computed(() =>
     </div>
 
     <!--
+      Búsqueda por CPC: el mismo gestor que las palabras clave, pero en la clasificación.
+
+      Va pegado a ellas porque se usan juntas, y va separado porque no son lo mismo: una palabra
+      clave es una suscripción que el worker va a buscar al SERCOP, y un término de CPC es solo un
+      criterio sobre lo que ya está ingestado. El componente lo explica en pantalla.
+    -->
+    <div class="filtros__bloque">
+      <GestorPalabrasCpc />
+    </div>
+
+    <hr class="separador" />
+
+    <!--
       La provincia se elige aquí o pulsando el mapa: los dos caminos escriben el mismo filtro. Antes
       solo existía el mapa, así que quien no lo usara no podía acotar por provincia.
+
+      El desplegable **añade** y las fichas de debajo quitan. Un desplegable normal no puede
+      representar una lista —solo guarda un valor— y con selección múltiple nativa habría que
+      mantener pulsada la tecla Control para elegir la segunda, que es una convención que la mayoría
+      no conoce. Añadir por arriba y quitar por la ficha se entiende sin explicarlo.
     -->
     <div class="filtros__bloque">
       <label class="campo">
-        <span class="campo__etiqueta">Provincia</span>
-        <select
-          class="seleccion"
-          :value="estado.provincia || ''"
-          @change="actualizarUbicacion($event.target.value || null)"
-        >
-          <option value="">Todas las provincias</option>
+        <span class="campo__etiqueta">Provincias</span>
+        <select class="seleccion" :value="''" @change="agregarProvincia($event.target.value)">
+          <option value="">
+            {{ estado.provincias.length ? 'Añadir otra provincia…' : 'Todas las provincias' }}
+          </option>
           <option v-for="provincia in PROVINCIAS" :key="provincia.codigo" :value="provincia.codigo">
             {{ provincia.nombre }}
           </option>
         </select>
       </label>
 
-      <!-- El cantón solo se puede elegir en el mapa: aquí aparece como ficha para poder quitarlo. -->
-      <div v-if="estado.canton" class="filtros__fichas">
+      <div v-if="estado.provincias.length || estado.canton" class="filtros__fichas">
         <button
+          v-for="codigo in estado.provincias"
+          :key="codigo"
+          type="button"
+          class="ficha"
+          :aria-label="`Quitar el filtro de ${nombreDeProvincia(codigo)}`"
+          @click="filtros.alternarProvincia(codigo)"
+        >
+          <span class="ficha__ciudad" aria-hidden="true">▤</span>
+          {{ nombreDeProvincia(codigo) }}
+          <span class="ficha__quitar" aria-hidden="true">✕</span>
+        </button>
+        <button
+          v-if="estado.provincias.length > 1"
+          type="button"
+          class="boton boton--fantasma boton--pequeno"
+          @click="filtros.limpiarProvincia()"
+        >
+          Quitar las {{ estado.provincias.length }}
+        </button>
+
+        <!-- El cantón solo se puede elegir en el mapa: aquí aparece como ficha para poder quitarlo. -->
+        <button
+          v-if="estado.canton"
           type="button"
           class="ficha"
           :aria-label="`Quitar el filtro del cantón ${estado.canton}`"
@@ -120,6 +164,34 @@ const pistaAplicar = computed(() =>
           <span class="ficha__quitar" aria-hidden="true">✕</span>
         </button>
       </div>
+    </div>
+
+    <hr class="separador" />
+
+    <!--
+      Búsqueda por NIC: el código que identifica una necesidad de contratación —el
+      «NIC-1768120280001-2022-00003» de la ficha—. Es el mismo criterio `codigo` del servidor que ya
+      usaba el listado de ofertas; aquí se nombra como lo llama quien tiene la ficha delante, que es
+      el NIC de la ínfima cuantía.
+
+      Se compara por fragmento y no por igualdad a propósito: el código se copia del portal, pero
+      casi nadie lo recuerda entero, y buscar por los últimos dígitos o por el año es lo que se hace
+      de verdad. Vive con los demás criterios y por eso pasa por el botón de aplicar.
+    -->
+    <div class="filtros__bloque">
+      <label class="campo">
+        <span class="campo__etiqueta">NIC de la ínfima cuantía</span>
+        <input
+          class="entrada"
+          type="search"
+          placeholder="NIC-1768120280001-2022-00003"
+          :value="estado.codigo || ''"
+          @input="filtros.actualizar({ codigo: $event.target.value || null })"
+        />
+      </label>
+      <p class="filtros__ayuda">
+        Vale un fragmento: el año, los últimos dígitos. Déjalo vacío para no filtrar por código.
+      </p>
     </div>
 
     <hr class="separador" />
@@ -142,7 +214,7 @@ const pistaAplicar = computed(() =>
         <select
           class="seleccion"
           :value="estado.fuente || ''"
-          @change="filtros.actualizar({ fuente: $event.target.value || null })"
+          @change="filtros.elegirFuente($event.target.value || null)"
         >
           <option value="">Todas las fuentes</option>
           <option v-for="valor in fuentes" :key="valor" :value="valor">{{ valor }}</option>

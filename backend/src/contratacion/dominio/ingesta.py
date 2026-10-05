@@ -39,6 +39,22 @@ class Clasificacion(StrEnum):
     IGUAL = "igual"
 
 
+# Campos que **no cuentan como contenido** aunque viajen en `datos`, porque la fuente los
+# regenera en cada respuesta.
+#
+# `enlace` es el caso medido (2026-10-01): la URL de la ficha lleva un token opaco que cambia
+# en cada listado —la misma necesidad apareció con cuatro tokens distintos en cuatro versiones
+# consecutivas, con todo lo demás idéntico—. Sin excluirlo, cada ciclo clasificaba las 1.700
+# necesidades como «actualizadas»: las reescribía todas, subía la generación del caché y les
+# añadía una versión al histórico. El resultado eran 9.536 versiones para 2.873 registros, con
+# el historial —que es el activo comercial— convertido en ruido. Con una lectura cada tres
+# minutos serían cientos de miles de filas al día.
+#
+# El valor **se sigue guardando**: el token que se almacena es el último, que es el que abre la
+# ficha. Lo único que cambia es que su rotación no se interpreta como un cambio de datos.
+CAMPOS_VOLATILES: frozenset[str] = frozenset({"enlace"})
+
+
 def clave_natural(fuente: str, partes: list[str]) -> str:
     """Clave estable de un registro dentro de una fuente.
 
@@ -57,8 +73,12 @@ def hash_contenido(datos: Mapping[str, Any]) -> str:
     Se calcula sobre las claves ordenadas, de modo que el mismo contenido produzca siempre la misma
     huella aunque la fuente cambie el orden de los campos. Es lo que permite detectar cambios reales
     y no ruido.
+
+    Los campos de `CAMPOS_VOLATILES` se dejan fuera: son cosas que la fuente reescribe sola y que no
+    significan que el registro haya cambiado.
     """
-    serializado = json.dumps(datos, sort_keys=True, ensure_ascii=False, default=str)
+    canonico = {clave: valor for clave, valor in datos.items() if clave not in CAMPOS_VOLATILES}
+    serializado = json.dumps(canonico, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(serializado.encode("utf-8")).hexdigest()
 
 

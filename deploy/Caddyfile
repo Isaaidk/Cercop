@@ -1,0 +1,44 @@
+# Caddy delante del API.
+#
+# Se elige Caddy y no nginx por una razón concreta: obtiene y renueva el certificado TLS solo, sin
+# certbot, sin tarea programada y sin el fallo clásico de un certificado que caduca porque el
+# proceso que lo renovaba dejó de correr. La configuración cabe en este archivo.
+#
+# Todo lo que va dentro de `reverse_proxy` es lo que hace que el canal de presencia funcione: ver
+# el comentario de `flush_interval`.
+
+{
+	# Correo para el aviso de caducidad del certificado. Caddy funciona sin él, pero entonces nadie
+	# se entera de que la renovación ha fallado hasta que el TLS deja de servir.
+	email {$CORREO_TLS}
+}
+
+{$DOMINIO} {
+	# ---------------------------------------------------------------------------
+	# El flujo de eventos del panel
+	# ---------------------------------------------------------------------------
+	# `/v1/presencia/eventos` es una respuesta que **no termina**: se queda abierta mientras alguien
+	# tenga el panel abierto. Por defecto, un proxy acumula la respuesta en un búfer para comprimirla
+	# mejor, y eso en un flujo significa que los avisos llegan a ráfagas o no llegan. El panel
+	# mostraría un estado viejo sin que nada diera error, que es el peor síntoma posible.
+	#
+	# `flush_interval -1` desactiva el búfer por completo. Es la línea que separa «la presencia
+	# funciona» de «la presencia parece funcionar».
+	reverse_proxy api:8001 {
+		flush_interval -1
+	}
+
+	# ---------------------------------------------------------------------------
+	# Límites
+	# ---------------------------------------------------------------------------
+	# Las peticiones que suben ficheros (la plantilla de Excel) son pequeñas, así que un tope bajo
+	# corta un abuso sin molestar a nadie. El API aplica además el suyo, porque un límite en el
+	# borde es una comodidad y no una garantía.
+	request_body {
+		max_size 10MB
+	}
+
+	# Se omite `encode` a propósito: comprimir un flujo de eventos abierto obliga a decidir cuándo
+	# vaciar el búfer, y cualquier error ahí rompe la presencia de una forma difícil de diagnosticar.
+	# Los estáticos que se benefician de la compresión los sirve la CDN del panel, no este proxy.
+}

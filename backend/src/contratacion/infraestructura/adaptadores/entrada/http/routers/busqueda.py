@@ -8,21 +8,32 @@ consulta se hará en el próximo ciclo; para pedir una ingesta hay que ir a `/v1
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import date
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from contratacion.aplicacion.casos_uso.buscar_registros import buscar, obtener_estadisticas
+from contratacion.aplicacion.actor import Actor
+from contratacion.aplicacion.casos_uso.buscar_registros import (
+    buscar,
+    obtener_catalogos,
+    obtener_estadisticas,
+)
 from contratacion.aplicacion.casos_uso.exportar_registros import TIPO_LIBRO, exportar
+from contratacion.aplicacion.casos_uso.gestionar_plantilla import leer_contenido
+from contratacion.aplicacion.puertos.exportacion import RepositorioColumnasExportacion
+from contratacion.aplicacion.puertos.plantillas import AlmacenPlantillas, RepositorioPlantillas
 from contratacion.dominio.acceso import Vista, fuentes_para_vistas
 from contratacion.dominio.busqueda import (
     TAMANO_MAXIMO,
     TAMANO_PREDETERMINADO,
+    Categoria,
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
+    normalizar_provincias,
     normalizar_terminos,
 )
 from contratacion.dominio.errores import SinPermiso
@@ -30,21 +41,73 @@ from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
     AjustesDep,
+    AlmacenPlantillasDep,
+    ColumnasDep,
     ConsentimientoDep,
     ConsultasDep,
+    PlantillasDep,
     VistasDep,
 )
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
 
 router = APIRouter(prefix="/v1", tags=["Búsqueda"])
 
+registro = logging.getLogger(__name__)
+
+
+async def _columnas_elegidas(
+    actor: Actor,
+    *,
+    columnas: RepositorioColumnasExportacion,
+) -> tuple[str, ...] | None:
+    """Las columnas que la empresa eligió, o `None` si no se puede saber.
+
+    **Nunca lanza**, por el mismo motivo que `_plantilla_si_la_hay`: un fallo al leer la selección
+    no puede dejar a alguien sin su Excel. Si no se puede leer, se exporta con todas las columnas,
+    que es lo que se ha hecho siempre y es un archivo más ancho, no un archivo mal formado. Se avisa
+    en el registro para que se pueda arreglar.
+
+    Una selección guardada que mencione una columna que ya no existe no es un error aquí: el
+    catálogo decide qué se escribe, así que la columna desconocida simplemente no aparece. Rechazar
+    la descarga por eso sería castigar al usuario por un cambio nuestro.
+    """
+    try:
+        guardada = await columnas.obtener(negocio_id=actor.negocio_id)
+    except Exception:  # noqa: BLE001 - una selección ilegible no puede impedir exportar
+        registro.warning(
+            "No se pudo leer la selección de columnas del negocio %s; se exportarán todas",
+            actor.negocio_id,
+            exc_info=False,
+        )
+        return None
+    if guardada is None or not guardada.columnas:
+        return None
+    return guardada.columnas
+
+
+async def _plantilla_si_la_hay(
+    actor: Actor,
+    *,
+    plantillas: RepositorioPlantillas,
+    almacen: AlmacenPlantillas,
+) -> bytes | None:
+    """Los bytes de la plantilla de la empresa, ya resueltos por el caso de uso.
+
+    Se conserva como envoltorio con nombre propio porque en este enrutador la pregunta es «¿hay
+    algo con lo que rellenar el libro?», y el nombre del caso de uso —«leer contenido»— describe la
+    mecánica, no la intención. La lógica, en cambio, está en un solo sitio.
+    """
+    return await leer_contenido(actor, repositorio=plantillas, almacen=almacen)
+
 
 def _filtros_compartidos(
     *,
     termino: list[str] | None,
+    cpc: list[str] | None,
     modo: ModoBusqueda,
     fuente: str | None,
-    provincia: str | None,
+    categoria: Categoria | None,
+    provincia: list[str] | None,
     estado: str | None,
     entidad: str | None,
     tipo_proceso: str | None,
@@ -84,10 +147,12 @@ def _filtros_compartidos(
 
     return Filtros(
         terminos=normalizar_terminos(termino),
+        cpc=normalizar_terminos(cpc),
         modo=modo,
         fuente=fuente,
+        categoria=categoria,
         fuentes_permitidas=fuentes,
-        provincia=provincia,
+        provincias=normalizar_provincias(provincia),
         estado=estado,
         entidad=entidad,
         tipo_proceso=tipo_proceso,
@@ -123,8 +188,37 @@ async def criterios(
             )
         ),
     ] = ModoBusqueda.TODAS,
+    cpc: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Busca en el CPC de los ítems de la necesidad —el código y su nombre estándar— "
+                "y no en el texto libre de la convocatoria. Se puede repetir para combinar "
+                "varias: `?cpc=871410032&cpc=lavado`. Es independiente de `termino`; si se "
+                "envían los dos, se exigen ambos."
+            )
+        ),
+    ] = None,
     fuente: Annotated[str | None, Query(description="Código de fuente: NCO u OCDS.")] = None,
-    provincia: str | None = None,
+    categoria: Annotated[
+        Categoria | None,
+        Query(
+            description=(
+                "Familia de contratación. «infimas» son las necesidades de compra (NCO) e "
+                "«ofertas» los procesos con oferta (OCDS). En la exportación, cada categoría sale "
+                "en su propia hoja; sin este parámetro salen todas, una hoja por categoría."
+            )
+        ),
+    ] = None,
+    provincia: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Provincia o provincias por las que filtrar. Se puede repetir el parámetro para "
+                "elegir varias: `?provincia=Azuay&provincia=Pichincha`. Sin él, todas."
+            )
+        ),
+    ] = None,
     estado: str | None = None,
     entidad: Annotated[
         str | None,
@@ -172,8 +266,10 @@ async def criterios(
     return replace(
         _filtros_compartidos(
             termino=termino,
+            cpc=cpc,
             modo=modo,
             fuente=fuente,
+            categoria=categoria,
             provincia=provincia,
             estado=estado,
             entidad=entidad,
@@ -216,6 +312,7 @@ async def buscar_registros(
         cache=obtener_cache(),
         repositorio=consultas,
         ttl_seg=ajustes.ttl_resultados_seg,
+        ttl_memo_seg=ajustes.cache_proceso_seg,
     )
     return cuerpo_json(resultado.como_diccionario())
 
@@ -236,6 +333,9 @@ async def exportar_registros(
     ajustes: AjustesDep,
     actor: ActorDep,
     filtros: CriteriosDep,
+    plantillas: PlantillasDep,
+    almacen: AlmacenPlantillasDep,
+    columnas_guardadas: ColumnasDep,
     _: ConsentimientoDep,
 ) -> Response:
     """Genera y devuelve el archivo `.xlsx` con **todo** lo que cumple los filtros.
@@ -257,10 +357,25 @@ async def exportar_registros(
     """
     actor.exigir_exportador()
 
+    # Si la empresa subió su propia plantilla, el archivo sale con su diseño: el logo, sus hojas y
+    # sus estilos se conservan y los datos se escriben dentro. Si no hay ninguna, o si el archivo
+    # ya no está en el disco, se genera el libro genérico.
+    #
+    # **Un fallo al leer la plantilla no puede impedir la exportación.** Si el archivo se borró del
+    # disco o el disco falla, quedarse sin descargar nada sería peor que descargar el libro de
+    # siempre: el dato es lo que la persona necesita, y el diseño es una comodidad. Se avisa en el
+    # registro y se sigue, en vez de convertir un problema de presentación en uno de acceso.
+    plantilla = await _plantilla_si_la_hay(actor, plantillas=plantillas, almacen=almacen)
+    # Y qué columnas quiere la empresa. Las dos cosas son «cómo sale el archivo»: el diseño lo pone
+    # la plantilla y el ancho lo pone la selección.
+    columnas = await _columnas_elegidas(actor, columnas=columnas_guardadas)
+
     resultado = await exportar(
         filtros,
         repositorio=consultas,
         limite=ajustes.export_async_umbral_filas,
+        plantilla=plantilla,
+        columnas=columnas,
     )
 
     return Response(
@@ -278,16 +393,31 @@ async def exportar_registros(
 
 @router.get("/catalogos", summary="Valores disponibles para los filtros")
 async def catalogos(
-    consultas: ConsultasDep, vistas: VistasDep, _: ConsentimientoDep
+    consultas: ConsultasDep,
+    ajustes: AjustesDep,
+    vistas: VistasDep,
+    _: ConsentimientoDep,
 ) -> dict[str, Any]:
     """Pobla los desplegables del panel con lo que realmente hay en el histórico.
 
     Sin ninguna vista que dé acceso a datos no hay desplegables que ofrecer: devolver los catálogos
     revelaría qué provincias y entidades hay, aunque el usuario no pueda ver los registros.
+
+    El permiso se comprueba **antes** de mirar el caché, y eso importa: si se consultara primero, un
+    usuario sin ninguna vista recibiría la respuesta que dejó cacheada otro y la puerta no serviría
+    de nada. Es el mismo cuidado que con los resultados, aplicado a una entrada que comparten todos
+    los usuarios.
     """
     if not fuentes_para_vistas(vistas):
         raise SinPermiso("No tienes ninguna vista concedida que dé acceso al histórico.")
-    return cuerpo_json(dict(await consultas.catalogos()))
+
+    datos = await obtener_catalogos(
+        cache=obtener_cache(),
+        repositorio=consultas,
+        ttl_seg=ajustes.ttl_catalogo_seg,
+        ttl_memo_seg=ajustes.cache_proceso_seg,
+    )
+    return cuerpo_json(dict(datos))
 
 
 @router.get("/estadisticas", summary="Agregados para las gráficas")
@@ -317,5 +447,6 @@ async def estadisticas(
         cache=obtener_cache(),
         repositorio=consultas,
         ttl_seg=ajustes.ttl_estadisticas_seg,
+        ttl_memo_seg=ajustes.cache_proceso_seg,
     )
     return cuerpo_json(dict(datos))

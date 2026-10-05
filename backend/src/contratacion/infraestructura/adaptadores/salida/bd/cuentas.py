@@ -352,7 +352,8 @@ class RepositorioSesionesBd:
                     await conexion.execute(
                         text(
                             f"""
-                            SELECT {CAMPOS_SESION}, refresh_hash
+                            SELECT {CAMPOS_SESION}, refresh_hash,
+                                   refresh_hash_anterior, refresh_anterior_desde
                             FROM sesion WHERE id = :sesion_id
                             """
                         ),
@@ -364,7 +365,16 @@ class RepositorioSesionesBd:
             )
         if fila is None:
             return None
-        return SesionGuardada(sesion=_a_sesion(fila), refresh_hash=str(fila["refresh_hash"]))
+        return SesionGuardada(
+            sesion=_a_sesion(fila),
+            refresh_hash=str(fila["refresh_hash"]),
+            refresh_hash_anterior=(
+                str(fila["refresh_hash_anterior"])
+                if fila["refresh_hash_anterior"] is not None
+                else None
+            ),
+            refresh_anterior_desde=fila["refresh_anterior_desde"],
+        )
 
     async def rotar(
         self,
@@ -374,12 +384,25 @@ class RepositorioSesionesBd:
         refresh_hash: str,
         ultimo_uso_en: datetime,
     ) -> None:
+        """Rota la huella, **desplazando la anterior a su propio hueco**.
+
+        El `SET` se lee contra la fila vieja, así que `refresh_hash_anterior = refresh_hash` guarda
+        la huella que había antes de esta rotación. Es exactamente lo que hay que conservar para
+        poder reconocer un reintento.
+
+        `ultimo_uso_en` sirve además de marca de la rotación. No son dos cosas distintas: solo se
+        rota al renovar, y renovar es usar la sesión. Guardar dos columnas con el mismo instante
+        sería guardar dos verdades que podrían separarse.
+        """
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             await conexion.execute(
                 text(
                     """
                     UPDATE sesion
-                    SET refresh_hash = :refresh_hash, ultimo_uso_en = :ultimo_uso_en
+                    SET refresh_hash_anterior = refresh_hash,
+                        refresh_anterior_desde = :ultimo_uso_en,
+                        refresh_hash = :refresh_hash,
+                        ultimo_uso_en = :ultimo_uso_en
                     WHERE id = :sesion_id
                     """
                 ),

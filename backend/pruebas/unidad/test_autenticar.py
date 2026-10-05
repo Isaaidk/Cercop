@@ -39,6 +39,10 @@ HUELLA_DESCARTE = "falso:contrasena-de-descarte"
 ACCESO_TTL = 900
 REFRESCO_TTL = 86_400
 MAX_SESIONES = 2
+# Ventana en la que el token de renovación anterior sigue valiendo después de una rotación. Es la
+# misma cifra que el ajuste por defecto del servidor: si aquí fuera otra, las pruebas dirían cosas
+# que en producción no pasan.
+GRACIA = 30
 
 
 # --------------------------------------------------------------------------- #
@@ -228,10 +232,19 @@ class SesionesFalsas:
         refresh_hash: str,
         ultimo_uso_en: datetime,
     ) -> None:
+        """Desplaza la huella igual que el repositorio real.
+
+        Si el doble no guardara la anterior, el camino de la ventana de gracia no se podría recorrer
+        nunca en una prueba: las que lo comprueban fallarían siempre, y no por un error del código
+        sino porque el doble no se parece al original. Un doble que no imita lo que se está probando
+        no prueba nada.
+        """
         guardada = self.guardadas[sesion_id]
         self.guardadas[sesion_id] = replace(
             guardada,
             refresh_hash=refresh_hash,
+            refresh_hash_anterior=guardada.refresh_hash,
+            refresh_anterior_desde=ultimo_uso_en,
             sesion=replace(guardada.sesion, ultimo_uso_en=ultimo_uso_en),
         )
 
@@ -524,6 +537,7 @@ async def test_renovar_devuelve_un_par_nuevo_y_rota_el_token() -> None:
         tokens=piezas["tokens"],
         acceso_ttl_seg=ACCESO_TTL,
         refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
         momento=AHORA + timedelta(minutes=5),
     )
 
@@ -531,13 +545,17 @@ async def test_renovar_devuelve_un_par_nuevo_y_rota_el_token() -> None:
     assert renovada.sesion_id == inicial.sesion_id
     guardada = piezas["sesiones"].guardadas[inicial.sesion_id]
     assert guardada.refresh_hash == piezas["tokens"].huella(renovada.refresco)
+    # La huella que acaba de dejar de ser la vigente se conserva: es lo que permite reconocer un
+    # reintento en los segundos siguientes.
+    assert guardada.refresh_hash_anterior == piezas["tokens"].huella(inicial.refresco)
 
 
 async def test_presentar_un_token_de_renovacion_viejo_cierra_todo() -> None:
     """Es la detección de reutilización, y es la prueba más importante de este archivo.
 
-    Si alguien conserva una copia del token anterior y la usa, hay dos copias en circulación y no se
-    puede saber cuál es la legítima. Se cierra todo y el dueño vuelve a entrar con su contraseña.
+    Si alguien conserva una copia del token anterior y la usa **cuando ya no puede ser un
+    reintento**, hay dos copias en circulación y no se puede saber cuál es la legítima. Se cierra
+    todo y el dueño vuelve a entrar con su contraseña.
     """
     cuenta = _cuenta()
     piezas = _piezas(cuenta)
@@ -549,22 +567,199 @@ async def test_presentar_un_token_de_renovacion_viejo_cierra_todo() -> None:
         tokens=piezas["tokens"],
         acceso_ttl_seg=ACCESO_TTL,
         refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
         momento=AHORA + timedelta(minutes=1),
     )
 
     with pytest.raises(SinPermiso):
         await renovar_sesion(
-            inicial.refresco,  # el viejo, ya rotado
+            inicial.refresco,  # el viejo, rotado hace un minuto: fuera de la ventana
             cuentas=piezas["cuentas"],
             sesiones=piezas["sesiones"],
             tokens=piezas["tokens"],
             acceso_ttl_seg=ACCESO_TTL,
             refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=GRACIA,
             momento=AHORA + timedelta(minutes=2),
         )
 
     assert piezas["sesiones"].guardadas[inicial.sesion_id].sesion.estado is EstadoSesion.REVOCADA
     assert "reuso_de_token_detectado" in piezas["cuentas"].auditoria
+
+
+async def test_un_reintento_inmediato_no_cierra_la_sesion() -> None:
+    """La respuesta perdida no puede echar a nadie de su cuenta.
+
+    Es el fallo que se veía en producción: el servidor rota el token, la respuesta no llega —se
+    corta la conexión, se duerme el portátil— y el navegador reintenta con el viejo. Con detección
+    estricta eso cerraba **todas** las sesiones de la cuenta y el usuario aparecía en la pantalla de
+    acceso con un aviso que hablaba de tokens. Pasó tres veces en un día.
+    """
+    cuenta = _cuenta()
+    piezas = _piezas(cuenta)
+    inicial = await _entrar(cuenta, piezas)
+    primera = await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(minutes=1),
+    )
+
+    # El reintento llega diez segundos después, con el token que ya no es el vigente.
+    segunda = await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(minutes=1, seconds=10),
+    )
+
+    guardada = piezas["sesiones"].guardadas[inicial.sesion_id]
+    assert guardada.sesion.estado is EstadoSesion.ACTIVA
+    assert "reuso_de_token_detectado" not in piezas["cuentas"].auditoria
+    # Al reintento no se le devuelve el par del primero: se le emite uno nuevo y **se desplaza la
+    # huella otra vez**, de modo que el par que sí llegó a su destino sigue sirviendo. Sin esto, el
+    # cliente que recibió la respuesta buena se quedaría con un token que ya no valdría.
+    assert segunda.refresco != primera.refresco
+    assert guardada.refresh_hash_anterior == piezas["tokens"].huella(primera.refresco)
+
+
+async def test_el_par_que_si_llego_sigue_sirviendo_tras_el_reintento() -> None:
+    """Las dos copias conviven durante la ventana, que es justo lo que se busca.
+
+    Es el caso de la segunda pestaña del mismo navegador: tiene el token viejo, lo presenta, y en
+    lugar de cerrar la cuenta entera se le atiende. Y el que ya estaba renovado tampoco se queda
+    fuera.
+    """
+    cuenta = _cuenta()
+    piezas = _piezas(cuenta)
+    inicial = await _entrar(cuenta, piezas)
+    primera = await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA,
+    )
+    segunda = await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(seconds=5),
+    )
+
+    # Y ahora la pestaña primera vuelve a renovar con el par que recibió. Sigue dentro de la ventana
+    # contada desde la última rotación, así que se le atiende.
+    tercera = await renovar_sesion(
+        primera.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(seconds=20),
+    )
+
+    assert tercera.sesion_id == inicial.sesion_id
+    assert segunda.refresco != tercera.refresco
+
+
+async def test_con_la_ventana_apagada_el_reintento_vuelve_a_cerrar_todo() -> None:
+    """Poner la gracia a cero restaura el comportamiento estricto.
+
+    Se comprueba porque es la salida de emergencia: si algún día la ventana se considerara un riesgo
+    demasiado grande, apagarla tiene que bastar, y eso hay que poder demostrarlo.
+
+    Los dos instantes van separados **un minuto** a propósito. Rotar dentro del mismo segundo emite
+    el mismo token —las declaraciones son idénticas—, así que la rotación no cambiaría nada y la
+    prueba estaría comprobando algo distinto de lo que dice su nombre.
+    """
+    cuenta = _cuenta()
+    piezas = _piezas(cuenta)
+    inicial = await _entrar(cuenta, piezas)
+    await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=0,
+        momento=AHORA + timedelta(minutes=1),
+    )
+
+    with pytest.raises(SinPermiso):
+        await renovar_sesion(
+            inicial.refresco,
+            cuentas=piezas["cuentas"],
+            sesiones=piezas["sesiones"],
+            tokens=piezas["tokens"],
+            acceso_ttl_seg=ACCESO_TTL,
+            refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=0,
+            momento=AHORA + timedelta(minutes=1, seconds=1),
+        )
+
+    assert piezas["sesiones"].guardadas[inicial.sesion_id].sesion.estado is EstadoSesion.REVOCADA
+
+
+async def test_una_huella_de_otra_generacion_no_entra_por_la_ventana() -> None:
+    """La ventana admite **la anterior**, no cualquier cosa que se parezca.
+
+    Si admitiera más de una generación hacia atrás, un token robado y guardado seguiría sirviendo
+    indefinidamente y la detección de reutilización no existiría.
+    """
+    cuenta = _cuenta()
+    piezas = _piezas(cuenta)
+    inicial = await _entrar(cuenta, piezas)
+    primera = await renovar_sesion(
+        inicial.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(minutes=1),
+    )
+    # Se vuelve a rotar, así que el token inicial queda **dos** generaciones atrás.
+    await renovar_sesion(
+        primera.refresco,
+        cuentas=piezas["cuentas"],
+        sesiones=piezas["sesiones"],
+        tokens=piezas["tokens"],
+        acceso_ttl_seg=ACCESO_TTL,
+        refresco_ttl_seg=REFRESCO_TTL,
+        gracia_seg=GRACIA,
+        momento=AHORA + timedelta(minutes=2),
+    )
+
+    with pytest.raises(SinPermiso):
+        await renovar_sesion(
+            inicial.refresco,
+            cuentas=piezas["cuentas"],
+            sesiones=piezas["sesiones"],
+            tokens=piezas["tokens"],
+            acceso_ttl_seg=ACCESO_TTL,
+            refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=GRACIA,
+            momento=AHORA + timedelta(minutes=2, seconds=5),
+        )
 
 
 async def test_no_se_renueva_a_quien_acaban_de_desactivar() -> None:
@@ -584,6 +779,7 @@ async def test_no_se_renueva_a_quien_acaban_de_desactivar() -> None:
             tokens=piezas["tokens"],
             acceso_ttl_seg=ACCESO_TTL,
             refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=GRACIA,
             momento=AHORA + timedelta(minutes=1),
         )
 
@@ -603,6 +799,7 @@ async def test_un_token_de_acceso_no_sirve_para_renovar() -> None:
             tokens=piezas["tokens"],
             acceso_ttl_seg=ACCESO_TTL,
             refresco_ttl_seg=REFRESCO_TTL,
+            gracia_seg=GRACIA,
             momento=AHORA,
         )
 

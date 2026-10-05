@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -21,11 +22,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from contratacion.dominio.busqueda import (
+    FUENTES_POR_CATEGORIA,
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
     expresion_busqueda,
 )
+from contratacion.dominio.cpc import items_desde_crudos
 from contratacion.dominio.enlaces import enlace_publico
 from contratacion.dominio.palabras import normalizar_termino
 from contratacion.infraestructura.adaptadores.salida.bd.contexto import sin_contexto
@@ -45,9 +48,27 @@ CAMPOS_CATALOGO = ("provincia", "estado", "tipo_proceso", "tipo_necesidad", "ent
 
 LIMITE_CATALOGO = 500
 MESES_SERIE = 24
-LIMITE_PROVINCIAS = 12
+# Tope de filas del reparto por provincia. **Doce era un error**: el Ecuador tiene veinticuatro
+# provincias, así que el mapa y su gráfica solo recibían las doce con más contrataciones y las demás
+# se pintaban con cero. Pulsar una de esas provincias filtraba la tabla —que no lleva tope— y
+# aparecían filas: «dice 0 y me salen 74». El dominio está acotado (24 provincias más algún valor
+# suelto como «NO DELIMITADO»), así que el tope solo está para que una fuente que publique basura en
+# ese campo no devuelva miles de filas.
+LIMITE_PROVINCIAS = 60
+
+# Tope del reparto por tipo de proceso. Medido antes de ponerlo, que es como se evita repetir el
+# defecto de las doce provincias: 18 valores distintos en 107.510 filas, más 10.110 sin el campo
+# —las ínfimas no publican el tipo de proceso—. Con cuarenta hay margen de sobra para que el «las
+# otras suman X» de la gráfica sea exacto, y el tope sigue estando por si la fuente algún día
+# publica basura en ese campo.
+LIMITE_DISTRIBUCION = 40
 
 INDICE_TEXTO = "to_tsvector('simple', r.texto_busqueda)"
+
+# El CPC se busca contra su propia columna y no se sumó a `texto_busqueda` a propósito: si
+# compartieran columna, el filtro de palabras clave volvería a encontrar el objeto de compra y el
+# problema que el CPC viene a resolver —traer todo lo que menciona la palabra— seguiría ahí.
+INDICE_CPC = "to_tsvector('simple', r.cpc_busqueda)"
 
 #
 # Comparación de provincias tolerante a tildes y mayúsculas.
@@ -105,14 +126,27 @@ def _patron(valor: str) -> str:
 
 
 def _filtro_texto(
-    parametros: dict[str, Any], terminos: Sequence[str], modo: ModoBusqueda
+    parametros: dict[str, Any],
+    terminos: Sequence[str],
+    modo: ModoBusqueda,
+    *,
+    indice: str = INDICE_TEXTO,
+    nombre_parametro: str = "expr",
 ) -> str | None:
-    """Añade la condición de texto completo si hay algo que buscar."""
+    """Añade la condición de texto completo si hay algo que buscar.
+
+    El índice y el nombre del parámetro se pueden cambiar porque hay **dos** búsquedas de texto
+    completo: la del contenido del registro y la del CPC. Las dos usan exactamente la misma
+    expresión y los mismos modos —salen de `expresion_busqueda`—, así que duplicar la función sería
+    duplicar la definición de qué significa «todas» o «cualquiera», y las dos versiones acabarían
+    separándose. Los nombres tienen que ser distintos porque los dos parámetros viajan en el mismo
+    diccionario.
+    """
     expresion = expresion_busqueda(terminos, modo)
     if expresion is None:
         return None
-    parametros["expr"] = expresion
-    return f"{INDICE_TEXTO} @@ to_tsquery('simple', :expr)"
+    parametros[nombre_parametro] = expresion
+    return f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
 
 
 def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
@@ -124,6 +158,20 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     if principal:
         condiciones.append(principal)
 
+    # El CPC es un criterio **aparte** y se suma con «y»: quien lo pida junto con términos quiere la
+    # intersección de los dos. Comparte el modo —«todas» o «cualquiera»— porque la pregunta es la
+    # misma: cómo se combinan entre sí varias palabras de la misma lista.
+    if filtros.cpc:
+        por_cpc = _filtro_texto(
+            parametros,
+            filtros.cpc,
+            filtros.modo,
+            indice=INDICE_CPC,
+            nombre_parametro="expr_cpc",
+        )
+        if por_cpc:
+            condiciones.append(por_cpc)
+
     # El texto libre se suma con «y»: es un filtro más, no una sustitución de los términos.
     if filtros.texto:
         libre = _filtro_texto(parametros, [filtros.texto], ModoBusqueda.TODAS)
@@ -133,6 +181,15 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     if filtros.fuente:
         condiciones.append("f.codigo = :fuente")
         parametros["fuente"] = filtros.fuente
+
+    # La categoría se resuelve contra las fuentes que la alimentan. Se combina con «y» con la fuente
+    # y con los permisos, y eso es lo correcto: si alguien pide ínfimas, solo tiene concedida una
+    # fuente que no las trae y además pidió otra fuente concreta, el resultado tiene que quedar
+    # vacío. Cualquier otra cosa —ampliar por su cuenta, ignorar el permiso— sería servir datos que
+    # esa persona no puede ver.
+    if filtros.categoria is not None:
+        condiciones.append("f.codigo = ANY(:categoria_fuentes)")
+        parametros["categoria_fuentes"] = list(FUENTES_POR_CATEGORIA[filtros.categoria])
 
     # Permiso de lectura por fuente. Si no hay ninguna concedida se añade una condición imposible
     # en lugar de omitir la condición: omitirla devolvería el histórico completo, que es el fallo
@@ -144,7 +201,7 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     else:
         condiciones.append("FALSE")
 
-    if filtros.provincia:
+    if filtros.provincias:
         # El valor almacenado es «PROVINCIA - CANTÓN», tal y como lo publica la fuente, pero el
         # mapa del panel envía solo la provincia. Se aceptan las dos formas: comparar únicamente
         # contra el valor completo haría que pulsar una provincia no devolviera nada, porque la
@@ -152,12 +209,21 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
         #
         # Se corta por el guion y no por « - » porque la fuente no es constante con los espacios, y
         # se recorta el resultado para que «PICHINCHA» y «PICHINCHA » se traten igual.
+        #
+        # `ANY` con una lista y no una igualdad repetida: son las mismas dos comparaciones de
+        # siempre, una sola vez, para cualquier número de provincias. Se mantienen las dos y no se
+        # suma una tercera: la condición es la misma, lo que cambia es que el valor de la derecha es
+        # un conjunto.
         completo = PROVINCIA_NORMALIZADA.format(columna="r.datos ->> 'provincia'")
         solo_provincia = PROVINCIA_NORMALIZADA.format(
             columna="btrim(split_part(r.datos ->> 'provincia', '-', 1))"
         )
-        condiciones.append(f"({completo} = :provincia OR {solo_provincia} = :provincia)")
-        parametros["provincia"] = normalizar_ubicacion(filtros.provincia)
+        condiciones.append(
+            f"({completo} = ANY(:provincias) OR {solo_provincia} = ANY(:provincias))"
+        )
+        parametros["provincias"] = [
+            normalizar_ubicacion(provincia) for provincia in filtros.provincias
+        ]
 
     if filtros.estado:
         condiciones.append("r.datos ->> 'estado' = :estado")
@@ -231,6 +297,14 @@ def _fila_a_elemento(fila: Mapping[Any, Any]) -> Mapping[str, Any]:
             "es_vigente": fila["es_vigente"],
         }
     )
+    # Los ítems del detalle van **fuera** de `datos` y por eso hay que añadirlos expresamente: no
+    # son un campo de la fuente, son el resultado de ir a buscar la ficha. Se reconstruyen con la
+    # misma función que los lee en cualquier otro sitio para que la forma del jsonb guardado no
+    # tenga que conocerla nadie más.
+    elemento["items"] = [
+        item.como_diccionario() for item in items_desde_crudos(fila.get("items") or ())
+    ]
+    elemento["cpc_codigos"] = list(fila.get("cpc_codigos") or ())
     # El enlace se calcula aquí, en el único sitio por el que pasan todas las filas que salen de la
     # base, para que la tabla, el listado del mapa y el archivo de Excel ofrezcan exactamente la
     # misma dirección. Resolverlo en el panel obligaría a repetir la regla en cada pantalla, y la
@@ -253,8 +327,8 @@ class RepositorioConsultasBd:
         consulta_pagina = text(
             f"""
             SELECT r.id, f.codigo AS fuente, f.endpoint_base AS fuente_url, r.clave_natural,
-                   r.datos, r.fecha_publicacion, r.primera_vez_visto, r.ultima_vez_visto,
-                   r.es_vigente
+                   r.datos, r.items, r.cpc_codigos, r.fecha_publicacion, r.primera_vez_visto,
+                   r.ultima_vez_visto, r.es_vigente
             FROM registro r
             JOIN fuente f ON f.id = r.fuente_id
             WHERE {where}
@@ -305,8 +379,8 @@ class RepositorioConsultasBd:
         consulta = text(
             f"""
             SELECT r.id, f.codigo AS fuente, f.endpoint_base AS fuente_url, r.clave_natural,
-                   r.datos, r.fecha_publicacion, r.primera_vez_visto, r.ultima_vez_visto,
-                   r.es_vigente
+                   r.datos, r.items, r.cpc_codigos, r.fecha_publicacion, r.primera_vez_visto,
+                   r.ultima_vez_visto, r.es_vigente
             FROM registro r
             JOIN fuente f ON f.id = r.fuente_id
             WHERE {where}
@@ -395,6 +469,70 @@ class RepositorioConsultasBd:
         condiciones, parametros = _condiciones(filtros)
         donde = " AND ".join(condiciones) if condiciones else "TRUE"
 
+        # Las condiciones **sin la familia**, para los totales por pestaña.
+        #
+        # El panel muestra un número junto a cada pestaña de familia —«Ínfimas cuantías» y
+        # «Ofertas»— y los dos tienen que salir de los mismos filtros. La consulta de la tabla lleva
+        # la familia puesta porque se está mirando una sola; aquí hay que quitarla, y eso no es un
+        # descuido: es la única forma de contar las dos con los mismos criterios. Lo demás se
+        # respeta —términos, provincias, fechas, permisos—, así que el número que sale responde a
+        # «cuántas hay de esta familia con lo que tengo filtrado».
+        #
+        # Se devuelve el conteo **por fuente**, sin traducir a familias: esa traducción es una regla
+        # del dominio y vive en el caso de uso, donde se puede probar sin base de datos.
+        #
+        # Las dos consultas llevan sus propios parámetros aunque compartan valores: `_condiciones`
+        # escribe en el diccionario que recibe, y mezclarlos dejaría el `:categoria_fuentes` de una
+        # en la consulta de la otra.
+        condiciones_sin_familia, parametros_sin_familia = _condiciones(
+            replace(filtros, categoria=None)
+        )
+        donde_sin_familia = (
+            " AND ".join(condiciones_sin_familia) if condiciones_sin_familia else "TRUE"
+        )
+
+        # El reparto por provincia se cuenta **sin el filtro de provincia**, y es la otra mitad del
+        # mismo defecto. Se contaba con él, así que al elegir una provincia todas las demás bajaban
+        # a cero: el mapa dejaba de decir dónde hay contrataciones justo cuando se usaba como
+        # selector, y no había forma de añadir una segunda sin quitar la primera. Lo demás se
+        # respeta —términos, fechas, permisos, familia—, así que cada barra responde a «cuántas hay
+        # aquí con lo que tengo filtrado».
+        #
+        # El total del conjunto **sí** lleva el filtro de provincia: lo calcula el caso de uso
+        # sumando el conteo por fuente, que es el número que acompaña a la tabla.
+        condiciones_sin_provincia, parametros_sin_provincia = _condiciones(
+            replace(filtros, provincias=())
+        )
+        donde_sin_provincia = (
+            " AND ".join(condiciones_sin_provincia) if condiciones_sin_provincia else "TRUE"
+        )
+
+        # El reparto por tipo de proceso, por la misma razón que el de provincia: se cuenta **sin su
+        # propio criterio**, así que elegir un tipo no pone los demás a cero. Se agrupa por el
+        # **texto crudo** y no por una versión normalizada porque es contra ese texto contra el que
+        # compara el filtro (`r.datos ->> 'tipo_proceso' = :tipo_proceso`): la clave que devuelve
+        # esta consulta se le puede devolver tal cual, y pulsar una barra filtraría exactamente esa
+        # fila. Normalizarla obligaría a que el filtro normalizara también, y dos normalizaciones
+        # distintas —una en cada mitad— dejarían barras que no encuentran nada al pulsarlas.
+        #
+        # Medido el 2026-10-01 antes de ponerle tope: 18 valores distintos en 107.510 filas, y
+        # 10.110 sin el campo —son las ínfimas, que no lo publican—. Con el tope en 40 el «las
+        # otras suman X» es exacto hoy y seguirá siéndolo mientras el catálogo de la fuente no
+        # triplique su vocabulario.
+        condiciones_sin_tipo, parametros_sin_tipo = _condiciones(
+            replace(filtros, tipo_proceso=None)
+        )
+        donde_sin_tipo = " AND ".join(condiciones_sin_tipo) if condiciones_sin_tipo else "TRUE"
+
+        # La clave del reparto es la **misma expresión normalizada** que el filtro, no el texto
+        # crudo de la fuente. Agrupando por el crudo, una provincia se partía en dos:
+        # «SANTO DOMINGO DE LOS TSÁCHILAS» y «…TSACHILAS» eran dos filas con su mitad del total cada
+        # una, y con el tope de doce filas una de las mitades se quedaba fuera y la provincia entera
+        # salía con cero. Normalizada, las dos grafías son una clave que el panel sabe traducir.
+        provincia_normalizada = PROVINCIA_NORMALIZADA.format(
+            columna="btrim(split_part(r.datos ->> 'provincia', '-', 1))"
+        )
+
         async with sin_contexto(self._motor) as conexion:
             por_fuente = (
                 (
@@ -445,32 +583,115 @@ class RepositorioConsultasBd:
                     await conexion.execute(
                         text(
                             f"""
-                            SELECT COALESCE(r.datos ->> 'provincia', 'sin provincia') AS provincia,
+                            SELECT COALESCE(NULLIF({provincia_normalizada}, ''), 'sin provincia')
+                                       AS provincia,
                                    count(*) AS total
                             FROM registro r
                             JOIN fuente f ON f.id = r.fuente_id
-                            WHERE {donde}
+                            WHERE {donde_sin_provincia}
                             GROUP BY 1
                             ORDER BY 2 DESC
                             LIMIT :limite
                             """
                         ),
-                        {**parametros, "limite": LIMITE_PROVINCIAS},
+                        {**parametros_sin_provincia, "limite": LIMITE_PROVINCIAS},
                     )
                 )
                 .mappings()
                 .all()
             )
 
+            por_fuente_sin_familia = (
+                (
+                    await conexion.execute(
+                        text(
+                            f"""
+                            SELECT f.codigo AS fuente, count(*) AS total
+                            FROM registro r
+                            JOIN fuente f ON f.id = r.fuente_id
+                            WHERE {donde_sin_familia}
+                            GROUP BY f.codigo
+                            """
+                        ),
+                        parametros_sin_familia,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+            tipos = (
+                (
+                    await conexion.execute(
+                        text(
+                            f"""
+                            SELECT COALESCE(NULLIF(btrim(r.datos ->> 'tipo_proceso'), ''),
+                                            'sin clasificar') AS tipo_proceso,
+                                   count(*) AS total
+                            FROM registro r
+                            JOIN fuente f ON f.id = r.fuente_id
+                            WHERE {donde_sin_tipo}
+                            GROUP BY 1
+                            ORDER BY 2 DESC, 1
+                            LIMIT :limite
+                            """
+                        ),
+                        {**parametros_sin_tipo, "limite": LIMITE_DISTRIBUCION},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+        # El conteo bruto por fuente, con los mismos filtros y sin la familia. El caso de uso lo
+        # convierte en totales por familia; aquí no se traduce nada.
         return {
             "fuente": filtros.fuente,
             "por_fuente": [dict(fila) for fila in por_fuente],
+            "por_fuente_sin_familia": [dict(fila) for fila in por_fuente_sin_familia],
             "serie_mensual": [dict(fila) for fila in reversed(serie)],
             "por_provincia": [dict(fila) for fila in provincias],
+            "por_tipo_proceso": [dict(fila) for fila in tipos],
         }
 
     async def estado_fuentes(self) -> Sequence[Mapping[str, Any]]:
         return await self._estado_fuentes(codigo=None)
+
+    async def historial_sincronizaciones(self, por_fuente: int = 24) -> Sequence[Mapping[str, Any]]:
+        """Los últimos ciclos de cada fuente, del más reciente al más antiguo.
+
+        Va contra `sincronizacion`, que es el registro que ya escriben los ciclos: no hay que
+        instrumentar nada nuevo para dibujar el trabajo del worker. El `LATERAL` con su propio tope
+        por fuente es lo que permite pedir «veinticuatro de cada una» en una sola consulta; con un
+        `LIMIT` global, la fuente que más ciclos escribe se quedaría con toda la ventana.
+        """
+        async with sin_contexto(self._motor) as conexion:
+            filas = (
+                (
+                    await conexion.execute(
+                        text(
+                            """
+                            SELECT f.codigo AS fuente, f.nombre, f.intervalo_min,
+                                   s.iniciada_en, s.terminada_en, s.estado,
+                                   s.nuevos, s.actualizados, s.errores, s.peticiones,
+                                   s.avisos
+                            FROM fuente f
+                            JOIN LATERAL (
+                                SELECT * FROM sincronizacion s
+                                WHERE s.fuente_id = f.id
+                                ORDER BY s.iniciada_en DESC
+                                LIMIT :por_fuente
+                            ) s ON TRUE
+                            ORDER BY f.codigo, s.iniciada_en DESC
+                            """
+                        ),
+                        {"por_fuente": por_fuente},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(dict(fila) for fila in filas)
 
     async def estado_fuente(self, codigo: str) -> Mapping[str, Any] | None:
         filas = await self._estado_fuentes(codigo=codigo)

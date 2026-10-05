@@ -18,45 +18,61 @@ fallo honesto: el sistema prefiere no responder antes que responder sin saber a 
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.casos_uso.consentimiento import exigir_aceptado
 from contratacion.aplicacion.casos_uso.gestionar_acceso import vistas_vigentes
 from contratacion.aplicacion.puertos.accesos import RepositorioAccesos
+from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.aplicacion.puertos.consultas import RepositorioConsultas
+from contratacion.aplicacion.puertos.cpc import RepositorioCpc
 from contratacion.aplicacion.puertos.cuentas import (
     RepositorioCuentas,
     RepositorioSesiones,
     SesionGuardada,
+    SesionPorId,
 )
+from contratacion.aplicacion.puertos.exportacion import RepositorioColumnasExportacion
 from contratacion.aplicacion.puertos.negocios import RepositorioNegocios
+from contratacion.aplicacion.puertos.plantillas import AlmacenPlantillas, RepositorioPlantillas
 from contratacion.aplicacion.puertos.politicas import (
     RepositorioConsentimientos,
     RepositorioPoliticas,
 )
 from contratacion.aplicacion.puertos.presencia import BusEventos, RegistroPresencia
-from contratacion.aplicacion.puertos.seguridad import ServicioContrasenas, TipoToken
+from contratacion.aplicacion.puertos.seguridad import Claims, ServicioContrasenas, TipoToken
 from contratacion.aplicacion.puertos.terminos import RepositorioTerminos
 from contratacion.aplicacion.puertos.usuarios import (
     CierreDeSesiones,
     RegistroAuditoria,
     RepositorioUsuarios,
 )
+from contratacion.aplicacion.sesiones_vivas import (
+    SesionesConVida,
+    VidaDeSesion,
+    abrir,
+    seguir,
+)
 from contratacion.dominio.acceso import Vista
 from contratacion.dominio.errores import EmpresaSuspendida, SesionRevocada
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion
+from contratacion.infraestructura.adaptadores.salida.archivos.local import obtener_almacen
 from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
+from contratacion.infraestructura.adaptadores.salida.bd.columnas import RepositorioColumnasBd
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
+from contratacion.infraestructura.adaptadores.salida.bd.cpc import RepositorioCpcBd
 from contratacion.infraestructura.adaptadores.salida.bd.cuentas import (
     RepositorioCuentasBd,
     RepositorioSesionesBd,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.negocios import RepositorioNegociosBd
+from contratacion.infraestructura.adaptadores.salida.bd.plantillas import RepositorioPlantillasBd
 from contratacion.infraestructura.adaptadores.salida.bd.politicas import (
     RepositorioConsentimientosBd,
     RepositorioPoliticasBd,
@@ -92,8 +108,9 @@ MENSAJES_POR_MOTIVO: dict[MotivoRevocacion, str] = {
         "Un administrador de tu empresa cerró la sesión. Pídele que te diga por qué."
     ),
     MotivoRevocacion.REUSO_DETECTADO: (
-        "Por seguridad se cerraron todas tus sesiones: se detectó un uso indebido del token de "
-        "renovación. Vuelve a entrar y, si el aviso se repite, cambia tu contraseña."
+        "Por seguridad se cerraron todas tus sesiones. Suele ocurrir cuando el panel queda abierto "
+        "en dos pestañas o en dos equipos a la vez. Vuelve a entrar; si el aviso se repite, cambia "
+        "tu contraseña."
     ),
     MotivoRevocacion.CIERRE_VENTANA: "Se cerró la ventana del navegador. Vuelve a entrar.",
 }
@@ -130,8 +147,135 @@ def ajustes_de_la_app() -> Ajustes:
 
 AjustesDep = Annotated[Ajustes, Depends(ajustes_de_la_app)]
 
+# Rutas que comprueban la sesión **sin rearmar el plazo de inactividad**.
+#
+# Son las dos que mantienen la conexión abierta por su cuenta: el latido, que el panel repite cada
+# treinta segundos, y el flujo de eventos, que reenvía una instantánea cada quince. Ninguna de las
+# dos es actividad de nadie —se repiten solas, con la persona delante o sin ella—, así que si
+# rearmaran el plazo, la pestaña de un equipo que nadie mira no se cerraría jamás.
+#
+# Se declaran por ruta y no por caso de uso porque el plazo se rearma en una sola puerta, la que
+# atraviesan todas las peticiones. La alternativa —que cada ruta dijera si cuenta o no— obligaría a
+# acordarse en cada endpoint nuevo, y el que se olvidara no daría ningún error: simplemente dejaría
+# sesiones abiertas para siempre.
+RUTAS_QUE_NO_REARMAN_EL_PLAZO = frozenset(
+    {
+        "/v1/presencia/latido",
+        "/v1/presencia/eventos",
+    }
+)
+
+MENSAJE_POR_INACTIVIDAD = (
+    "Tu sesión se cerró por inactividad. Vuelve a entrar; no se ha perdido nada de tu trabajo."
+)
+
+# El nombre lleva «avisos» porque en este módulo `registro` ya se usa para otras cosas y no conviene
+# confundirlos al leer una traza.
+registro_de_avisos = logging.getLogger(__name__)
+
+
+async def _sesion_verificada(
+    *,
+    cache: Cache,
+    sesiones: RepositorioSesiones,
+    claims: Claims,
+    inactividad_seg: int,
+    renovar: bool,
+) -> None:
+    """Comprueba que la sesión del token siga viva, y lanza si no lo está.
+
+    El camino barato es el almacén: una lectura, sin viaje a la base. La base solo se consulta
+    cuando el almacén **no responde** —no está configurado, o está caído—, y entonces el
+    comportamiento es el de antes de que existiera este módulo.
+
+    Que el almacén no responda y que la sesión no conste son cosas distintas, y confundirlas tiene
+    los dos finales que hay que evitar: echar a todo el mundo cuando el almacén se apaga, o no
+    cerrar ninguna sesión cuando no hay almacén. Por eso `seguir` devuelve tres estados.
+    """
+    vida = await seguir(
+        cache,
+        sesion_id=claims.sesion_id,
+        usuario_id=claims.usuario_id,
+        inactividad_seg=inactividad_seg,
+        renovar=renovar,
+    )
+
+    if vida is VidaDeSesion.VIVA:
+        return
+
+    if vida is VidaDeSesion.SIN_RESPUESTA:
+        guardada = await sesiones.por_id(negocio_id=claims.negocio_id, sesion_id=claims.sesion_id)
+        if guardada is None or not guardada.sesion.vigente(datetime.now(UTC)):
+            raise _sesion_cerrada(guardada)
+        if guardada.sesion.usuario_id != claims.usuario_id:
+            raise _sesion_cerrada(None)
+        return
+
+    # La sesión ya no consta en el almacén. Aquí **sí** se pregunta a la base, y lo que responda
+    # decide entre dos finales que se parecen y no son lo mismo: cerrar la sesión de verdad, o
+    # reponer la clave que el almacén perdió.
+    return await _resolver_clave_ausente(
+        cache=cache, sesiones=sesiones, claims=claims, inactividad_seg=inactividad_seg
+    )
+
+
+async def _resolver_clave_ausente(
+    *,
+    cache: Cache,
+    sesiones: SesionPorId,
+    claims: Claims,
+    inactividad_seg: int,
+) -> None:
+    """Decide si la ausencia de la clave es un cierre o una pérdida del almacén.
+
+    Antes esto daba por hecho que **lo único** que borra la clave sin cambiar el estado de la sesión
+    es el plazo de inactividad, y no es cierto: una política de memoria que desaloje claves, un
+    reinicio del almacén o un cambio de instancia también la borran. En esos casos el sistema
+    echaba a la persona con el mensaje «se cerró por inactividad» —que era falso, no había estado
+    inactiva— y desde fuera se veía como «de vez en cuando me saca sin motivo».
+
+    La distinción sale del dato que ya está en la base: **cuándo se usó la sesión por última vez**.
+
+    - Si la última vez fue hace más de lo que dura el plazo, la inactividad hizo su trabajo: se
+      cierra, y con su motivo.
+    - Si fue hace menos, la persona estaba trabajando y la clave se perdió por otra razón: se
+      repone y se la deja pasar.
+    """
+    guardada = await sesiones.por_id(negocio_id=claims.negocio_id, sesion_id=claims.sesion_id)
+    if guardada is None or guardada.sesion.usuario_id != claims.usuario_id:
+        # La fila no está, o es de otro: no hay nada que explicar sin revelar información de otra
+        # cuenta, y el mensaje tiene que ser el mismo en los dos casos.
+        raise _sesion_cerrada(None)
+
+    instante = datetime.now(UTC)
+    sesion = guardada.sesion
+    if not sesion.vigente(instante):
+        # Estado revocado o fecha pasada: un cierre de verdad, con su motivo.
+        raise _sesion_cerrada(guardada)
+
+    restante = inactividad_seg - int((instante - sesion.ultimo_uso_en).total_seconds())
+    if restante <= 0:
+        # Cumplido el plazo sin usarse: se cierra por inactividad, que es lo que se le dice.
+        raise SesionRevocada(MENSAJE_POR_INACTIVIDAD, motivo="inactividad")
+
+    # La clave se perdió mientras la sesión seguía viva y usándose. Se repone **con el tiempo que le
+    # queda** y no con el plazo entero: reponerlo completo correría el vencimiento hacia delante en
+    # cada pérdida, y una sesión que se pierde de vez en cuando acabaría sin cerrarse nunca por
+    # inactividad. Con el tiempo restante, el vencimiento sigue contándose desde el último uso real.
+    await abrir(
+        cache,
+        sesion_id=claims.sesion_id,
+        usuario_id=claims.usuario_id,
+        inactividad_seg=max(1, restante),
+    )
+    registro_de_avisos.warning(
+        "La clave de la sesión %s no estaba en el almacén y la sesión seguía viva: se repone",
+        claims.sesion_id,
+    )
+
 
 async def obtener_actor(
+    peticion: Request,
     ajustes: AjustesDep,
     sesiones: SesionesDep,
     negocios: NegociosDep,
@@ -151,11 +295,16 @@ async def obtener_actor(
     salen el usuario, el negocio y el rol. **El negocio viene siempre del token**, nunca de un
     parámetro de la petición (R-04).
 
-    Además de la firma se comprueba que **la sesión siga viva**. El token de acceso no lleva estado:
-    una vez firmado vale hasta que caduca, así que sin esta comprobación expulsar una sesión no
-    expulsaba nada durante los quince minutos siguientes —seguía leyendo datos como si nada— y el
-    aviso al usuario llegaba cuando ya no importaba. Se consulta por clave primaria, que es un
-    acceso barato, y a cambio el cierre es inmediato en la petición siguiente.
+    Además de la firma se comprueba que **la sesión siga viva**, y esa comprobación es la que decide
+    cuánto dura una sesión sin usarse. El token de acceso no lleva estado: una vez firmado vale
+    hasta que caduca, así que sin esto expulsar una sesión no expulsaba nada durante los quince
+    minutos siguientes —seguía leyendo datos como si nada— y el aviso al usuario llegaba cuando ya
+    no importaba.
+
+    Cuesta una lectura del almacén, y de paso **rearma el plazo de inactividad**: es aquí, en la
+    puerta por la que pasa todo lo que la persona pide de verdad, donde tiene sentido contar que
+    alguien está usando el sistema. Las rutas que se repiten solas quedan fuera, y están declaradas
+    en `RUTAS_QUE_NO_REARMAN_EL_PLAZO`.
 
     Sin token queda el atajo de desarrollo, que solo funciona con `PERMITIR_ACTOR_DE_DESARROLLO` y
     **jamás en producción**: sin autenticación no hay forma de saber quién llama.
@@ -163,9 +312,13 @@ async def obtener_actor(
     if autorizacion and autorizacion.lower().startswith("bearer "):
         token = autorizacion.split(" ", 1)[1].strip()
         claims = obtener_tokens().verificar(token, TipoToken.ACCESO)
-        guardada = await sesiones.por_id(negocio_id=claims.negocio_id, sesion_id=claims.sesion_id)
-        if guardada is None or not guardada.sesion.vigente(datetime.now(UTC)):
-            raise _sesion_cerrada(guardada)
+        await _sesion_verificada(
+            cache=obtener_cache(),
+            sesiones=sesiones,
+            claims=claims,
+            inactividad_seg=ajustes.sesion_inactividad_seg,
+            renovar=peticion.scope.get("path", "").rstrip("/") not in RUTAS_QUE_NO_REARMAN_EL_PLAZO,
+        )
 
         # Una empresa suspendida no deja pasar a nadie, ni a su propio administrador. Se comprueba
         # aquí, en la puerta por la que pasan todas las peticiones, y no en cada endpoint: si
@@ -173,6 +326,10 @@ async def obtener_actor(
         # empresa suspendida volvería a leer datos por esa puerta nueva. Cuesta una lectura por
         # clave primaria y es lo que hace que la suspensión surta efecto en la siguiente petición en
         # vez de cuando caduque el token de acceso, que son quince minutos de servicio cortado.
+        #
+        # Se deja tal cual aunque la sesión ya no cueste una lectura: convertirla en una caché con
+        # unos segundos de vida retrasaría la suspensión, y la suspensión es justo lo que tiene que
+        # notarse en la petición siguiente.
         empresa = await negocios.obtener(negocio_id=claims.negocio_id)
         if empresa is None or not empresa.activo:
             raise EmpresaSuspendida()
@@ -236,8 +393,17 @@ def repositorio_cuentas() -> RepositorioCuentas:
 
 
 def repositorio_sesiones() -> RepositorioSesiones:
-    """Sesiones abiertas."""
-    return RepositorioSesionesBd(obtener_motor())
+    """Sesiones abiertas, con el almacén de sesiones vivas al día.
+
+    El envoltorio se construye **aquí y solo aquí**, y por eso todos los caminos que abren o cierran
+    una sesión —el inicio, el cierre, la expulsión, la revocación administrativa y el cambio de
+    contraseña— pasan por él sin que ninguno tenga que acordarse de nada.
+    """
+    return SesionesConVida(
+        RepositorioSesionesBd(obtener_motor()),
+        obtener_cache(),
+        inactividad_seg=obtener_ajustes().sesion_inactividad_seg,
+    )
 
 
 def repositorio_politicas() -> RepositorioPoliticas:
@@ -253,6 +419,26 @@ def repositorio_consentimientos() -> RepositorioConsentimientos:
 def repositorio_negocios() -> RepositorioNegocios:
     """Empresas registradas."""
     return RepositorioNegociosBd(obtener_motor())
+
+
+def repositorio_plantillas() -> RepositorioPlantillas:
+    """Plantilla de Excel de cada empresa."""
+    return RepositorioPlantillasBd(obtener_motor())
+
+
+def repositorio_columnas() -> RepositorioColumnasExportacion:
+    """Columnas que cada empresa quiere en sus exportaciones."""
+    return RepositorioColumnasBd(obtener_motor())
+
+
+def repositorio_cpc() -> RepositorioCpc:
+    """Términos de CPC que cada empresa vigila."""
+    return RepositorioCpcBd(obtener_motor())
+
+
+def almacen_plantillas() -> AlmacenPlantillas:
+    """Dónde vive el archivo de la plantilla."""
+    return obtener_almacen()
 
 
 def repositorio_usuarios() -> RepositorioUsuarios:
@@ -275,6 +461,15 @@ UsuariosDep = Annotated[RepositorioUsuarios, Depends(repositorio_usuarios)]
 # entrega es el de siempre —la comprobación es estructural—, sin dos implementaciones.
 CierreSesionesDep = Annotated[CierreDeSesiones, Depends(repositorio_sesiones)]
 AuditoriaDep = Annotated[RegistroAuditoria, Depends(repositorio_cuentas)]
+PlantillasDep = Annotated[RepositorioPlantillas, Depends(repositorio_plantillas)]
+AlmacenPlantillasDep = Annotated[AlmacenPlantillas, Depends(almacen_plantillas)]
+ColumnasDep = Annotated[RepositorioColumnasExportacion, Depends(repositorio_columnas)]
+CpcDep = Annotated[RepositorioCpc, Depends(repositorio_cpc)]
+
+# El caché entra en pocos routers, pero cuando entra es para leer un contador y nada más: el de la
+# versión de los datos, que el panel consulta cada minuto para saber si hay algo nuevo. Se expone el
+# puerto (`Cache`), no el cliente concreto, porque lo único que se hace con él es leer una clave.
+CacheDep = Annotated[Cache, Depends(obtener_cache)]
 
 
 def servicio_contrasenas() -> ServicioContrasenas:

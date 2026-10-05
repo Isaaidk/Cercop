@@ -18,12 +18,21 @@ from datetime import datetime
 from typing import Any
 
 from contratacion.aplicacion.puertos.fuente import ResultadoExtraccion
+from contratacion.dominio.cpc import ItemCpc
 from contratacion.dominio.ingesta import Presupuesto, clave_natural
 from contratacion.infraestructura.adaptadores.salida.fuentes.limitador import LimitadorTasa
+from contratacion.infraestructura.adaptadores.salida.fuentes.nco_detalle import (
+    parsear_items,
+    token_de_enlace,
+)
 
 CODIGO = "NCO"
 ENDPOINT = (
     "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/NCO/NCORetornaRegistros.cpe"
+)
+# Ficha de una necesidad. Es la **única** vía por la que llega el CPC: el listado no lo publica.
+ENDPOINT_DETALLE = (
+    "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/NCO/NCORegistroDetalle.cpe"
 )
 TIEMPO_LIMITE_SEG = 120.0
 
@@ -91,6 +100,35 @@ class FuenteNco:
     def terminos(self, crudo: Mapping[str, Any]) -> Sequence[str]:
         """NCO no depende de términos: se ingesta siempre completo."""
         return ()
+
+    async def items(
+        self, enlace: str | None, presupuesto: Presupuesto
+    ) -> tuple[ItemCpc, ...] | None:
+        """Ítems con su CPC, leídos de la ficha de la necesidad.
+
+        `None` significa «no se pudo» y deja el registro pendiente para el ciclo siguiente; una
+        tupla vacía significa «la ficha se leyó y no tiene detalle», que se da por hecho y no se
+        vuelve a pedir. Hay necesidades publicadas sin tabla, así que la tupla vacía no es un
+        defecto: es un caso real.
+
+        El identificador no se inventa ni se busca aparte: sale del enlace que la propia fuente
+        publica en el listado (`url` → `enlace`), que es el mismo que abre la ficha en el portal.
+        """
+        token = token_de_enlace(enlace)
+        if not token:
+            return ()
+        if not presupuesto.consumir():
+            return None
+
+        html = await self._limitador.solicitar_texto(
+            ENDPOINT_DETALLE,
+            {"id": token, "op": 0},
+            etiqueta="NCO detalle",
+            tiempo_limite=TIEMPO_LIMITE_SEG,
+        )
+        if html is None:
+            return None
+        return parsear_items(html)
 
     async def cerrar(self) -> None:
         await self._limitador.cerrar()

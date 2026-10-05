@@ -26,6 +26,11 @@ ESTADO_OK = "ok"
 ESTADO_PARCIAL = "parcial"
 ESTADO_ERROR = "error"
 
+# Filas por sentencia en las escrituras de tanda. El tope real lo pone PostgreSQL —65.535
+# parámetros por sentencia—, y con seis parámetros por fila 500 deja un margen de sobra: se elige
+# por debajo para que el número no haya que recalcularlo cada vez que una fila gane una columna.
+FILAS_POR_LOTE = 500
+
 
 class RepositorioIngesta:
     """Operaciones de escritura y lectura de la ingesta."""
@@ -346,6 +351,109 @@ class RepositorioIngesta:
             )
             return {fila.clave_natural: fila.hash_contenido for fila in filas}
 
+    # ------------------------------------------------------------------ #
+    # Ítems con CPC (detalle de la necesidad)
+    # ------------------------------------------------------------------ #
+    async def registros_sin_items(
+        self, fuentes: Sequence[str], limite: int
+    ) -> list[dict[str, Any]]:
+        """Registros cuya ficha todavía no se ha leído, de las fuentes que publican detalle.
+
+        Se filtra por código de fuente y no se recorre todo: solo algunas fuentes tienen ficha, y
+        las demás llenarían la tanda con registros que nunca se podrán completar —petición perdida
+        por ciclo—. El orden es del más reciente al más antiguo porque es el orden en el que el
+        panel los muestra: lo que alguien acaba de publicar es lo que más se consulta.
+
+        Los que ya se intentaron y **no tienen ítems** no aparecen: `items_recogidos_en` queda
+        marcado aunque la tabla venga vacía, que es un caso real.
+        """
+        if not fuentes or limite <= 0:
+            return []
+        async with self._motor.connect() as conexion:
+            filas = (
+                (
+                    await conexion.execute(
+                        text(
+                            """
+                            SELECT r.id, r.clave_natural, f.codigo AS fuente,
+                                   r.datos ->> 'enlace' AS enlace
+                            FROM registro r
+                            JOIN fuente f ON f.id = r.fuente_id
+                            WHERE f.codigo = ANY(:fuentes)
+                              AND r.items_recogidos_en IS NULL
+                            ORDER BY r.primera_vez_visto DESC, r.id
+                            LIMIT :limite
+                            """
+                        ),
+                        {"fuentes": list(fuentes), "limite": limite},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [dict(fila) for fila in filas]
+
+    async def contar_sin_items(self, fuentes: Sequence[str]) -> int:
+        """Registros de estas fuentes a los que todavía no se les ha leído la ficha.
+
+        Se apoya en el índice parcial de pendientes: sin él, contar sería recorrer la tabla entera
+        en cada tanda para encontrar un puñado de filas.
+        """
+        if not fuentes:
+            return 0
+        async with self._motor.connect() as conexion:
+            fila = await conexion.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM registro r
+                    JOIN fuente f ON f.id = r.fuente_id
+                    WHERE f.codigo = ANY(:fuentes)
+                      AND r.items_recogidos_en IS NULL
+                    """
+                ),
+                {"fuentes": list(fuentes)},
+            )
+            return int(fila.scalar_one())
+
+    async def guardar_items(
+        self,
+        registro_id: UUID,
+        *,
+        items: Sequence[Mapping[str, Any]],
+        cpc_busqueda: str,
+        cpc_codigos: Sequence[str],
+    ) -> None:
+        """Guarda los ítems de un registro y lo marca como leído.
+
+        El texto de búsqueda y los códigos se calculan en el dominio y llegan ya hechos: aquí solo
+        se escriben. Dejarlos a la base —derivarlos del `jsonb` con una expresión SQL— ataría la
+        forma del texto a PostgreSQL y no se podría probar sin base.
+
+        `items_recogidos_en` se marca **siempre**, aunque la lista venga vacía. Es lo que distingue
+        «esta necesidad no publica detalle» de «todavía no se ha pedido», y equivocarse dejaría a
+        las necesidades sin detalle reintentándose en cada tanda para siempre.
+        """
+        async with self._motor.begin() as conexion:
+            await conexion.execute(
+                text(
+                    """
+                    UPDATE registro
+                       SET items = CAST(:items AS jsonb),
+                           cpc_busqueda = :texto,
+                           cpc_codigos = :codigos,
+                           items_recogidos_en = now()
+                     WHERE id = :id
+                    """
+                ),
+                {
+                    "id": str(registro_id),
+                    "items": json.dumps(list(items), ensure_ascii=False, default=str),
+                    "texto": cpc_busqueda,
+                    "codigos": list(cpc_codigos),
+                },
+            )
+
     async def guardar_registro(
         self,
         fuente_id: UUID,
@@ -365,6 +473,14 @@ class RepositorioIngesta:
         `ultima_vez_visto` solo se actualiza cuando el contenido cambia. Es deliberado: marcar las
         ~1.700 filas de NCO en cada ciclo, 96 veces al día, sería un desperdicio de escrituras sin
         aportar nada.
+
+        **El detalle ya leído no se toca.** Ni se invalida ni se vuelve a pedir: la ficha se lee una
+        vez, cuando el registro entra, y a partir de ahí solo se actualizan los campos del listado.
+        El motivo es la cuota: cada ficha es una petición a un origen que limita la tasa, y volver a
+        leer las de todo lo que cambia cada ciclo gastaría el presupuesto en fichas ya conocidas.
+        Lo que se paga a cambio es que el CPC de una necesidad que cambió de estado se queda como
+        estaba; quien necesite refrescarlo tiene `scripts/rellenar_items_cpc.py` para forzarlo a
+        mano. Se decidió así a petición explícita: el histórico se completa, no se repasa.
         """
         async with self._motor.begin() as conexion:
             fila = await conexion.execute(
@@ -422,3 +538,196 @@ class RepositorioIngesta:
                     "hash": hash_contenido,
                 },
             )
+
+    # ------------------------------------------------------------------ #
+    # Registros — escritura por lotes
+    # ------------------------------------------------------------------ #
+    # El ciclo escribe ~1.700 filas por vuelta. Hacerlo fila a fila son tres viajes de ida y vuelta
+    # a la base por registro; con una base a 86 ms, eso son casi nueve minutos por ciclo, que es con
+    # diferencia lo más caro del proceso y lo que lo empujaba a pisar el intervalo siguiente. Las
+    # cuatro operaciones de abajo resuelven su tanda en **una sola sentencia** cada una. No es una
+    # comodidad de estilo: es lo que hace que el ciclo quepa entre dos vueltas.
+    async def guardar_registros(
+        self, fuente_id: UUID, filas: Sequence[Mapping[str, Any]]
+    ) -> dict[str, UUID]:
+        """Inserta o actualiza una tanda entera y devuelve `clave natural → id`.
+
+        El conflicto se resuelve por clave natural, igual que en `guardar_registro`: es lo que hace
+        la ingesta idempotente y lo que permite volver a pasar el mismo listado sin duplicar nada.
+        Los identificadores devueltos hacen falta para el histórico, que se escribe por separado.
+
+        Reescribir una fila la devuelve a «vigente», y esa es la otra mitad de
+        `marcar_fuera_de_listado`: aquella cierra lo que dejó de aparecer, esta reabre lo que vuelve
+        a aparecer. Sin esta mitad, un cierre equivocado —una lectura del listado truncada por la
+        fuente, que llegue sin error y sin marca de parcial— sería definitivo, y la necesidad
+        quedaría cerrada para siempre: un dato de negocio falso y sin remedio.
+
+        La tanda se trocea en bloques, dentro de la **misma** transacción. No es por rendimiento
+        —una sola sentencia de 1.700 filas va bien— sino porque PostgreSQL admite como mucho 65.535
+        parámetros por sentencia: con seis por fila, una fuente que devolviera veinte mil registros
+        reventaría con un error que no dice nada de la causa. El troceo deja el techo fuera de
+        alcance sin cambiar el resultado, que sigue siendo todo o nada.
+        """
+        if not filas:
+            return {}
+        ids: dict[str, UUID] = {}
+        async with self._motor.begin() as conexion:
+            for inicio in range(0, len(filas), FILAS_POR_LOTE):
+                tanda = filas[inicio : inicio + FILAS_POR_LOTE]
+                parametros: dict[str, Any] = {"fuente": str(fuente_id)}
+                for indice, fila in enumerate(tanda):
+                    parametros[f"clave_{indice}"] = fila["clave"]
+                    parametros[f"datos_{indice}"] = json.dumps(
+                        fila["datos"], ensure_ascii=False, default=str
+                    )
+                    parametros[f"crudo_{indice}"] = json.dumps(
+                        fila["crudo"], ensure_ascii=False, default=str
+                    )
+                    parametros[f"texto_{indice}"] = fila["texto"]
+                    parametros[f"hash_{indice}"] = fila["hash"]
+                    parametros[f"fecha_{indice}"] = fila["fecha"]
+                # Los parámetros se nombran por posición (`:clave_0`, `:clave_1`…) porque cuántas
+                # filas trae una tanda lo decide la fuente en cada ciclo, y `text()` no admite un
+                # número variable de parámetros.
+                valores = ", ".join(
+                    f"(:fuente, :clave_{i}, CAST(:datos_{i} AS jsonb), CAST(:crudo_{i} AS jsonb), "
+                    f":texto_{i}, :hash_{i}, CAST(:fecha_{i} AS timestamptz))"
+                    for i in range(len(tanda))
+                )
+                filas_escritas = await conexion.execute(
+                    text(
+                        f"""
+                        INSERT INTO registro (
+                            fuente_id, clave_natural, datos, crudo, texto_busqueda,
+                            hash_contenido, fecha_publicacion
+                        )
+                        VALUES {valores}
+                        ON CONFLICT (fuente_id, clave_natural) DO UPDATE
+                            SET datos = EXCLUDED.datos,
+                                crudo = EXCLUDED.crudo,
+                                texto_busqueda = EXCLUDED.texto_busqueda,
+                                hash_contenido = EXCLUDED.hash_contenido,
+                                fecha_publicacion = EXCLUDED.fecha_publicacion,
+                                es_vigente = true,
+                                ultima_vez_visto = now()
+                        RETURNING clave_natural, id
+                        """
+                    ),
+                    parametros,
+                )
+                ids.update({fila.clave_natural: fila.id for fila in filas_escritas})
+        return ids
+
+    async def refrescar_volatiles(
+        self, fuente_id: UUID, refrescos: Sequence[Mapping[str, Any]]
+    ) -> int:
+        """Actualiza en bloque los campos que la fuente reescribe sola, sin tocar la huella.
+
+        Es el caso del token del enlace de la ficha, que se regenera en **cada** listado: eso deja
+        la mayoría de las filas «iguales» en contenido y, aun así, con un enlace que envejece hasta
+        dejar de abrir la ficha. Se escribe solo ese campo y solo en las filas que lo cambiaron, en
+        lugar de reescribir el registro entero —lo que además metería en el histórico versiones que
+        no lo son—.
+
+        Se hace con una fusión de JSON (`datos || volatiles`) y no campo a campo: los volátiles son
+        campos canónicos que viven dentro de `datos`, y enumerarlos aquí volvería a haber dos listas
+        de campos que mantener en sincronía.
+        """
+        if not refrescos:
+            return 0
+        pares = [{"clave": fila["clave"], "volatiles": fila["volatiles"]} for fila in refrescos]
+        async with self._motor.begin() as conexion:
+            resultado = await conexion.execute(
+                text(
+                    """
+                    UPDATE registro AS r
+                       SET datos = r.datos || v.volatiles
+                      FROM jsonb_to_recordset(CAST(:pares AS jsonb))
+                           AS v(clave text, volatiles jsonb)
+                     WHERE r.fuente_id = :fuente
+                       AND r.clave_natural = v.clave
+                    """
+                ),
+                {
+                    "fuente": str(fuente_id),
+                    "pares": json.dumps(pares, ensure_ascii=False, default=str),
+                },
+            )
+        return int(resultado.rowcount or 0)
+
+    async def agregar_historial_en_lote(self, filas: Sequence[Mapping[str, Any]]) -> int:
+        """Añade varias versiones al histórico de una vez.
+
+        Solo se llama con los registros cuyo contenido **cambió**. Esta tabla es el activo comercial
+        del producto —la fuente no publica histórico de necesidades, así que lo que no se guarde
+        aquí se pierde—, y meter en ella los que siguen iguales la convertiría en un registro de
+        visitas: dejaría de ser «las versiones que tuvo» para ser «las veces que se miró».
+        """
+        if not filas:
+            return 0
+        registradas = 0
+        async with self._motor.begin() as conexion:
+            for inicio in range(0, len(filas), FILAS_POR_LOTE):
+                tanda = filas[inicio : inicio + FILAS_POR_LOTE]
+                parametros: dict[str, Any] = {}
+                for indice, fila in enumerate(tanda):
+                    parametros[f"registro_{indice}"] = str(fila["registro_id"])
+                    parametros[f"datos_{indice}"] = json.dumps(
+                        fila["datos"], ensure_ascii=False, default=str
+                    )
+                    parametros[f"hash_{indice}"] = fila["hash"]
+                valores = ", ".join(
+                    f"(:registro_{i}, CAST(:datos_{i} AS jsonb), :hash_{i})"
+                    for i in range(len(tanda))
+                )
+                resultado = await conexion.execute(
+                    text(
+                        f"""
+                        INSERT INTO registro_historial (registro_id, datos, hash_contenido)
+                        VALUES {valores}
+                        """
+                    ),
+                    parametros,
+                )
+                registradas += int(resultado.rowcount or 0)
+        return registradas
+
+    async def marcar_fuera_de_listado(self, fuente_id: UUID, claves: Sequence[str]) -> int:
+        """Deja la vigencia **igual al listado**: cierra lo que se fue y reabre lo que vuelve.
+
+        La fuente solo publica lo vigente y no guarda histórico, así que «ya no aparece» es la única
+        señal de que una necesidad se cerró, y es información de negocio: distingue la que todavía
+        admite proformas de la que ya no. Por eso solo se llama con listados **completos**:
+        aplicarlo a una fuente que se consulta por partes daría por cerrado lo que simplemente no se
+        llegó a mirar.
+
+        Las dos direcciones van en la **misma sentencia**, y no es una optimización: es lo que evita
+        que un cierre equivocado sea definitivo. La vuelta de una necesidad no se puede detectar al
+        escribirla —si vuelve con el mismo contenido, la clasificación la da por «igual» y no se
+        escribe—, así que reabrir tiene que ser parte de la reconciliación y no de la escritura. Y
+        con `IS DISTINCT FROM` solo se tocan las filas cuyo estado cambia de verdad: las ~1.700 que
+        siguen iguales no se reescriben en cada vuelta.
+
+        Devuelve cuántas se **cerraron**, que es el dato de negocio; las reabiertas no se cuentan
+        porque no son novedad, son una corrección.
+
+        Con la lista vacía no se cierra nada, y es una decisión, no un descuido: una lista vacía
+        significa «no vi ningún registro», y de ahí no se sigue que no quede ninguno vivo. Cerrar el
+        catálogo entero por no haber leído nada sería justo lo contrario de lo que se sabe.
+        """
+        if not claves:
+            return 0
+        async with self._motor.begin() as conexion:
+            resultado = await conexion.execute(
+                text(
+                    """
+                    UPDATE registro
+                       SET es_vigente = (clave_natural = ANY(:claves))
+                     WHERE fuente_id = :fuente
+                       AND es_vigente IS DISTINCT FROM (clave_natural = ANY(:claves))
+                    RETURNING es_vigente
+                    """
+                ),
+                {"fuente": str(fuente_id), "claves": list(claves)},
+            )
+            return sum(1 for fila in resultado if not fila.es_vigente)

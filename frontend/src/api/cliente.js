@@ -28,6 +28,16 @@
 const BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
 const CLAVE_RENOVACION = 'contratacion:renovacion'
 
+/**
+ * Lo que se le dice a una persona cuando su sesión deja de servir.
+ *
+ * No habla de tokens ni de renovaciones aunque el problema sea exactamente eso. Un mensaje técnico
+ * en pantalla no ayuda a nadie —a quien intentara forzar el sistema tampoco: ya sabe lo que estaba
+ * haciendo— y sí confunde a quien simplemente ha vuelto al panel después de un rato y no entiende
+ * por qué le hablan de algo que no ha visto en su vida.
+ */
+const MENSAJE_SESION_CAIDA = 'Tu sesión ha caducado. Vuelve a entrar.'
+
 // El mismo tipo que declara el servidor para el libro de Excel. Se envía en `Accept` y sirve para
 // que un error de la API —que llega en JSON— no se confunda con el archivo.
 const TIPO_LIBRO =
@@ -167,10 +177,21 @@ async function interpretarError(respuesta) {
   }
 
   const codigo = cuerpo?.codigo || (respuesta.status === 401 ? 'sin_sesion' : 'error')
-  const mensaje =
-    cuerpo?.detail ||
-    (Array.isArray(cuerpo?.detail) ? cuerpo.detail.map((d) => d.msg).join('. ') : null) ||
-    `La API respondió ${respuesta.status}.`
+  // El `detail` de FastAPI es un **texto** cuando el error lo levantó el dominio —«Con estas palabras
+  // el negocio llegaría a 61 palabras clave activas y el máximo es 60»— y una **lista** de errores de
+  // validación cuando lo rechazó el esquema de la petición (un 422).
+  //
+  // La lista se comprueba primero a propósito: un arreglo siempre es «verdadero», así que mirando el
+  // texto antes, la lista se colaba por ahí y `new Error([{...}])` acababa enseñando «[object Object]»
+  // en pantalla. Un mensaje así es peor que no decir nada, porque oculta el dato que hacía falta para
+  // corregir la petición.
+  const detalle = Array.isArray(cuerpo?.detail)
+    ? cuerpo.detail
+        .map((fallo) => fallo?.msg)
+        .filter(Boolean)
+        .join('. ')
+    : cuerpo?.detail
+  const mensaje = detalle || `La API respondió ${respuesta.status}.`
 
   return new ErrorApi(mensaje, { estado: respuesta.status, codigo, detalles: cuerpo })
 }
@@ -211,8 +232,18 @@ async function enviar(ruta, { metodo = 'GET', cuerpo, parametros, sinReintento =
 
     const renovado = await renovarEnSilencio()
     if (renovado) return enviar(ruta, { metodo, cuerpo, parametros, sinReintento: true })
+
     avisarSesionPerdida('caducada')
-    throw error
+    // El mensaje se sustituye por uno dirigido a la persona **antes** de lanzar. El que llegó del
+    // servidor habla de la sesión desde el punto de vista del protocolo, y quien capture este error
+    // lo enseña tal cual: sin esto, el aviso bueno que acaba de poner `avisarSesionPerdida` se
+    // sobrescribía un renglón después con el texto de la respuesta y la pantalla acababa contando
+    // algo que el usuario no puede entender ni usar.
+    throw new ErrorApi(MENSAJE_SESION_CAIDA, {
+      estado: 401,
+      codigo: 'sesion_caducada',
+      detalles: error.detalles,
+    })
   }
 
   if (respuesta.status === 403) {
@@ -264,7 +295,12 @@ async function descargar(ruta, { parametros, sinReintento = false } = {}) {
     const renovado = await renovarEnSilencio()
     if (renovado) return descargar(ruta, { parametros, sinReintento: true })
     avisarSesionPerdida('caducada')
-    throw error
+    // Mismo reemplazo que en `enviar`, y por el mismo motivo: quien capture este error lo enseña.
+    throw new ErrorApi(MENSAJE_SESION_CAIDA, {
+      estado: 401,
+      codigo: 'sesion_caducada',
+      detalles: error.detalles,
+    })
   }
 
   if (respuesta.status === 403) {
@@ -334,10 +370,80 @@ async function renovarEnSilencio() {
   return renovacionEnCurso
 }
 
+/**
+ * Sube un archivo a la API como `multipart/form-data`.
+ *
+ * No puede reutilizar `enviar`, que serializa el cuerpo a JSON, pero comparte con él lo que de verdad
+ * importa: el token, la renovación silenciosa y la interpretación de errores. Reescribir eso aparte
+ * duplicaría justo la parte donde es fácil equivocarse.
+ *
+ * **No se fija `Content-Type` a mano, y es lo más importante de esta función.** El navegador lo pone
+ * solo, con la **frontera** que separa una parte de otra del formulario. Escribirlo a mano como
+ * `multipart/form-data` —que es lo que apetece al ver el de `enviar`— deja el cuerpo sin frontera, y
+ * el servidor no puede saber dónde acaba el nombre del archivo y empiezan los bytes. El síntoma es
+ * un error de lectura en el servidor, no un 415: se pierde un rato buscando en el sitio equivocado.
+ */
+async function enviarArchivo(ruta, archivo, { sinReintento = false } = {}) {
+  const formulario = new FormData()
+  // El nombre del campo, `archivo`, es el que declara la ruta en el servidor. Se manda también el
+  // nombre del fichero —el tercer argumento— porque es lo que se guarda como etiqueta para poder
+  // decirle a la persona cuál subió.
+  formulario.append('archivo', archivo, archivo.name)
+
+  const cabeceras = { Accept: 'application/json' }
+  if (tokenAcceso) cabeceras.Authorization = `Bearer ${tokenAcceso}`
+
+  let respuesta
+  try {
+    respuesta = await fetch(construirUrl(ruta), {
+      method: 'POST',
+      headers: cabeceras,
+      body: formulario,
+    })
+  } catch (error) {
+    throw new ErrorApi(
+      'No se pudo contactar con el servidor. Comprueba tu conexión e inténtalo de nuevo.',
+      { estado: 0, codigo: 'sin_conexion', detalles: error },
+    )
+  }
+
+  if (respuesta.status === 401 && !sinReintento) {
+    const error = await interpretarError(respuesta)
+    if (error.codigo === 'sesion_revocada') {
+      avisarSesionPerdida(error.detalles?.motivo || 'revocada', error.message)
+      throw error
+    }
+    const renovado = await renovarEnSilencio()
+    // El mismo objeto `archivo` se puede reenviar: un `File` no se consume al subirlo, a diferencia
+    // del cuerpo de una petición normal.
+    if (renovado) return enviarArchivo(ruta, archivo, { sinReintento: true })
+    avisarSesionPerdida('caducada')
+    throw new ErrorApi(MENSAJE_SESION_CAIDA, {
+      estado: 401,
+      codigo: 'sesion_caducada',
+      detalles: error.detalles,
+    })
+  }
+
+  if (respuesta.status === 403) {
+    const error = await interpretarError(respuesta)
+    if (error.codigo === 'empresa_suspendida') avisarEmpresaSuspendida(error.message)
+    throw error
+  }
+
+  // El 413 lo devuelve el servidor cuando el archivo pasa del tope, con un mensaje que explica qué
+  // hacer. Se deja pasar tal cual en lugar de sustituirlo por uno genérico.
+  if (!respuesta.ok) throw await interpretarError(respuesta)
+
+  const texto = await respuesta.text()
+  return texto ? JSON.parse(texto) : null
+}
+
 export const http = {
   get: (ruta, parametros) => enviar(ruta, { parametros }),
   post: (ruta, cuerpo, parametros) => enviar(ruta, { metodo: 'POST', cuerpo, parametros }),
   put: (ruta, cuerpo, parametros) => enviar(ruta, { metodo: 'PUT', cuerpo, parametros }),
   del: (ruta, parametros) => enviar(ruta, { metodo: 'DELETE', parametros }),
   descargar,
+  enviarArchivo,
 }

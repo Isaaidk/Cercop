@@ -34,6 +34,7 @@ from contratacion.aplicacion.puertos.cuentas import (
     Cuenta,
     RepositorioCuentas,
     RepositorioSesiones,
+    SesionGuardada,
 )
 from contratacion.aplicacion.puertos.seguridad import (
     Claims,
@@ -113,6 +114,31 @@ def _claims(cuenta: Cuenta, sesion_id: UUID, tipo: TipoToken, expira_en: datetim
         tipo=tipo,
         expira_en=expira_en,
     )
+
+
+def _dentro_de_la_gracia(
+    guardada: SesionGuardada, huella: str, instante: datetime, gracia_seg: int
+) -> bool:
+    """¿La huella presentada es la anterior y todavía está dentro del plazo?
+
+    Se pide **las tres** cosas, y cada una cubre un caso distinto:
+
+    - Que coincida con la anterior: si no, es un token de otra generación, no un reintento.
+    - Que haya un instante de rotación: en una sesión recién creada no hay generación anterior, y
+      `None` no puede compararse con nada.
+    - Que no haya pasado el plazo: aquí está la ventana entera. Sin esta condición la gracia sería
+      permanente y la detección de reutilización no existiría.
+
+    `gracia_seg` a cero desactiva la ventana, que es el comportamiento estricto de antes. Se admite
+    porque un despliegue puede preferirlo, y porque así la prueba puede fijar los dos extremos.
+    """
+    if gracia_seg <= 0 or guardada.refresh_hash_anterior is None:
+        return False
+    if guardada.refresh_anterior_desde is None:
+        return False
+    return guardada.refresh_hash_anterior == huella and (
+        instante - guardada.refresh_anterior_desde
+    ) <= timedelta(seconds=gracia_seg)
 
 
 async def iniciar_sesion(
@@ -262,13 +288,33 @@ async def renovar_sesion(
     tokens: ServicioTokens,
     acceso_ttl_seg: int,
     refresco_ttl_seg: int,
+    gracia_seg: int,
     momento: datetime | None = None,
 ) -> SesionIniciada:
     """Emite un par de tokens nuevo a partir de uno de renovación.
 
-    Detecta la reutilización: si el token presentado no coincide con la huella guardada, se cierra
-    **todo** lo abierto de esa cuenta. No se intenta averiguar cuál de las dos copias es la
-    legítima, porque no hay forma de saberlo y suponerlo mal deja dentro a quien robó el token.
+    Detecta la reutilización: si el token presentado no es el vigente **ni tampoco el anterior
+    dentro de la ventana de gracia**, se cierra todo lo abierto de esa cuenta. No se intenta
+    averiguar cuál de las dos copias es la legítima, porque no hay forma de saberlo y suponerlo mal
+    deja dentro a quien robó el token.
+
+    Por qué hay una ventana de gracia, y por qué no debilita nada
+    ------------------------------------------------------------
+    Rotar y detectar reutilización con la misma exactitud tiene un falso positivo que se da solo:
+    **la respuesta perdida**. El servidor rota el token, la respuesta no llega —se corta el wifi,
+    se duerme el portátil, un proxy cierra la conexión— y el navegador reintenta con el token
+    viejo. Con detección estricta eso se interpreta como «hay dos copias en circulación» y la
+    persona queda fuera de su cuenta sin haber hecho nada.
+
+    No es teórico: apareció tres veces en un solo día en la tabla de sesiones, con motivo
+    `reuso_detectado`, en la cuenta de una persona que estaba usando el panel. Desde fuera se ve
+    como «de vez en cuando me saca y me habla de tokens», que es lo que el usuario no puede
+    entender.
+
+    La ventana solo admite **la generación inmediatamente anterior** y solo durante unos segundos,
+    así que un token robado usado un minuto después sigue cerrando todas las sesiones. Lo único que
+    deja de detectarse es la reutilización dentro de esos segundos, que es exactamente el intervalo
+    en el que un reintento legítimo y un robo son indistinguibles.
     """
     instante = momento or datetime.now(UTC)
     claims = tokens.verificar(token_refresco, TipoToken.REFRESCO)
@@ -277,7 +323,10 @@ async def renovar_sesion(
     if guardada is None or not guardada.sesion.vigente(instante):
         raise SinPermiso(MENSAJE_SIN_SESION)
 
-    if tokens.huella(token_refresco) != guardada.refresh_hash:
+    huella = tokens.huella(token_refresco)
+    if huella != guardada.refresh_hash and not _dentro_de_la_gracia(
+        guardada, huella, instante, gracia_seg
+    ):
         cerradas = await sesiones.revocar_todas(
             negocio_id=claims.negocio_id,
             usuario_id=claims.usuario_id,
