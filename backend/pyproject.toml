@@ -27,6 +27,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     # Base de datos horaria para Windows, donde no existe la del sistema: `zoneinfo` la necesita.
     "tzdata>=2024.1",
+    # Lectura del `docker-compose.yml` desde `scripts/verificar_despliegue.py`, que comprueba la
+    # aritmética de capacidad del despliegue. Llega igualmente con `uvicorn[standard]`, pero un
+    # `import` explícito se declara: depender de una dependencia de otra dependencia funciona hasta
+    # que alguien cambia el extra y el guion deja de arrancar.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +41,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pip-audit>=2.7",
+    "types-PyYAML>=6.0",
     "testcontainers[postgres,redis]>=4.8",
 ]
 

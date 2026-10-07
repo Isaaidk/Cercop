@@ -27,6 +27,7 @@ from contratacion.aplicacion.generaciones import subir_generacion
 from contratacion.aplicacion.mapeo import MapeoCampo, aplicar
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.aplicacion.puertos.fuente import FuenteExterna
+from contratacion.dominio.cpc import items_desde_crudos
 from contratacion.dominio.ingesta import (
     CAMPOS_VOLATILES,
     DIAS_VENTANA_INICIAL,
@@ -184,7 +185,7 @@ async def ejecutar_ciclo(
         a_guardar: list[dict[str, Any]] = []
         con_historial: list[dict[str, Any]] = []
         a_refrescar: list[dict[str, Any]] = []
-        for clave, datos, crudo_limpio, texto, huella in preparados:
+        for clave, datos, crudo_limpio, texto, huella, items in preparados:
             clasificacion = clasificar(huellas.get(clave), huella)
             if clasificacion is Clasificacion.IGUAL:
                 contadores.iguales += 1
@@ -196,7 +197,23 @@ async def ejecutar_ciclo(
                 }
                 if volatiles:
                     a_refrescar.append({"clave": clave, "volatiles": volatiles})
-                continue
+                if not items:
+                    continue
+                # Con ítems no se puede saltar la escritura aunque el contenido sea el mismo: el
+                # desglose del producto **no entra en la huella** (`hash_contenido` mira `datos`),
+                # así que una fila que se importó antes de que supiéramos leerlo se ve igual que
+                # una que ya lo tiene. Sin esta excepción, el relleno de los ítems de un año
+                # importado no escribiría ni uno solo: se contaría todo como «igual».
+                #
+                # No cuenta como actualización ni deja historial: el contenido de `datos` no ha
+                # cambiado, y meterlo en el histórico convertiría esa tabla en un registro de
+                # visitas.
+            else:
+                if clasificacion is Clasificacion.NUEVO:
+                    contadores.nuevos += 1
+                else:
+                    contadores.actualizados += 1
+                    con_historial.append({"datos": datos, "hash": huella, "clave": clave})
 
             a_guardar.append(
                 {
@@ -206,13 +223,9 @@ async def ejecutar_ciclo(
                     "texto": texto,
                     "hash": huella,
                     "fecha": _fecha_utc(datos.get("fecha_publicacion")),
+                    "items": list(items),
                 }
             )
-            if clasificacion is Clasificacion.NUEVO:
-                contadores.nuevos += 1
-            else:
-                contadores.actualizados += 1
-                con_historial.append({"datos": datos, "hash": huella, "clave": clave})
 
         ids = await repositorio.guardar_registros(fuente_id, a_guardar)
         if a_refrescar:
@@ -237,7 +250,6 @@ async def ejecutar_ciclo(
             cerrados = await repositorio.marcar_fuera_de_listado(
                 fuente_id, [clave for clave, *_ in preparados]
             )
-
         await repositorio.registrar_pendientes(
             fuente_id, list(_pendientes(mapeos, extraccion.registros)), {}
         )
@@ -314,13 +326,18 @@ def _mapear_todo(
     mapeos: Sequence[MapeoCampo],
     crudos: Sequence[Mapping[str, Any]],
     contadores: ContadoresCiclo,
-) -> list[tuple[str, dict[str, Any], dict[str, Any], str, str]]:
+) -> list[tuple[str, dict[str, Any], dict[str, Any], str, str, tuple[Any, ...]]]:
     """Convierte cada payload crudo en lo que hay que guardar.
 
     Se separa de la escritura para poder calcular las huellas en lote y no consultar la base una vez
     por registro.
+
+    El último elemento son los **ítems del producto**, cuando la fuente los publica con el propio
+    listado. Viajan aparte de `datos` porque no son un campo canónico: no hay columna en el `jsonb`
+    que los reciba. Una fuente que no los traiga —el listado paginado de OCDS, por ejemplo— devuelve
+    la lista vacía, y para esas filas todo el camino de abajo se comporta como antes.
     """
-    preparados: list[tuple[str, dict[str, Any], dict[str, Any], str, str]] = []
+    preparados: list[tuple[str, dict[str, Any], dict[str, Any], str, str, tuple[Any, ...]]] = []
     vistos: set[str] = set()
 
     for crudo in crudos:
@@ -341,10 +358,30 @@ def _mapear_todo(
             if not clave_cruda.startswith("_")
         }
         preparados.append(
-            (clave, datos, crudo_limpio, _texto_busqueda(datos), hash_contenido(datos))
+            (
+                clave,
+                datos,
+                crudo_limpio,
+                _texto_busqueda(datos),
+                hash_contenido(datos),
+                _items(crudo),
+            )
         )
 
     return preparados
+
+
+def _items(crudo: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Los ítems del producto que trae el crudo, ya reducidos a la forma que se guarda.
+
+    Se pasan por `items_desde_crudos` —la misma función con la que se leen de la base— en vez de
+    guardarlos tal cual: así lo que se escribe es exactamente lo que después se puede leer, y un
+    ítem al que le falte el código se cae aquí y no en cada consulta del panel.
+    """
+    crudos = crudo.get("_items")
+    if not isinstance(crudos, (list, tuple)):
+        return ()
+    return tuple(item.como_diccionario() for item in items_desde_crudos(crudos))
 
 
 def _pendientes(mapeos: Sequence[MapeoCampo], crudos: Sequence[Mapping[str, Any]]) -> set[str]:

@@ -168,6 +168,22 @@ class RepositorioNegocios(Protocol):
         """
         ...
 
+    async def eliminar(self, *, negocio_id: UUID) -> None:
+        """Retira una empresa y **todo** lo que cuelga de ella.
+
+        Es la operación más destructiva del sistema y no se deshace. Se lleva las cuentas, sus
+        sesiones, sus concesiones de vistas, sus conjuntos de términos, sus exportaciones, su
+        plantilla de Excel y su registro de aceptación de los términos.
+
+        Lo que **no** toca: el histórico de contratación, que es de la plataforma y no de la empresa
+        —borrar un cliente no puede restar datos a los demás—, y la auditoría, que sobrevive a
+        propósito para poder decir quién lo hizo.
+
+        Atraviesa RLS por la misma puerta que `cambiar_estado`: el contexto se fija al negocio que
+        se borra, y las acciones referenciales de las claves ajenas no pasan por las políticas.
+        """
+        ...
+
     async def crear(self, alta: AltaEmpresa) -> UUID:
         """Registra la empresa, su administrador y las vistas de prueba, todo o nada.
 

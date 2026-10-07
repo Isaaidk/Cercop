@@ -49,6 +49,7 @@ from contratacion.dominio.presencia import (
     evento_desconectado,
     presencia_de_sesion_viva,
 )
+from contratacion.dominio.roles import es_de_plataforma
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion, Sesion
 
 # El nombre del ayudante de registro lleva «avisos» porque en este módulo `registro` ya es el
@@ -205,11 +206,17 @@ async def cuadro_del_negocio(
     se corrigen mejor que una que las junte con `LEFT JOIN` sobre datos que por separado ya no son
     fiables.
 
-    **Solo un rol administrativo ve la presencia de los demás.** Que un compañero esté conectado es
-    información sobre una persona, y el rol de lectura existe para consultar contrataciones, no para
-    vigilar a los compañeros. Quien no administra se ve a sí mismo y a nadie más, en lugar de
-    recibir un error: la pantalla sigue sirviendo para lo que esa persona la abre.
+    **Es del dueño del sistema.** Saber quién tiene el panel abierto es información sobre personas,
+    y además es información de **operación** —cuánta gente está dentro ahora mismo—, no de
+    contratación. Se cerró a los administradores de empresa que antes sí lo veían: un cliente no
+    tiene por qué saber cuándo entra y sale la gente de otro cliente, ni siquiera cuándo entra y
+    sale la suya.
+
+    El filtro por alcance que sigue abajo se conserva aunque hoy no llegue a actuar: si algún día
+    se vuelve a abrir el cuadro a un administrador de negocio, la regla —cada uno ve lo suyo— ya
+    está escrita, probada y metida **dentro** de la clave de caché, que es donde tiene que estar.
     """
+    exigir_ver_el_cuadro(actor)
     instante = momento or datetime.now(UTC)
     negocio = _negocio_efectivo(actor, negocio_solicitado)
 
@@ -262,6 +269,22 @@ async def cuadro_del_negocio(
     )
 
 
+def exigir_ver_el_cuadro(actor: Actor) -> None:
+    """Corta el paso a quien no es el dueño del sistema.
+
+    Se niega con un error y no sirviendo una lista vacía: «no hay nadie conectado» y «no puedes ver
+    esto» son respuestas distintas, y confundirlas dejaría a un administrador de empresa creyendo
+    que su gente no está trabajando.
+
+    Es pública porque el enrutador la llama **antes** de abrir el flujo de eventos. La comprobación
+    de `cuadro_del_negocio` sigue siendo la que manda —es la que protege también al worker y a
+    cualquier otro camino—; esta solo consigue que la negativa llegue como un 403 y no como una
+    respuesta 200 que se abre y muere con el error dentro, que es lo que vería el navegador.
+    """
+    if not es_de_plataforma(actor.rol):
+        raise SinPermiso("Quién está conectado lo ve solo el superadministrador de la plataforma.")
+
+
 def _ve_a_todos(actor: Actor) -> bool:
     """¿Este rol puede ver la presencia de sus compañeros, o solo la suya?"""
     return puede_gestionar(actor.rol)
@@ -304,7 +327,14 @@ async def cuadro_serializado(
     qué se ve. Dos administradores de empresas distintas pidiendo el mismo negocio ajeno recibirían
     —con razón— cosas distintas, y compartiendo entrada el segundo leería lo que se calculó para el
     primero. Ese camino no se guarda y se calcula siempre.
+
+    El permiso se comprueba **antes de mirar el almacén**. Al revés, quien no puede ver el cuadro
+    llegaría a hacer una lectura de su propia entrada, que no le daría nada —la clave lleva el
+    alcance dentro— pero que es trabajo que no debería llegar a provocar. La comprobación de
+    `cuadro_del_negocio` sigue estando y es la que manda.
     """
+    exigir_ver_el_cuadro(actor)
+
     if negocio_solicitado is not None and negocio_solicitado != actor.negocio_id:
         return (
             await cuadro_del_negocio(
@@ -317,7 +347,6 @@ async def cuadro_serializado(
                 negocio_solicitado=negocio_solicitado,
             )
         ).como_diccionario()
-
     negocio = _negocio_efectivo(actor, negocio_solicitado)
     clave = clave_cuadro(negocio, _ambito(actor))
     guardable = cache.habilitada and ttl_cache_seg > 0

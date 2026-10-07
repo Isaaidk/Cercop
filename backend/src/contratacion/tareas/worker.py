@@ -25,6 +25,10 @@ import sys
 import time
 
 from contratacion.aplicacion.casos_uso.buscar_registros import obtener_catalogos
+from contratacion.aplicacion.casos_uso.mantener_registros import (
+    ResultadoMantenimiento,
+    mantener_registros,
+)
 from contratacion.aplicacion.casos_uso.operar_ingesta import (
     PASO_COMPROBACION_SEG,
     SolicitudCiclo,
@@ -32,6 +36,9 @@ from contratacion.aplicacion.casos_uso.operar_ingesta import (
 )
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
 from contratacion.infraestructura.adaptadores.salida.bd.ingesta import RepositorioIngesta
+from contratacion.infraestructura.adaptadores.salida.bd.mantenimiento import (
+    RepositorioMantenimientoBd,
+)
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import cerrar_bd, obtener_motor
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
     cerrar_cache,
@@ -126,6 +133,30 @@ async def vigilar_listado() -> None:
         await cerrar_bd()
 
 
+async def mantener_historico(*, simular: bool = False) -> ResultadoMantenimiento:
+    """Una vuelta de mantenimiento: vencimientos que invalidan y filas que se retiran.
+
+    Abre y cierra su propia caché, como los otros dos trabajos del bucle, que no la tienen abierta.
+    El caso de uso se encarga de subir la generación solo si algo cambió de verdad.
+
+    No consulta la fuente ni gasta presupuesto: es base de datos y caché, y por eso puede correr
+    cada cinco minutos sin acercarse al límite de tasa del SERCOP.
+    """
+    ajustes = obtener_ajustes()
+    try:
+        return await mantener_registros(
+            RepositorioMantenimientoBd(obtener_motor()),
+            obtener_cache(),
+            intervalo_seg=ajustes.intervalo_mantenimiento_seg,
+            dias_retencion=ajustes.purga_plazo_dias,
+            maximo_por_vuelta=ajustes.purga_max_filas_por_vuelta,
+            simular=simular,
+        )
+    finally:
+        await cerrar_cache()
+        await cerrar_bd()
+
+
 async def _solicitud_de_ciclo() -> SolicitudCiclo | None:
     """Toma la petición que haya dejado el panel, si hay alguna.
 
@@ -168,10 +199,15 @@ async def bucle() -> int:
     ajustes = obtener_ajustes()
     intervalo_largo = max(60, ajustes.intervalo_ingesta_min * 60)
     intervalo_corto = max(10, ajustes.intervalo_vigilancia_seg)
+    intervalo_mantenimiento = max(30, ajustes.intervalo_mantenimiento_seg)
     registro.info(
-        "Worker iniciado. Ciclo completo: %s min. Vigilancia del listado: %s s.",
+        "Worker iniciado. Ciclo completo: %s min. Vigilancia del listado: %s s. "
+        "Mantenimiento: %s s (retirar lo vencido hace %s días, %s por vuelta).",
         ajustes.intervalo_ingesta_min,
         intervalo_corto,
+        intervalo_mantenimiento,
+        ajustes.purga_plazo_dias,
+        ajustes.purga_max_filas_por_vuelta or "nada",
     )
 
     # Las dos horas se calculan sobre `time.monotonic()`, no sobre la hora del reloj: un ajuste de
@@ -180,6 +216,9 @@ async def bucle() -> int:
     proximo_ciclo = 0.0
     proxima_vigilancia = 0.0
     proxima_comprobacion = 0.0
+    # El mantenimiento se retrasa una vuelta: en el arranque toca un ciclo completo, que es lo que
+    # trae los datos, y el mantenimiento solo mira vencimientos de lo que ya está guardado.
+    proximo_mantenimiento = time.monotonic() + intervalo_mantenimiento
 
     while True:
         momento = time.monotonic()
@@ -219,10 +258,24 @@ async def bucle() -> int:
             except Exception:  # noqa: BLE001 - ni por una vigilancia fallida
                 registro.exception("La vigilancia falló; se continuará con la siguiente.")
 
+        # El mantenimiento va **detrás** del ciclo y de la vigilancia, en el mismo bucle y no en un
+        # proceso aparte: no consulta la fuente, así que no compite por la cuota, pero sí compite
+        # por la base de datos, y aquí queda claro que lo primero es traer los datos.
+        if momento >= proximo_mantenimiento:
+            proximo_mantenimiento = momento + intervalo_mantenimiento
+            try:
+                resultado = await mantener_historico()
+                registro.info("Mantenimiento: %s", resultado.resumen())
+            except Exception:  # noqa: BLE001 - el mantenimiento no puede tumbar la ingesta
+                registro.exception("El mantenimiento falló; se continuará con el siguiente.")
+
         momento = time.monotonic()
         # El sueño llega hasta la hora que toque, pero nunca más allá del siguiente vistazo a las
         # peticiones: `proxima_comprobacion` es el techo que trocea la espera.
-        espera = min(proximo_ciclo, proxima_vigilancia, proxima_comprobacion) - momento
+        espera = (
+            min(proximo_ciclo, proxima_vigilancia, proxima_comprobacion, proximo_mantenimiento)
+            - momento
+        )
         # `ESPERA_MINIMA_SEG` protege del caso en que las dos horas ya pasaron —un ciclo que tardó
         # más que su propio intervalo—: sin él el bucle giraría sin dormir y martillearía la fuente.
         await asyncio.sleep(max(ESPERA_MINIMA_SEG, espera))
@@ -244,6 +297,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Ejecuta una sola vuelta corta (solo el listado de NCO) y termina.",
     )
+    # El mantenimiento, solo. Sirve para no esperar cinco minutos a ver si los vencimientos mueven
+    # la generación, y con `--simular` para saber cuánto retiraría **antes** de retirarlo.
+    parser.add_argument(
+        "--mantenimiento",
+        action="store_true",
+        help="Ejecuta una sola vuelta de mantenimiento (vencimientos y retención) y termina.",
+    )
+    parser.add_argument(
+        "--simular",
+        action="store_true",
+        help="Con --mantenimiento: cuenta lo que se retiraría sin borrar nada.",
+    )
     argumentos = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -252,6 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        if argumentos.mantenimiento:
+            resultado = asyncio.run(mantener_historico(simular=argumentos.simular))
+            print(resultado.resumen())
+            return 0
         if argumentos.vigilancia:
             asyncio.run(vigilar_listado())
             return 0

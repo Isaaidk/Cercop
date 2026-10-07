@@ -14,9 +14,10 @@ import { computed } from 'vue'
 
 import GestorPalabrasClave from '@/components/GestorPalabrasClave.vue'
 import GestorPalabrasCpc from '@/components/GestorPalabrasCpc.vue'
+import GestorDescripcionProducto from '@/components/GestorDescripcionProducto.vue'
+import SelectorProvincias from '@/components/SelectorProvincias.vue'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
-import { PROVINCIAS, nombreDeProvincia } from '@/utils/provincias'
 import { numero } from '@/utils/formato'
 
 const estado = filtros.estado
@@ -27,21 +28,6 @@ const fuentes = computed(() => datos.estado.catalogos.fuente || [])
 
 function limpiarFecha(campo) {
   filtros.actualizar({ [campo]: null })
-}
-
-/**
- * Añade una provincia a la selección y descarta el cantón.
- *
- * Un cantón de otra provincia no devolvería nada, y el usuario vería la tabla vacía sin que el
- * filtro que sobra aparezca por ningún lado: el cantón solo se muestra como ficha cuando existe.
- *
- * Si la provincia ya estaba elegida no se duplica: `alternarProvincia` la quitaría, así que se
- * comprueba antes. Elegir dos veces la misma del desplegable no debe borrarla sin querer.
- */
-function agregarProvincia(codigo) {
-  if (!codigo) return
-  if (filtros.estado.provincias.includes(codigo)) return
-  filtros.alternarProvincia(codigo)
 }
 
 /**
@@ -105,55 +91,39 @@ const pistaAplicar = computed(() =>
       <GestorPalabrasCpc />
     </div>
 
+    <!--
+      La descripción del producto, debajo del CPC y por el mismo motivo: son los tres sitios donde se
+      escribe qué se busca, y se usan juntos.
+
+      Va después del CPC porque es lo más fino de los tres: las palabras clave buscan en toda la
+      convocatoria, el CPC en la clasificación normalizada y esto solo en el objeto de compra. De
+      arriba abajo, cada uno acota más.
+    -->
+    <div class="filtros__bloque">
+      <GestorDescripcionProducto />
+    </div>
+
     <hr class="separador" />
 
     <!--
       La provincia se elige aquí o pulsando el mapa: los dos caminos escriben el mismo filtro. Antes
       solo existía el mapa, así que quien no lo usara no podía acotar por provincia.
 
-      El desplegable **añade** y las fichas de debajo quitan. Un desplegable normal no puede
-      representar una lista —solo guarda un valor— y con selección múltiple nativa habría que
-      mantener pulsada la tecla Control para elegir la segunda, que es una convención que la mayoría
-      no conoce. Añadir por arriba y quitar por la ficha se entiende sin explicarlo.
+      Se elige con **casillas** y no con un desplegable que añade y fichas que quitan: la pregunta es
+      «¿en qué provincias?», y con veinticuatro opciones una lista de casillas se lee de un vistazo
+      —se ve lo que está marcado y lo que no sin abrir nada— mientras que el desplegable obligaba a
+      abrirlo una vez por provincia. Lo que no cambia es la lógica: el filtro sigue siendo la
+      **lista** de provincias y la lista vacía no filtra, igual que en el mapa.
     -->
     <div class="filtros__bloque">
-      <label class="campo">
-        <span class="campo__etiqueta">Provincias</span>
-        <select class="seleccion" :value="''" @change="agregarProvincia($event.target.value)">
-          <option value="">
-            {{ estado.provincias.length ? 'Añadir otra provincia…' : 'Todas las provincias' }}
-          </option>
-          <option v-for="provincia in PROVINCIAS" :key="provincia.codigo" :value="provincia.codigo">
-            {{ provincia.nombre }}
-          </option>
-        </select>
-      </label>
+      <SelectorProvincias
+        :seleccionadas="estado.provincias"
+        @cambiar="filtros.fijarProvincias"
+      />
 
-      <div v-if="estado.provincias.length || estado.canton" class="filtros__fichas">
+      <!-- El cantón solo se puede elegir en el mapa: aquí aparece como ficha para poder quitarlo. -->
+      <div v-if="estado.canton" class="filtros__fichas">
         <button
-          v-for="codigo in estado.provincias"
-          :key="codigo"
-          type="button"
-          class="ficha"
-          :aria-label="`Quitar el filtro de ${nombreDeProvincia(codigo)}`"
-          @click="filtros.alternarProvincia(codigo)"
-        >
-          <span class="ficha__ciudad" aria-hidden="true">▤</span>
-          {{ nombreDeProvincia(codigo) }}
-          <span class="ficha__quitar" aria-hidden="true">✕</span>
-        </button>
-        <button
-          v-if="estado.provincias.length > 1"
-          type="button"
-          class="boton boton--fantasma boton--pequeno"
-          @click="filtros.limpiarProvincia()"
-        >
-          Quitar las {{ estado.provincias.length }}
-        </button>
-
-        <!-- El cantón solo se puede elegir en el mapa: aquí aparece como ficha para poder quitarlo. -->
-        <button
-          v-if="estado.canton"
           type="button"
           class="ficha"
           :aria-label="`Quitar el filtro del cantón ${estado.canton}`"

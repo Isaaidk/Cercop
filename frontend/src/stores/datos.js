@@ -121,6 +121,14 @@ export const datos = {
     estado.cargando = true
     estado.error = ''
 
+    // Las dos consultas salen **a la vez**. Antes iban encadenadas —la tabla y, con su respuesta ya
+    // en pantalla, las gráficas—, y contra una base remota eso son dos idas y vueltas sumadas en el
+    // camino crítico: la pantalla tardaba el doble de lo necesario. Ninguna necesita el resultado de
+    // la otra: las dos piden los mismos criterios, así que encadenarlas no aportaba nada.
+    //
+    // El fallo de las gráficas no tumba la tabla y se trata dentro de `cargarGraficas`, que no lanza.
+    const graficas = conGraficas ? this.cargarGraficas() : Promise.resolve()
+
     try {
       // `.value` no es opcional: `filtros.parametros` es un `computed`, y pasarlo entero hacía que el
       // cliente HTTP serializara las tripas del objeto reactivo (`fn`, `_value`, `deps`, `__v_isRef`…)
@@ -128,8 +136,6 @@ export const datos = {
       // servidor: la tabla devolvía siempre lo mismo y los controles parecían no hacer nada.
       const respuesta = await api.buscar(filtros.parametros.value)
       aplicarPagina(respuesta)
-
-      if (conGraficas) await this.cargarGraficas()
     } catch (error) {
       estado.error = error.message
       estado.registros = []
@@ -141,6 +147,10 @@ export const datos = {
     } finally {
       estado.cargando = false
     }
+
+    // Se espera a las gráficas al final para que quien llama sepa cuándo está todo listo, y para que
+    // un cambio de filtros no se solape con la recarga anterior.
+    await graficas
   },
 
   /**

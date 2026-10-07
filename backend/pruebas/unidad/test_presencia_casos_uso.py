@@ -7,8 +7,10 @@ Aquí se defienden tres cosas que no se ven en el color:
 2. **El latido no toca `ultimo_uso`.** Es la prueba que protege la regla de expulsión: si el latido
    escribiera ahí, una pestaña olvidada sería la última en expulsarse y se cerraría la que la
    persona tiene delante.
-3. **Un rol de lectura no ve la presencia de los demás.** Que un compañero esté conectado es
-   información sobre una persona, y el rol existe para consultar contrataciones.
+3. **El cuadro lo ve solo el dueño de la plataforma.** Saber quién tiene el panel abierto es
+   información sobre personas y sobre la operación —cuánta gente está dentro ahora mismo—, no
+   sobre contrataciones. Un administrador de empresa lo veía antes y ya no: que un cliente sepa
+   cuándo entra y sale su gente, y menos la de otro cliente, no hace falta para contratar.
 """
 
 from __future__ import annotations
@@ -57,6 +59,10 @@ OTRO_NEGOCIO = UUID("33333333-3333-3333-3333-333333333333")
 
 ADMIN = Actor(usuario_id=USUARIO, negocio_id=NEGOCIO, rol="admin_negocio")
 LECTOR = Actor(usuario_id=USUARIO, negocio_id=NEGOCIO, rol="lector")
+# El único que puede pedir el cuadro de presencia. Se distingue de `ADMIN` a propósito: la mitad
+# administrativa —latir, cerrar la ventana— sigue siendo cosa de cualquiera, y usar el mismo actor
+# para las dos cosas dejaría pasar como bueno un cuadro que un cliente no debería poder ver.
+PLATAFORMA = Actor(usuario_id=USUARIO, negocio_id=NEGOCIO, rol="super_admin")
 
 
 # --------------------------------------------------------------------------- #
@@ -403,7 +409,7 @@ async def test_el_cuadro_combina_cuentas_sesiones_y_senales() -> None:
     sesiones.a_devolver_activas = [conectado, ausente]
 
     cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(ausente.usuario_id, "Luis")]),
         sesiones=sesiones,
         registro=registro,
@@ -430,7 +436,7 @@ async def test_los_conectados_van_primero_y_el_orden_es_estable() -> None:
     sesiones.a_devolver_activas = [conectado]
 
     cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")]),
         sesiones=sesiones,
         registro=registro,
@@ -442,25 +448,44 @@ async def test_los_conectados_van_primero_y_el_orden_es_estable() -> None:
     assert cuadro.presencias[-1].estado is EstadoPresencia.ROJO
 
 
-async def test_un_lector_solo_se_ve_a_si_mismo() -> None:
-    """Ver quién está conectado es información sobre personas, no sobre contrataciones."""
+async def test_un_lector_no_puede_ver_el_cuadro() -> None:
+    """Ver quién está conectado es información sobre personas, no sobre contrataciones.
+
+    Se niega con un error y no con una lista vacía: el panel tiene que poder decir «no puedes ver
+    esto», y no inventarse que no hay nadie dentro.
+    """
+    with pytest.raises(SinPermiso):
+        await cuadro_del_negocio(
+            LECTOR,
+            accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")]),
+            sesiones=SesionesFalsas(),
+            registro=RegistroFalso(),
+            momento=AHORA,
+            ttl_seg=TTL,
+        )
+
+
+async def test_un_administrador_de_empresa_tampoco_ve_el_cuadro() -> None:
+    """El caso que cambió: quien administra una empresa lo veía y ya no lo ve.
+
+    Es la prueba que distingue «un administrador» de «el dueño de la plataforma». Si alguien
+    volviera a relajar el guardián a `es_administrativo`, esta prueba falla y la anterior no.
+    """
+    with pytest.raises(SinPermiso):
+        await cuadro_del_negocio(
+            ADMIN,
+            accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")]),
+            sesiones=SesionesFalsas(),
+            registro=RegistroFalso(),
+            momento=AHORA,
+            ttl_seg=TTL,
+        )
+
+
+async def test_el_dueno_de_la_plataforma_ve_a_todo_el_negocio() -> None:
     otro = uuid4()
     cuadro = await cuadro_del_negocio(
-        LECTOR,
-        accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(otro, "Luis")]),
-        sesiones=SesionesFalsas(),
-        registro=RegistroFalso(),
-        momento=AHORA,
-        ttl_seg=TTL,
-    )
-
-    assert [presencia.usuario_id for presencia in cuadro.presencias] == [USUARIO]
-
-
-async def test_un_administrador_si_ve_a_todo_el_negocio() -> None:
-    otro = uuid4()
-    cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(otro, "Luis")]),
         sesiones=SesionesFalsas(),
         registro=RegistroFalso(),
@@ -471,11 +496,11 @@ async def test_un_administrador_si_ve_a_todo_el_negocio() -> None:
     assert len(cuadro.presencias) == 2
 
 
-async def test_consultar_otro_negocio_exige_ser_administrador() -> None:
+async def test_consultar_otro_negocio_exige_ser_el_dueno_de_la_plataforma() -> None:
     """El negocio no lo elige el cliente: sin permiso, ni se intenta."""
     with pytest.raises(SinPermiso):
         await cuadro_del_negocio(
-            LECTOR,
+            ADMIN,
             accesos=AccesosFalsos([]),
             sesiones=SesionesFalsas(),
             registro=RegistroFalso(),
@@ -485,9 +510,9 @@ async def test_consultar_otro_negocio_exige_ser_administrador() -> None:
         )
 
 
-async def test_un_administrador_puede_consultar_su_propio_negocio_explicitamente() -> None:
+async def test_el_dueno_de_la_plataforma_consulta_su_propio_negocio_explicitamente() -> None:
     cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(USUARIO, "Ana")]),
         sesiones=SesionesFalsas(),
         registro=RegistroFalso(),
@@ -505,7 +530,7 @@ async def test_el_cuadro_declara_su_alcance() -> None:
     con toda tranquilidad.
     """
     comun = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([]),
         sesiones=SesionesFalsas(),
         registro=RegistroFalso(compartida=True),
@@ -513,7 +538,7 @@ async def test_el_cuadro_declara_su_alcance() -> None:
         ttl_seg=TTL,
     )
     local = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([]),
         sesiones=SesionesFalsas(),
         registro=RegistroFalso(compartida=False),
@@ -526,7 +551,7 @@ async def test_el_cuadro_declara_su_alcance() -> None:
 
 
 async def test_el_motivo_de_un_rojo_llega_al_listado() -> None:
-    """La revocación se lee de la base y se traduce: el administrador sabe por qué no está."""
+    """La revocación se lee de la base y se traduce: quien mira el cuadro sabe por qué no está."""
     expulsado = uuid4()
     pasada = _sesion(
         usuario_id=expulsado,
@@ -537,7 +562,7 @@ async def test_el_motivo_de_un_rojo_llega_al_listado() -> None:
     sesiones.a_devolver_revocadas = [pasada]
 
     cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(expulsado, "Luis")]),
         sesiones=sesiones,
         registro=RegistroFalso(),
@@ -558,7 +583,7 @@ async def test_una_cuenta_deshabilitada_no_aparece_en_verde_aunque_tenga_senal()
     sesiones.a_devolver_activas = [sesion]
 
     cuadro = await cuadro_del_negocio(
-        ADMIN,
+        PLATAFORMA,
         accesos=AccesosFalsos([_cuenta(USUARIO, "Ana", estado="inactivo")]),
         sesiones=sesiones,
         registro=registro,
@@ -758,44 +783,50 @@ async def test_la_segunda_consulta_se_sirve_de_la_instantanea() -> None:
     cache = CacheFalso()
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")])
 
-    primero = await _cuadro(ADMIN, cache, accesos)
-    segundo = await _cuadro(ADMIN, cache, accesos)
+    primero = await _cuadro(PLATAFORMA, cache, accesos)
+    segundo = await _cuadro(PLATAFORMA, cache, accesos)
 
     assert accesos.consultas == 1, "la segunda relectura no debe tocar la base"
     assert primero == segundo
     assert cache.escrituras == 1
 
 
-async def test_lo_guardado_para_un_administrador_no_se_le_sirve_a_un_lector() -> None:
-    """La prueba que justifica meter el alcance **dentro** de la clave.
+async def test_lo_guardado_no_le_sirve_a_quien_no_es_de_la_plataforma() -> None:
+    """El cuadro de la plataforma está en el almacén y aun así no se sirve a nadie más.
 
-    El administrador calcula el cuadro de toda la empresa y queda guardado. Si la clave fuera solo
-    el negocio, el lector recibiría ese mismo listado —con sus compañeros dentro— y vería justo lo
-    que la regla de alcance existe para no enseñarle. Aquí se comprueba que ve solo lo suyo.
+    Antes esta prueba medía dos alcances distintos del mismo negocio; hoy el corte es anterior, y
+    eso la hace más fuerte: el lector no recibe el listado de sus compañeros **ni aunque esté ya
+    calculado**, y ni siquiera se llega a leerlo del almacén. Si alguien bajara el guardián a
+    `es_administrativo`, esta prueba volvería a fallar.
     """
     cache = CacheFalso()
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(uuid4(), "Luis")])
 
-    del_administrador = await _cuadro(ADMIN, cache, accesos)
-    del_lector = await _cuadro(LECTOR, cache, accesos)
+    del_dueno = await _cuadro(PLATAFORMA, cache, accesos)
+    lecturas_antes = cache.lecturas
+    with pytest.raises(SinPermiso):
+        await _cuadro(LECTOR, cache, accesos)
 
-    assert len(del_administrador["usuarios"]) == 2
-    assert len(del_lector["usuarios"]) == 1
-    assert accesos.consultas == 2, "el lector no puede aprovechar el cálculo del administrador"
+    assert len(del_dueno["usuarios"]) == 2
+    assert accesos.consultas == 1, "el rechazado no puede llegar ni a consultar"
+    assert cache.lecturas == lecturas_antes, "el rechazo es anterior a mirar la instantánea"
 
 
-async def test_cada_persona_sin_permiso_tiene_su_propia_entrada() -> None:
-    """Dos lectores distintos tampoco comparten: cada uno se ve a sí mismo y a nadie más."""
-    cache = CacheFalso()
-    otro = Actor(usuario_id=uuid4(), negocio_id=NEGOCIO, rol="lector")
-    accesos = AccesosFalsos([_cuenta(USUARIO, "Ana"), _cuenta(otro.usuario_id, "Luis")])
+async def test_la_clave_del_cuadro_separa_a_cada_persona() -> None:
+    """El alcance sigue dentro de la clave aunque hoy solo haya un alcance posible.
 
-    primero = await _cuadro(LECTOR, cache, accesos)
-    segundo = await _cuadro(otro, cache, accesos)
+    El filtro por alcance se conservó como red de seguridad para el día que el cuadro vuelva a
+    abrirse a más gente. Lo que no puede quedar sin comprobar es la pieza que lo hace seguro: si la
+    clave fuese solo el negocio, lo guardado para quien ve a todos se serviría a quien solo debe
+    verse a sí mismo. Se prueba donde vive —en la función de la clave— y no a través de un caso de
+    uso que hoy no puede producir esa situación.
+    """
+    propia = clave_cuadro(NEGOCIO, str(USUARIO))
+    ajena = clave_cuadro(NEGOCIO, str(uuid4()))
 
-    assert primero != segundo
-    assert primero["usuarios"][0]["usuario_id"] == str(USUARIO)
-    assert segundo["usuarios"][0]["usuario_id"] == str(otro.usuario_id)
+    assert propia != ajena
+    assert propia != clave_cuadro(NEGOCIO, AMBITO_TODOS)
+    assert clave_cuadro(NEGOCIO, AMBITO_TODOS) == clave_cuadro(NEGOCIO, AMBITO_TODOS)
 
 
 async def test_el_cuadro_guardado_conserva_lo_que_el_panel_necesita() -> None:
@@ -816,7 +847,7 @@ async def test_el_cuadro_guardado_conserva_lo_que_el_panel_necesita() -> None:
 
     def _una_vez() -> Any:
         return cuadro_serializado(
-            ADMIN,
+            PLATAFORMA,
             accesos=accesos,
             sesiones=sesiones,
             registro=senales,
@@ -867,8 +898,8 @@ async def test_sin_almacen_se_calcula_cada_vez() -> None:
     """Sin Redis el sistema funciona igual, solo cuesta más. Es la degradación que ya se aceptó."""
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
 
-    await _cuadro(ADMIN, CacheNula(), accesos)
-    await _cuadro(ADMIN, CacheNula(), accesos)
+    await _cuadro(PLATAFORMA, CacheNula(), accesos)
+    await _cuadro(PLATAFORMA, CacheNula(), accesos)
 
     assert accesos.consultas == 2
 
@@ -876,7 +907,7 @@ async def test_sin_almacen_se_calcula_cada_vez() -> None:
 async def test_un_almacen_roto_no_deja_sin_cuadro_al_panel() -> None:
     """Un problema del almacén no puede vaciar la pantalla de quién está conectado."""
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
-    cuadro = await _cuadro(ADMIN, CacheFalso(falla=True), accesos)
+    cuadro = await _cuadro(PLATAFORMA, CacheFalso(falla=True), accesos)
 
     assert accesos.consultas == 1
     assert len(cuadro["usuarios"]) == 1
@@ -892,7 +923,7 @@ async def test_una_entrada_ilegible_se_descarta_en_vez_de_servirse() -> None:
     cache.contenido[clave_cuadro(NEGOCIO, AMBITO_TODOS)] = "esto no es un cuadro"
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
 
-    cuadro = await _cuadro(ADMIN, cache, accesos)
+    cuadro = await _cuadro(PLATAFORMA, cache, accesos)
 
     assert accesos.consultas == 1
     assert len(cuadro["usuarios"]) == 1
@@ -904,7 +935,7 @@ async def test_una_lista_json_tampoco_cuela_como_cuadro() -> None:
     cache.contenido[clave_cuadro(NEGOCIO, AMBITO_TODOS)] = "[1, 2, 3]"
     accesos = AccesosFalsos([_cuenta(USUARIO, "Ana")])
 
-    cuadro = await _cuadro(ADMIN, cache, accesos)
+    cuadro = await _cuadro(PLATAFORMA, cache, accesos)
 
     assert accesos.consultas == 1
     assert "usuarios" in cuadro

@@ -23,6 +23,16 @@ RUN pip install --upgrade pip && pip install .
 # El proceso corre sin privilegios. Un contenedor como root convierte cualquier fallo de una
 # dependencia en un fallo de la máquina que lo hospeda.
 RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+
+# El directorio de las plantillas se crea **aquí y con este dueño**, y no lo crea el volumen.
+#
+# El `compose` monta un volumen con nombre en esta ruta. Un volumen hereda el contenido y el dueño
+# del directorio de la imagen **si ese directorio existe**; si no existe, Docker lo crea como
+# `root:root` y el proceso —que corre sin privilegios— no puede escribir en él. El síntoma aparece
+# en el primer despliegue y no en desarrollo: subir la plantilla de Excel falla con un error de
+# permisos, y la empresa no puede configurar su exportación.
+RUN mkdir -p /app/plantillas && chown app:app /app/plantillas
+
 USER app
 
 # `--workers` se pasa en el `compose` y no se fija aquí: el número de procesos depende de los

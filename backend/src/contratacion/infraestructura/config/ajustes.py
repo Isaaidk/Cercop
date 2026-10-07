@@ -89,9 +89,16 @@ class Ajustes(BaseSettings):
     # hacer nada raro.
     #
     # Es corta a propósito: solo cubre el intervalo en el que un reintento y un robo son
-    # indistinguibles. Un token robado usado un minuto después sigue disparando el cierre de todo.
+    # indistinguibles. Un token robado usado un rato después sigue disparando el cierre de todo.
     # Ponerla a cero restaura el comportamiento estricto de antes.
-    refresh_gracia_seg: int = Field(default=30, ge=0, le=300)
+    #
+    # Cinco minutos y no los treinta segundos de antes, porque el reintento legítimo no siempre
+    # tarda segundos: un portátil que se suspende, un ascensor que se queda sin cobertura o un
+    # proxy que corta la conexión dejan la respuesta perdida **minutos**. Con la ventana corta, el
+    # reintento caía fuera y se interpretaba como robo: la persona aparecía en el acceso sin haber
+    # hecho nada. Lo que sigue sin admitirse es reutilizar **dos generaciones atrás**, que ya no
+    # tiene explicación inocente.
+    refresh_gracia_seg: int = Field(default=300, ge=0, le=300)
     # Minutos de inactividad tras los cuales una sesión deja de servir. Ocho horas cubre una jornada
     # con margen: quien se va a comer no vuelve a entrar, y quien deja el panel abierto el fin de
     # semana no sigue dentro el lunes.
@@ -193,6 +200,31 @@ class Ajustes(BaseSettings):
     # consulta como mucho veinte términos por vuelta, los más olvidados primero. Lo único que
     # cambiaba con el tope bajo era que el cliente no podía **guardar** lo que quería vigilar.
     maximo_terminos_negocio: int = Field(default=60, ge=1)
+
+    # --- Mantenimiento del histórico ----------------------------------------
+    # Cada cuánto se mira si algún plazo de proformas cruzó y se retira lo que ya venció.
+    #
+    # El vencimiento **no** se guarda en ninguna fila, se deduce de la fecha. Lo que este trabajo
+    # aporta es que la caché se entere: una página guardada hace diez minutos sigue contando como
+    # abierta una ínfima que ya venció, y no da ningún error. Los cinco minutos son el compromiso
+    # entre eso y no estar subiendo la generación todo el rato —subirla deja inservible lo cacheado
+    # y el catálogo de desplegables se paga detrás de cada subida—. La ventana de los vencimientos
+    # es este mismo número, así que cada uno se cuenta una sola vez.
+    intervalo_mantenimiento_seg: int = Field(default=300, ge=30)
+    # Días que se conserva una ínfima **después** de que venza su plazo de proformas.
+    #
+    # Es una decisión de negocio, no técnica: estas filas son las de los procesos que ya se cerraron
+    # o se adjudicaron, y son las que sostienen las estadísticas del periodo y la consulta de un
+    # concurso pasado. Un borrado no se deshace. Cero retira en cuanto vence.
+    purga_plazo_dias: int = Field(default=7, ge=0)
+    # Cuántas filas se retiran como mucho en cada vuelta.
+    #
+    # Acota el trabajo, no la política: una pasada que borrara las cinco mil filas vencidas de golpe
+    # mantendría bloqueadas sus páginas el tiempo suficiente para que el resto del sistema lo
+    # notara, y compite con la ingesta por la misma base. **Cero desactiva la retención** —se sigue
+    # informando de lo que venció, y no se borra nada—, que es lo que hay que poner si se prefiere
+    # conservar el histórico entero.
+    purga_max_filas_por_vuelta: int = Field(default=500, ge=0)
 
     # --- Búsqueda y palabras clave ------------------------------------------
     ttl_resultados_seg: int = Field(default=900, ge=1)

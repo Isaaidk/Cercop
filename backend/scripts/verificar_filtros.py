@@ -16,14 +16,22 @@ filtra.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
+import unicodedata
 from datetime import date, timedelta
 
 from sqlalchemy import text
 
 sys.path.insert(0, "src")
 
-from contratacion.dominio.busqueda import Categoria, Filtros, ModoBusqueda, OrdenBusqueda
+from contratacion.dominio.busqueda import (
+    Categoria,
+    Filtros,
+    ModoBusqueda,
+    OrdenBusqueda,
+    normalizar_terminos,
+)
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
     RepositorioConsultasBd,
 )
@@ -67,6 +75,105 @@ def marca(condicion: bool, texto: str) -> None:
     print(f"  {'OK ' if condicion else 'MAL'} {texto}")
 
 
+# Palabras de cinco letras o más, tal y como están escritas en el objeto de compra. El filtro busca
+# por **prefijo de palabra**, así que una palabra corta —«de», «para»— encontraría medio listado y
+# la comprobación no diría nada; y se dejan las tildes a propósito, porque el servidor las normaliza
+# y eso es justo lo que interesa comprobar.
+PALABRA = re.compile(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{5,}")
+
+
+def _palabras(texto: str) -> list[str]:
+    return PALABRA.findall(texto)
+
+
+def _sin_tildes(texto: str) -> str:
+    descompuesto = unicodedata.normalize("NFD", texto)
+    return "".join(caracter for caracter in descompuesto if unicodedata.category(caracter) != "Mn")
+
+
+async def _objetos_de_muestra(limite: int = 40) -> list[str]:
+    """Objetos de compra reales —los más largos— para sacar de ellos palabras que existen.
+
+    Se toman los más largos porque son los que traen palabras aprovechables, y se toman de la base
+    en lugar de inventarlos porque lo que se comprueba no es un formato: es que una palabra que está
+    en un objeto de compra encuentre su fila.
+    """
+    async with obtener_motor().connect() as conexion:
+        resultado = await conexion.execute(
+            text(
+                "SELECT r.datos ->> 'objeto_compra' FROM registro r "
+                "WHERE coalesce(r.datos ->> 'objeto_compra', '') <> '' "
+                "ORDER BY length(r.datos ->> 'objeto_compra') DESC LIMIT :limite"
+            ),
+            {"limite": limite},
+        )
+        return [str(fila[0]) for fila in resultado.fetchall()]
+
+
+def _palabra_mas_larga(objetos: list[str]) -> str | None:
+    palabras = [palabra for objeto in objetos for palabra in _palabras(objeto)]
+    return max(palabras, key=len) if palabras else None
+
+
+def _palabra_con_tilde(objetos: list[str]) -> str | None:
+    """La palabra más larga que **lleva** tilde, para comprobar que escribirlas o no da lo mismo."""
+    con_tilde = [
+        palabra
+        for objeto in objetos
+        for palabra in _palabras(objeto)
+        if _sin_tildes(palabra) != palabra
+    ]
+    return max(con_tilde, key=len) if con_tilde else None
+
+
+def _par_de_palabras(objetos: list[str]) -> tuple[str, str] | None:
+    """Dos palabras del **mismo** objeto: es lo que exige el modo «todas»."""
+    for objeto in objetos:
+        distintas = sorted(set(_palabras(objeto)), key=len, reverse=True)
+        if len(distintas) >= 2:
+            return distintas[0], distintas[1]
+    return None
+
+
+def _descripcion(*palabras: str) -> tuple[str, ...]:
+    """Los términos de la descripción, por el mismo camino que hace una petición HTTP.
+
+    El panel manda lo que la persona escribió —«ELECTROCARDIÓGRAFO»— y el enrutador lo reduce a
+    minúsculas y sin tildes antes de construir los criterios. Aquí se hace igual porque esta sonda
+    llama a la capa de consulta directamente, y sin normalizar la palabra con tilde llega a
+    `to_tsquery` tal cual: el diccionario `simple` de PostgreSQL **no** quita tildes, así que no
+    encontraría el índice, que sí está sin ellas. Ese cero sería del arnés, no del filtro.
+    """
+    return normalizar_terminos(palabras)
+
+
+async def _palabras_de_las_entidades(limite: int = 30) -> list[str]:
+    """Palabras largas sacadas de los nombres de entidad, de la más distintiva a la menos.
+
+    Sirven para comparar las dos búsquedas: la entidad forma parte del texto de búsqueda y **no**
+    del objeto de compra, así que son palabras que las palabras clave encuentran en todas las filas
+    de esa entidad mientras que la descripción solo las encuentra si además están en el objeto.
+    """
+    async with obtener_motor().connect() as conexion:
+        filas = await conexion.execute(
+            text(
+                "SELECT r.datos ->> 'entidad' FROM registro r "
+                "WHERE coalesce(r.datos ->> 'entidad', '') <> '' LIMIT :limite"
+            ),
+            {"limite": limite},
+        )
+        candidatas: list[str] = []
+        for fila in filas.fetchall():
+            for palabra in _palabras(str(fila[0])):
+                limpia = _sin_tildes(palabra).lower()
+                if len(limpia) >= 7 and limpia not in candidatas:
+                    candidatas.append(limpia)
+
+    # De mayor a menor: una palabra larga es más rara dentro de un objeto de compra, así que es la
+    # que mejor enseña la diferencia entre las dos búsquedas.
+    return sorted(candidatas, key=len, reverse=True)[:6]
+
+
 async def _contar_con_cpc() -> int:
     """Cuántos registros tienen ya el CPC leído.
 
@@ -96,6 +203,20 @@ async def main() -> None:
     async def total(f: Filtros) -> int:
         _, cantidad = await repositorio.buscar(f)
         return cantidad
+
+    async def total_entre(f: Filtros) -> tuple[int, int, int]:
+        """Cuenta `f` con el total medido justo antes y justo después.
+
+        El worker está ingestando mientras esto corre, así que el total **se mueve**: comparar
+        contra una cifra tomada hace un minuto hace fallar comprobaciones que están bien —se vio,
+        con el total pasando de 111.059 a 111.076 en veinte segundos— y una alarma que salta sola
+        deja de mirarse. Como la base solo crece, el valor de un filtro que no filtra tiene que
+        quedar entre las dos medidas.
+        """
+        antes = await total(filtros())
+        valor = await total(f)
+        despues = await total(filtros())
+        return antes, valor, despues
 
     try:
         print("=" * 66)
@@ -144,14 +265,17 @@ async def main() -> None:
         desde = hoy - timedelta(days=30)
         hasta = hoy - timedelta(days=20)
         solo_desde = await total(filtros(desde=desde))
-        solo_hasta = await total(filtros(hasta=hoy))
+        _, solo_hasta, tras_hasta = await total_entre(filtros(hasta=hoy))
         rango = await total(filtros(desde=desde, hasta=hasta))
         print(f"  desde {desde}                 -> {solo_desde}")
         print(f"  hasta {hoy}                   -> {solo_hasta}")
         print(f"  entre {desde} y {hasta} -> {rango}")
         marca(solo_desde <= base, "«desde» no puede devolver más que el total")
         marca(rango <= solo_desde, "un rango no puede devolver más que su propio «desde»")
-        marca(solo_hasta <= base, "«hasta» no puede devolver más que el total")
+        marca(
+            solo_hasta <= tras_hasta,
+            f"«hasta» no puede devolver más que el total ({solo_hasta} <= {tras_hasta})",
+        )
         # Un rango imposible no puede devolver nada, y sobre todo no puede reventar: este es el caso
         # que devolvía un 500 antes de arreglar el `:hasta::date`.
         antiguo = await total(filtros(desde=date(2000, 1, 1), hasta=date(2000, 1, 2)))
@@ -264,7 +388,7 @@ async def main() -> None:
             imposible = await total(filtros(cpc=("zzzzzz-no-existe",)))
             marca(imposible == 0, f"un CPC inexistente devuelve 0 ({imposible})")
             sin_cpc = await total(filtros())
-            marca(sin_cpc == base, f"sin el criterio el total no cambia ({sin_cpc})")
+            marca(sin_cpc >= base, f"sin el criterio el total no baja ({sin_cpc} >= {base})")
 
         print("\n" + "=" * 66)
         print("9. Búsqueda por NIC (el código de la necesidad de ínfima cuantía)")
@@ -306,6 +430,123 @@ async def main() -> None:
             marca(
                 not filtros(codigo=nic).cacheable,
                 "una búsqueda por NIC no se guarda en el caché",
+            )
+
+        print("\n" + "=" * 66)
+        print("10. Búsqueda por la descripción del producto")
+        print("=" * 66)
+        # Lo que se comprueba no es un número —cambia con cada ingesta— sino la propiedad que
+        # distingue este filtro de las palabras clave: que mire **solo** el objeto de compra.
+        objetos = await _objetos_de_muestra()
+        palabra_muestra = _palabra_mas_larga(objetos)
+        if not palabra_muestra:
+            print("  ·  No hay objetos de compra con palabras aprovechables; vuelve a pasar esto.")
+        else:
+            print(f"  palabra de muestra: «{palabra_muestra}» (de un objeto de compra real)")
+            termino = _descripcion(palabra_muestra)
+            _, sola, tras_sola = await total_entre(filtros(descripcion=termino))
+            print(f"  descripcion={termino[0]} -> {sola}")
+            marca(
+                sola >= 1,
+                f"una palabra que está en un objeto de compra encuentra algo ({sola})",
+            )
+            marca(sola <= tras_sola, f"la descripción no supera el total ({sola} <= {tras_sola})")
+
+            # El término vacío tiene que producir **la misma consulta** que sin el criterio: es lo
+            # que hace que el panel no llene el caché de dos entradas para lo mismo, y se comprueba
+            # sobre la huella y no sobre un recuento porque el recuento se mueve mientras el worker
+            # ingesta.
+            marca(
+                filtros(descripcion=()).canonico() == filtros().canonico(),
+                "sin descripción la consulta es exactamente la misma que sin el criterio",
+            )
+
+            inexistente = await total(filtros(descripcion=("palabraquenoexiste",)))
+            marca(inexistente == 0, f"una descripción inexistente devuelve 0 ({inexistente})")
+
+            # Las tildes: el índice guarda el objeto sin ellas, así que las dos formas de escribir
+            # la misma palabra tienen que acabar en el mismo término al entrar —lo hace el
+            # enrutador, y aquí se hace igual— y por tanto devolver lo mismo. Si no coincidieran,
+            # quien escribe «cómputo» como se escribe no encontraría su producto.
+            con_tilde = _palabra_con_tilde(objetos)
+            if con_tilde:
+                sin_tilde = _sin_tildes(con_tilde)
+                termino_tilde = _descripcion(con_tilde)
+                con = await total(filtros(descripcion=termino_tilde))
+                sin = await total(filtros(descripcion=_descripcion(sin_tilde)))
+                print(f"  «{con_tilde}» -> {con} | «{sin_tilde}» -> {sin}")
+                marca(
+                    termino_tilde == _descripcion(sin_tilde),
+                    f"las dos formas acaban en el mismo término ({termino_tilde[0]})",
+                )
+                marca(
+                    con == sin and con >= 1,
+                    "escribir la tilde o no da exactamente el mismo resultado",
+                )
+            else:
+                print("  ·  Ninguna de las muestras lleva tilde; eso no se puede comprobar aquí.")
+
+            # El modo: dos palabras del **mismo** objeto de compra. Con «todas» tiene que encontrar
+            # esa fila; con «cualquiera», no menos. Es la misma definición que la de las palabras
+            # clave, y por eso comparten un solo interruptor en el panel.
+            par = _par_de_palabras(objetos)
+            if par:
+                en_todas = await total(
+                    filtros(descripcion=_descripcion(*par), modo=ModoBusqueda.TODAS)
+                )
+                en_cualquiera = await total(
+                    filtros(descripcion=_descripcion(*par), modo=ModoBusqueda.CUALQUIERA)
+                )
+                print(f"  las dos -> todas={en_todas} | cualquiera={en_cualquiera}")
+                marca(
+                    en_todas >= 1,
+                    "«todas» con dos palabras del mismo objeto encuentra al menos esa fila",
+                )
+                marca(
+                    en_cualquiera >= en_todas,
+                    "«cualquiera» no puede encontrar menos que «todas»",
+                )
+            else:
+                print(
+                    "  ·  Ningún objeto de muestra trae dos palabras; el modo no se puede probar."
+                )
+
+            # Y la relación que tiene que cumplirse siempre: el objeto de compra **forma parte**
+            # del texto de búsqueda, así que todo lo que encuentre la descripción lo tienen que
+            # encontrar también las palabras clave. Al revés no, y ahí está el sentido del
+            # criterio: las palabras de la entidad —que están en el texto de todas sus filas y en
+            # el objeto de pocas— tienen que dar más por palabras clave que por descripción.
+            #
+            # No se comparan los códigos de necesidad para esto: el tokenizador de PostgreSQL
+            # conserva el guion y convierte «NIC-1768-2026-00014» en «nic», «-1768», «-2026» y
+            # «-00014», así que un fragmento numérico **no** lo encuentra el índice de texto —y por
+            # eso el NIC tiene su propio filtro, por código y sin tokenizar—.
+            candidatas = await _palabras_de_las_entidades()
+            if not candidatas:
+                print("  ·  No hay entidades de las que sacar palabras: comparación sin hacer.")
+            else:
+                anchas = False
+                for candidata in candidatas:
+                    por_texto = await total(filtros(terminos=(candidata,)))
+                    por_desc = await total(filtros(descripcion=(candidata,)))
+                    print(f"  «{candidata}» -> terminos={por_texto} | descripcion={por_desc}")
+                    marca(
+                        por_texto >= por_desc,
+                        f"la descripción no encuentra más que las palabras clave ({candidata})",
+                    )
+                    anchas = anchas or por_texto > por_desc
+                marca(
+                    anchas,
+                    "alguna palabra la encuentra la búsqueda por texto y la descripción no",
+                )
+
+            # Y que **sume** con los demás criterios en lugar de sustituirlos.
+            acotado = await total(filtros(descripcion=termino, provincias=(primera,)))
+            print(f"  descripcion + provincia={primera} -> {acotado}")
+            marca(acotado <= sola, "combinar con provincia acota, no amplía")
+            marca(
+                filtros(descripcion=termino).cacheable,
+                "la descripción sí se guarda en el caché, al contrario que el texto libre",
             )
     finally:
         await cerrar_bd()

@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from contratacion.dominio.errores import (
     ConsentimientoPendiente,
@@ -24,6 +25,7 @@ from contratacion.dominio.errores import (
     NoEncontrado,
     SesionRevocada,
     SinPermiso,
+    TokenCaducado,
 )
 from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     accesos,
@@ -49,6 +51,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.routers import (
 from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     registro as registro_router,
 )
+from contratacion.infraestructura.adaptadores.salida.bd.saturacion import es_saturacion
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import cerrar_bd, verificar_bd
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
     cerrar_cache,
@@ -77,6 +80,11 @@ CODIGOS_POR_ERROR: tuple[tuple[type[ErrorDominio], int], ...] = (
     (NoEncontrado, status.HTTP_404_NOT_FOUND),
     (EstadoInvalido, status.HTTP_409_CONFLICT),
     (DatoInvalido, status.HTTP_422_UNPROCESSABLE_ENTITY),
+    # 401 y no 403, aunque el mensaje sea el mismo que el de un token manipulado. Es la diferencia
+    # entre «vuelve a entrar» y «renueva y sigue»: el panel solo reintenta ante un 401, así que con
+    # el 403 la renovación silenciosa no llegaba a ejecutarse y una sesión de quince minutos acababa
+    # en «no tienes permiso» sin que el usuario hubiera hecho nada.
+    (TokenCaducado, status.HTTP_401_UNAUTHORIZED),
     # 401 y no 403: la sesión no está y hay que volver a entrar. El 401 además hace que el cliente
     # sepa que reintentar con el mismo token no sirve de nada.
     (SesionRevocada, status.HTTP_401_UNAUTHORIZED),
@@ -124,6 +132,50 @@ async def _manejador_de_dominio(peticion: Request, exc: Exception) -> JSONRespon
     return JSONResponse(status_code=codigo, content=cuerpo)
 
 
+# El mensaje que ve la persona cuando la base no da paso. Dice qué pasa y qué hacer, y no menciona
+# ni el agrupador ni el conjunto de conexiones: eso es vocabulario de quien administra el sistema.
+MENSAJE_BASE_SATURADA = (
+    "La base de datos no tiene conexiones libres en este momento. "
+    "Vuelve a intentarlo en unos segundos."
+)
+
+
+async def _manejador_de_base_de_datos(peticion: Request, exc: Exception) -> JSONResponse:
+    """Separa «la base está saturada» de «el programa está roto».
+
+    Sin este manejador, las dos cosas salían como un 500 y el panel las contaba igual: «La API
+    respondió 500.», que no dice nada a quien lo lee y manda a buscar el fallo en el sitio
+    equivocado. Pasó el 2026-10-06, con el agrupador de conexiones al tope: setenta y seis
+    peticiones seguidas devolvieron 500 y todas eran el mismo «no hay conexiones».
+
+    La saturación se responde **503**, que es lo que ya usa `/listo` para «estoy vivo, pero una
+    dependencia no responde»: el panel lo enseña con el mensaje del cuerpo, y el mensaje explica que
+    basta con volver a intentarlo.
+
+    Cualquier otro fallo de base de datos **sí** es un defecto del programa, y ahí se mantiene el
+    500. El cuerpo no lleva el texto de la excepción a propósito: un error de SQL trae la consulta y
+    sus parámetros —es decir, datos de negocio— y eso no se enseña en una respuesta HTTP. La traza
+    queda en el registro, que es donde se puede mirar.
+    """
+    if es_saturacion(exc):
+        # `warning` y sin traza: es un hecho del entorno, no un defecto, y con veinte paneles
+        # abiertos una traza por petición llenaría el registro de ruido que oculta lo demás.
+        registro.warning("Base de datos saturada en %s (%s)", peticion.url.path, type(exc).__name__)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": MENSAJE_BASE_SATURADA, "codigo": "bd_saturada"},
+        )
+
+    registro.exception("Fallo de base de datos en %s", peticion.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "No se pudo consultar los datos. El fallo quedó registrado.",
+            "codigo": "error_bd",
+        },
+    )
+
+
 def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     """Construye la aplicación. Acepta ajustes explícitos para facilitar las pruebas."""
     configuracion = ajustes or obtener_ajustes()
@@ -152,6 +204,7 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     )
 
     aplicacion.add_exception_handler(ErrorDominio, _manejador_de_dominio)
+    aplicacion.add_exception_handler(SQLAlchemyError, _manejador_de_base_de_datos)
 
     aplicacion.include_router(salud.router)
     aplicacion.include_router(autenticacion.router)

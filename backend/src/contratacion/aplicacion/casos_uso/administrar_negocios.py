@@ -1,27 +1,47 @@
-"""Administración de la plataforma: ver las empresas, darles tiempo y suspenderlas.
+"""Administración de la plataforma: ver las empresas, darles tiempo y suspenderlas o retirarlas.
 
 Es la única parte del sistema que actúa **sobre empresas ajenas**, así que todo pasa por el mismo
 guardián de rol. Las vistas conceden qué datos se leen; esto decide sobre la existencia misma de una
 empresa, y por eso no se apoya en ellas: un administrador de negocio con todas las vistas concedidas
 sigue sin poder tocar a otra empresa.
+
+Aquí conviven las dos operaciones que **cortan el acceso** a una empresa, y no son lo mismo:
+
+- **Suspender** para el servicio y se deshace con `reactivar_empresa`. Es lo que se usa para un
+  impago o para una investigación en curso.
+- **Eliminar** se lleva la empresa, sus cuentas y su registro de aceptación de los términos. No se
+deshace y no hay ningún camino de vuelta en el sistema: exige escribir el nombre de la empresa y no
+permite borrar la que da acceso a quien lo pide.
+
+Lo que la eliminación **no** toca, a propósito: el histórico de contratación, que es de la
+plataforma y no de la empresa —borrar un cliente no puede restar datos a los demás—, y la
+auditoría, que sobrevive para poder decir quién lo hizo.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.puertos.negocios import EmpresaDePlataforma, RepositorioNegocios
-from contratacion.aplicacion.puertos.usuarios import RegistroAuditoria
+from contratacion.aplicacion.puertos.usuarios import (
+    CierreDeSesiones,
+    RegistroAuditoria,
+    RepositorioUsuarios,
+)
 from contratacion.dominio.errores import (
     MENSAJE_SUSPENSION,
     DatoInvalido,
     NoEncontrado,
     SinPermiso,
 )
-from contratacion.dominio.roles import Rol
+from contratacion.dominio.roles import es_administrativo, es_de_plataforma
+from contratacion.dominio.sesiones import MotivoRevocacion
+
+registro = logging.getLogger(__name__)
 
 ESTADO_ACTIVO = "activo"
 ESTADO_SUSPENDIDO = "suspendido"
@@ -47,21 +67,8 @@ class ResultadoDeAdministracion:
         }
 
 
-def es_de_plataforma(actor: Actor) -> bool:
-    """¿Quien llama es el dueño del sistema?
-
-    Se normaliza el rol antes de compararlo, en vez de comparar cadenas: el rol puede llegar del
-    token como enumeración o como texto, y una comparación directa negaría el paso a quien sí lo
-    tiene según de dónde viniera. Negar el paso al dueño del sistema es un fallo que se nota tarde.
-    """
-    try:
-        return Rol(str(actor.rol).strip().lower()) is Rol.SUPER_ADMIN
-    except ValueError:
-        return False
-
-
 def _exigir_plataforma(actor: Actor) -> None:
-    if not es_de_plataforma(actor):
+    if not es_de_plataforma(actor.rol):
         raise SinPermiso("Solo el superadministrador de la plataforma puede administrar empresas.")
 
 
@@ -166,3 +173,229 @@ async def reactivar_empresa(
         auditoria=auditoria,
         momento=momento,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultadoDeBorrado:
+    """Lo que se devuelve tras retirar una empresa o una cuenta.
+
+    Los recuentos no son adorno: quien pulsa el botón se queda sin nada que mirar —la empresa ya
+    no está en la lista— y es lo único que le dice qué acaba de pasar y qué se ha cerrado por el
+    camino.
+    """
+
+    nombre: str
+    negocio_id: UUID
+    cuentas_borradas: int
+    sesiones_cerradas: int
+    avisos: tuple[str, ...] = ()
+
+    def como_diccionario(self) -> dict[str, object]:
+        return {
+            "nombre": self.nombre,
+            "negocio_id": str(self.negocio_id),
+            "cuentas_borradas": self.cuentas_borradas,
+            "sesiones_cerradas": self.sesiones_cerradas,
+            "avisos": list(self.avisos),
+        }
+
+
+async def eliminar_empresa(
+    actor: Actor,
+    *,
+    negocio_id: UUID,
+    repositorio: RepositorioNegocios,
+    usuarios: RepositorioUsuarios,
+    sesiones: CierreDeSesiones,
+    auditoria: RegistroAuditoria,
+    confirmacion: str | None,
+    momento: datetime | None = None,
+) -> ResultadoDeBorrado:
+    """Retira una empresa entera: sus cuentas, sus accesos y su plantilla.
+
+    Es la operación más destructiva del sistema, y por eso lleva tres guardas. Ninguna es ceremonia:
+
+    1. **Solo el dueño de la plataforma.** No depende de las vistas concedidas; un administrador de
+       empresa con todas las vistas sigue sin poder tocar a otra.
+    2. **No se puede borrar la empresa propia.** Quien lo pide se quedaría fuera del sistema y sin
+       forma de volver a entrar. Para cortarle el acceso a una empresa está suspenderla, que sí se
+       deshace.
+    3. **Hay que escribir el nombre de la empresa.** Se destruye el registro de aceptación de los
+       términos de sus personas, porque la tabla de consentimientos se va en cascada, y eso no se
+       recupera. Un botón que se pulsa sin querer no puede tener esa consecuencia.
+
+    Las cuentas se leen **antes** de borrar, y no es un detalle de estilo. Hacen falta dos cosas de
+    ellas: cuántas eran, para poder decirlo, y cuáles, para cerrarles la sesión viva del almacén.
+    La fila de la sesión se va con el borrado, pero la marca del almacén no: sin este paso, alguien
+    recién expulsado podría seguir renovando su token unos minutos.
+
+    La auditoría se escribe **antes** del borrado, igual que al borrar una cuenta: el fallo que
+    importa es el borrado que sí ocurrió y cuya anotación no, y escribir después lo produce justo al
+    revés.
+    """
+    _exigir_plataforma(actor)
+
+    guardada = await repositorio.obtener(negocio_id=negocio_id)
+    if guardada is None:
+        raise NoEncontrado("Esa empresa no existe.")
+
+    if negocio_id == actor.negocio_id:
+        raise DatoInvalido(
+            "No se puede eliminar la empresa a la que pertenece tu propia cuenta: te quedarías "
+            "fuera del sistema y no habría forma de volver a entrar. Para cortarle el acceso está "
+            "suspenderla, que se puede deshacer."
+        )
+
+    if _limpiar(confirmacion) != guardada.nombre.strip().lower():
+        raise DatoInvalido(
+            f"Para eliminar la empresa hay que escribir su nombre («{guardada.nombre}») "
+            "exactamente. Se borran sus cuentas, sus accesos y el registro de aceptación de los "
+            "términos, y eso no se puede deshacer."
+        )
+
+    cuentas = await usuarios.listar(negocio_id=negocio_id, incluir_inactivos=True)
+    instante = momento or datetime.now(UTC)
+
+    await auditoria.auditar(
+        accion="borrado_negocio",
+        negocio_id=actor.negocio_id,
+        usuario_id=actor.usuario_id,
+        entidad="negocio",
+        entidad_id=str(negocio_id),
+        resultado="borrado",
+        detalle={
+            "nombre": guardada.nombre,
+            "ruc": guardada.ruc,
+            "estado": guardada.estado,
+            "cuentas": len(cuentas),
+        },
+    )
+
+    cerradas = 0
+    for cuenta in cuentas:
+        cerradas += await sesiones.revocar_todas(
+            negocio_id=negocio_id,
+            usuario_id=cuenta.usuario_id,
+            motivo=MotivoRevocacion.ADMIN,
+            momento=instante,
+        )
+    await repositorio.eliminar(negocio_id=negocio_id)
+    registro.info(
+        "Empresa eliminada: negocio=%s nombre=%s cuentas=%s",
+        negocio_id,
+        guardada.nombre,
+        len(cuentas),
+    )
+
+    return ResultadoDeBorrado(
+        nombre=guardada.nombre,
+        negocio_id=negocio_id,
+        cuentas_borradas=len(cuentas),
+        sesiones_cerradas=cerradas,
+        avisos=(
+            "La empresa y sus cuentas ya no existen. El histórico de contratación no se ha tocado: "
+            "es de la plataforma, no de la empresa.",
+        ),
+    )
+
+
+async def eliminar_cuenta_de_empresa(
+    actor: Actor,
+    *,
+    negocio_id: UUID,
+    usuario_id: UUID,
+    usuarios: RepositorioUsuarios,
+    sesiones: CierreDeSesiones,
+    auditoria: RegistroAuditoria,
+    confirmacion: str | None,
+    momento: datetime | None = None,
+) -> ResultadoDeBorrado:
+    """Retira una cuenta concreta, de cualquier empresa.
+
+    Es el mismo borrado que hace un administrador con su propia gente —destruye el registro de
+    aceptación de los términos, que se va en cascada— pero ejercido desde la plataforma y sobre una
+    empresa ajena, así que necesita sus propias guardas: ser el dueño del sistema, escribir el
+    correo a mano y no poder borrar la cuenta con la que se está actuando.
+
+    Se conserva además la regla de **una empresa no puede quedarse sin administradores**. No es una
+    limitación de la plataforma sino del modelo: sin ninguno, esa empresa no puede volver a
+    gestionar sus cuentas ni sus accesos desde dentro, y no habría forma de arreglarlo salvo
+    entrando a mano en la base. Si lo que se quiere es retirar la empresa entera, está
+    `eliminar_empresa`, que sí se lleva todo.
+
+    La empresa tiene que existir: la cuenta se busca **dentro** de ella, así que pedir un
+    identificador de otra empresa o de una empresa borrada da «no existe» y no un borrado a ciegas.
+    """
+    _exigir_plataforma(actor)
+
+    if usuario_id == actor.usuario_id:
+        raise DatoInvalido(
+            "No se puede eliminar la cuenta con la que se está actuando: es la que da acceso al "
+            "panel de la plataforma."
+        )
+
+    ficha = await usuarios.obtener(negocio_id=negocio_id, usuario_id=usuario_id)
+    if ficha is None:
+        raise NoEncontrado("Esa cuenta no existe en esa empresa.")
+
+    if _limpiar(confirmacion) != ficha.email.strip().lower():
+        raise DatoInvalido(
+            f"Para eliminar la cuenta hay que escribir su correo («{ficha.email}») exactamente. Se "
+            "pierde su registro de aceptación de los términos y eso no se puede deshacer."
+        )
+
+    if es_administrativo(ficha.rol):
+        cuantos = await usuarios.contar_administradores(negocio_id=negocio_id)
+        if cuantos <= 1:
+            raise DatoInvalido(
+                "Esa es la última cuenta administrativa de la empresa. Sin ninguna, la empresa no "
+                "puede volver a gestionar sus cuentas desde dentro. Para retirarla entera está "
+                "«Eliminar empresa»."
+            )
+
+    instante = momento or datetime.now(UTC)
+    await auditoria.auditar(
+        accion="borrado_usuario",
+        negocio_id=actor.negocio_id,
+        usuario_id=actor.usuario_id,
+        entidad="usuario",
+        entidad_id=str(usuario_id),
+        resultado="borrado",
+        detalle={
+            "email": ficha.email,
+            "rol": str(ficha.rol),
+            "nombre": ficha.nombre,
+            "negocio_destino": str(negocio_id),
+            "desde_plataforma": True,
+        },
+    )
+    cerradas = await sesiones.revocar_todas(
+        negocio_id=negocio_id,
+        usuario_id=usuario_id,
+        motivo=MotivoRevocacion.ADMIN,
+        momento=instante,
+    )
+    await usuarios.eliminar(negocio_id=negocio_id, usuario_id=usuario_id)
+    registro.info(
+        "Cuenta eliminada desde la plataforma: negocio=%s usuario=%s", negocio_id, usuario_id
+    )
+
+    return ResultadoDeBorrado(
+        nombre=ficha.nombre,
+        negocio_id=negocio_id,
+        cuentas_borradas=1,
+        sesiones_cerradas=cerradas,
+        avisos=(
+            "La cuenta se ha borrado. Su registro de aceptación de los términos ya no existe.",
+        ),
+    )
+
+
+def _limpiar(texto: str | None) -> str:
+    """Normaliza lo que se escribe para confirmar un borrado.
+
+    Se compara en minúsculas y sin espacios de sobra porque el objetivo es que nadie borre una
+    empresa por un despiste, no que acierte con las mayúsculas del nombre o con un espacio final que
+    el navegador añadió al copiar y pegar.
+    """
+    return (texto or "").strip().lower()

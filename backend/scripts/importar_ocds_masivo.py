@@ -25,8 +25,15 @@ la huella son las mismas).
 
 QUÉ NO HACE. No adelanta la marca de agua —se declara parcial, porque una foto con horas de retraso
 no cubre el final del listado—, así que el ciclo de cada quince minutos sigue leyendo su rabo y lo
-publicado entre la foto y ahora entra por ahí. Tampoco guarda los ítems con CPC, que sí vienen en el
-fichero: quedan para cuando se decida, y no haría falta volver a pedirlo.
+publicado entre la foto y ahora entra por ahí.
+
+EL DESGLOSE DEL PRODUCTO. El fichero trae los ítems de cada proceso —el CPC del bien o servicio, el
+nombre estándar, la unidad y la cantidad— y hasta ahora se tiraban. Ahora se guardan en `registro`
+como los de las ínfimas —los mismos cuatro campos, la misma forma—, y con ellos el texto y los
+códigos con los que se busca por clasificación: es lo que permite que la ficha de una oferta diga
+**qué se compra** y no solo el párrafo del objeto. Como el desglose **no entra en la huella** del
+contenido, volver a pasar el año es lo que lo rellena de las filas ya importadas: se reescriben solo
+las que traen ítems, y sin tocar el histórico.
 """
 
 from __future__ import annotations

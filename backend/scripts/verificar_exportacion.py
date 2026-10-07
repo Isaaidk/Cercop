@@ -24,7 +24,7 @@ import asyncio
 import io
 import secrets
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -46,6 +46,7 @@ from contratacion.dominio.busqueda import (
     ETIQUETA_POR_CATEGORIA,
     Categoria,
 )
+from contratacion.dominio.exportacion import inicio_exportable
 from contratacion.dominio.negocios import construir_datos_empresa
 from contratacion.dominio.roles import Rol
 from contratacion.infraestructura.adaptadores.salida.bd.contexto import contexto_negocio
@@ -55,6 +56,11 @@ from contratacion.infraestructura.adaptadores.salida.seguridad.fabrica import ob
 
 BASE = "http://127.0.0.1:8001"
 TERMINO_DE_PRUEBA = "web"
+# Palabra que existe dentro del **objeto de compra** de varias necesidades, y escrita como la
+# escribiría una persona: con tilde y en mayúsculas. Que las dos cosas viajen bien no es cosmético:
+# el índice guarda el objeto sin tildes, así que un término que llegara sin normalizar no
+# coincidiría con nada y la exportación saldría vacía sin decir por qué.
+DESCRIPCION_DE_PRUEBA = "CÓMPUTO"
 FALLOS: list[str] = []
 
 # Rellenos del semáforo, para comprobar que el color viaja en el archivo y no solo el número.
@@ -128,7 +134,12 @@ async def main() -> None:
     try:
         async with httpx.AsyncClient(base_url=BASE, timeout=120) as c:
             cab_admin = await _entrar(c, correo_admin, clave_admin)
-            filtros = {"termino": TERMINO_DE_PRUEBA, "modo": "cualquiera"}
+            # La descarga cubre como mucho los últimos tres meses, así que la comprobación pide ese
+            # periodo: sin `desde`, el servidor **rechaza** la petición y este guion daría por rotas
+            # cosas que están bien. El límite se pide a la misma función que usa el servidor —una
+            # fecha escrita a mano aquí se quedaría vieja y volvería a fallar sin motivo—.
+            desde = inicio_exportable().isoformat()
+            filtros = {"termino": TERMINO_DE_PRUEBA, "modo": "cualquiera", "desde": desde}
 
             _seccion("1. Lo que dice la tabla")
             r = await c.get("/v1/registros", params={**filtros, "tamano": 1}, headers=cab_admin)
@@ -159,6 +170,39 @@ async def main() -> None:
             _marca(
                 str(total_tabla) == filas_cabecera,
                 f"la tabla dice {total_tabla} y el archivo dice {filas_cabecera}",
+            )
+
+            _seccion("3b. La descripción del producto llega al archivo")
+            # Sin el término de prueba: lo que se mide aquí es el criterio nuevo **solo**, porque
+            # sumado a una palabra clave que no comparta filas devolvería cero y el cero no dice si
+            # el filtro funciona o si simplemente no hay nada que cumpla las dos cosas.
+            #
+            # Las respuestas se guardan en variables propias **y no en `r`**: las secciones que
+            # vienen detrás leen de `r` el archivo de la sección 2 y su hoja de criterios, así que
+            # reutilizar el nombre cambiaría lo que ellas comprueban sin que se note.
+            con_descripcion = {"descripcion": DESCRIPCION_DE_PRUEBA, "desde": desde}
+            respuesta_desc = await c.get(
+                "/v1/registros",
+                params={**con_descripcion, "tamano": 1},
+                headers=cab_admin,
+            )
+            total_descripcion = respuesta_desc.json()["total"]
+            archivo_desc = await c.get(
+                "/v1/registros/exportacion", params=con_descripcion, headers=cab_admin
+            )
+            filas_descripcion = archivo_desc.headers.get("x-contenido-filas")
+            print(f"  total con la descripción «{DESCRIPCION_DE_PRUEBA}»: {total_descripcion}")
+            _marca(
+                total_descripcion > 0,
+                f"la descripción encuentra algo ({total_descripcion})",
+            )
+            _marca(
+                archivo_desc.status_code == 200,
+                f"la exportación responde -> {archivo_desc.status_code}",
+            )
+            _marca(
+                str(total_descripcion) == filas_descripcion,
+                f"la tabla dice {total_descripcion} y el archivo dice {filas_descripcion}",
             )
 
             _seccion("4. El archivo es un libro de Excel legible")
@@ -258,7 +302,7 @@ async def main() -> None:
             _seccion("7. Sin resultados también sale un archivo válido")
             r = await c.get(
                 "/v1/registros/exportacion",
-                params={"termino": "zzz-termino-inventado-zzz"},
+                params={"termino": "zzz-termino-inventado-zzz", "desde": desde},
                 headers=cab_admin,
             )
             _marca(r.status_code == 200, f"con un término que no existe -> {r.status_code}")
@@ -269,6 +313,41 @@ async def main() -> None:
                     all(vacio[n].max_row == 1 for n in hojas_datos),
                     f"las hojas de datos solo llevan la cabecera: {hojas_datos}",
                 )
+
+            #
+            # La ventana de la descarga: es la única regla de este guion que **rechaza** en lugar de
+            # servir, así que se comprueban las tres fronteras. Rechazar y no recortar es lo que
+            # mantiene la propiedad que defiende todo lo de arriba —el archivo y la tabla no pueden
+            # discrepar—: a un archivo recortado en silencio le faltarían filas sin decirlo.
+            #
+            # El código de estado del rechazo es **422** y no 400: en este proyecto `DatoInvalido`
+            # —una petición bien formada que no se puede atender— viaja como 422, y el 400 queda
+            # para los errores del dominio que no son de datos (`app.py`).
+            _seccion("7b. La descarga se limita a los últimos meses")
+            r = await c.get(
+                "/v1/registros/exportacion",
+                params={"termino": TERMINO_DE_PRUEBA, "modo": "cualquiera"},
+                headers=cab_admin,
+            )
+            _marca(r.status_code == 422, f"sin fecha inicial -> {r.status_code}")
+            _marca(desde in r.text, f"el mensaje dice desde cuándo se puede: {desde}")
+
+            # Un día antes del límite: fuera por poco, que es el caso que un redondeo se llevaría.
+            un_dia_antes = (inicio_exportable() - timedelta(days=1)).isoformat()
+            r = await c.get(
+                "/v1/registros/exportacion",
+                params={**filtros, "desde": un_dia_antes},
+                headers=cab_admin,
+            )
+            _marca(r.status_code == 422, f"con {un_dia_antes} -> {r.status_code}")
+
+            # Y exactamente en el límite entra: la ventana es «desde», no «después de».
+            r = await c.get(
+                "/v1/registros/exportacion",
+                params={**filtros, "desde": desde},
+                headers=cab_admin,
+            )
+            _marca(r.status_code == 200, f"con {desde} -> {r.status_code}")
 
             _seccion("8. Un rol de solo lectura no exporta")
             r = await c.post(

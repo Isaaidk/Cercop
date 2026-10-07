@@ -131,6 +131,27 @@ class RepositorioNegociosBd:
                 {"estado": estado, "negocio_id": negocio_id},
             )
 
+    async def eliminar(self, *, negocio_id: UUID) -> None:
+        """Retira una empresa y todo lo que cuelga de ella en una sola transacción.
+
+        Se entra **por la puerta**: el contexto se fija al de la empresa que se borra, y la política
+        `id = contexto` deja pasar el `DELETE` sin abrir la tabla ni usar una función con
+        privilegios elevados. Lo que cuelga —cuentas, sesiones, concesiones de vistas, conjuntos de
+        términos, consentimientos, exportaciones, plantilla de Excel— se va con ella por las claves
+        ajenas `ON DELETE CASCADE`, y las acciones referenciales no pasan por las políticas de fila:
+        las ejecuta el dueño de la tabla, así que el aislamiento no estorba.
+
+        El histórico de contratación (`registro`) **no** se toca, y la auditoría tampoco: la línea
+        que deja constancia se escribe antes, en el caso de uso.
+
+        Es idempotente por accidente y conviene saberlo: borrar una empresa que ya no existe afecta
+        a cero filas y no falla. Quien decide si existe —y quien lo cuenta— es el caso de uso.
+        """
+        async with contexto_negocio(self._motor, negocio_id) as conexion:
+            await conexion.execute(
+                text("DELETE FROM negocio WHERE id = :negocio_id"), {"negocio_id": negocio_id}
+            )
+
     async def crear(self, alta: AltaEmpresa) -> UUID:
         """Registra empresa, administrador y vistas de prueba en una sola transacción.
 

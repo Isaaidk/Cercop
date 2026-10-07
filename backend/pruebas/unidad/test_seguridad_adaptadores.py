@@ -8,6 +8,9 @@ del adaptador no tiene agujeros. Las dos que más importan:
   propio token, entra sin conocer ninguna clave.
 - `test_rechaza_un_token_de_acceso_donde_se_espera_uno_de_renovacion` comprueba la separación de
   tipos: sin ella, robar un token de minutos daría acceso indefinido.
+- `test_un_token_caducado_no_es_lo_mismo_que_uno_manipulado` comprueba que la caducidad tenga
+  **tipo propio**, que es de donde sale el 401 que hace que el panel renueve en silencio. Con el
+  mismo tipo para todo, el token caducado devolvía un 403 y la renovación no llegaba a ejecutarse.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import jwt
 import pytest
 
 from contratacion.aplicacion.puertos.seguridad import Claims, TipoToken
-from contratacion.dominio.errores import SinPermiso
+from contratacion.dominio.errores import SinPermiso, TokenCaducado
 from contratacion.infraestructura.adaptadores.salida.seguridad.contrasenas import (
     ContrasenasArgon2,
 )
@@ -142,8 +145,32 @@ def test_el_contenido_no_declara_el_algoritmo_de_verificacion() -> None:
 def test_rechaza_un_token_caducado() -> None:
     servicio = TokensJwt(SECRETO)
     caducado = servicio.emitir(_claims(), -60)
-    with pytest.raises(SinPermiso):
+    with pytest.raises(TokenCaducado):
         servicio.verificar(caducado, TipoToken.ACCESO)
+
+
+def test_un_token_caducado_no_es_lo_mismo_que_uno_manipulado() -> None:
+    """La caducidad se distingue **por el tipo**, y de ahí sale el 401.
+
+    El mensaje que lee una persona es el mismo en los dos casos —«vuelve a entrar»—, así que la
+    única forma de que el panel sepa que puede renovar y repetir la petición es que el error sea de
+    otra clase. Con un 403 el cliente no reintenta nada: un 403 significa «volver a entrar no
+    arregla esto», y ahí la renovación silenciosa no llegaba a ejecutarse nunca.
+    """
+    servicio = TokensJwt(SECRETO)
+    caducado = servicio.emitir(_claims(), -60)
+    manipulado = servicio.emitir(_claims(), 900)[:-4] + "AAAA"
+
+    with pytest.raises(TokenCaducado) as caducidad:
+        servicio.verificar(caducado, TipoToken.ACCESO)
+    with pytest.raises(SinPermiso) as otro:
+        servicio.verificar(manipulado, TipoToken.ACCESO)
+
+    assert not isinstance(caducidad.value, SinPermiso)
+    assert caducidad.value.codigo == "token_caducado"
+    assert otro.value.codigo == "sin_permiso"
+    # El texto no distingue nada a propósito: es el mismo para los dos.
+    assert str(caducidad.value) == str(otro.value)
 
 
 def test_rechaza_un_token_de_acceso_donde_se_espera_uno_de_renovacion() -> None:

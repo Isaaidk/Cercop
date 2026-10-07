@@ -21,6 +21,7 @@ from contratacion.aplicacion.casos_uso.encolar_termino import (
     agregar_terminos,
     consultar_estado,
     listar_terminos,
+    quitar_termino,
 )
 from contratacion.dominio.acceso import fuentes_para_vistas
 from contratacion.dominio.errores import SinPermiso
@@ -57,6 +58,12 @@ class AltaTerminos(BaseModel):
         description="Palabras o frases que se quieren vigilar.",
         examples=[["produccion", "cultura", "exposicion"]],
     )
+
+
+class BajaTermino(BaseModel):
+    """Cuerpo de la petición para dar de baja una palabra clave."""
+
+    termino_id: UUID = Field(description="Término que el negocio deja de seguir.")
 
 
 @router.post(
@@ -128,6 +135,32 @@ async def crear_terminos(
         maximo_terminos=ajustes.maximo_terminos_negocio,
     )
     return cuerpo_json(resultado.como_diccionario())
+
+
+@router.post(
+    "/quitar",
+    summary="Dar de baja una palabra clave del negocio",
+)
+async def quitar_suscripcion(
+    cuerpo: BajaTermino,
+    actor: ActorDep,
+    terminos: TerminosDep,
+    _: ConsentimientoDep,
+) -> dict[str, Any]:
+    """Deja de seguir la palabra clave. El término del catálogo no se borra.
+
+    Existe porque faltaba: el panel podía deseleccionar una palabra —dejar de filtrar por ella— pero
+    no darla de baja, así que la suscripción seguía activa y volver a agregarla devolvía «ya se
+    consultó hace poco». Ahora la baja es real y **volver a agregarla la encola otra vez**.
+
+    Responder con `quitado: false` no es un error: significa que ya no estaba activa, que es
+    exactamente lo que la persona quería.
+
+    Va **antes** de las rutas con `{termino_id}` por la norma de la casa: FastAPI resuelve en orden
+    de declaración y una ruta literal detrás de una paramétrica no se alcanza nunca.
+    """
+    quitado = await quitar_termino(cuerpo.termino_id, actor=actor, repositorio=terminos)
+    return cuerpo_json({"termino_id": str(cuerpo.termino_id), "quitado": quitado})
 
 
 @router.get("", summary="Palabras clave del negocio")

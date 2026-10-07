@@ -26,20 +26,37 @@ from contratacion.dominio.busqueda import (
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
+    es_codigo_cpc,
     expresion_busqueda,
 )
 from contratacion.dominio.cpc import items_desde_crudos
-from contratacion.dominio.enlaces import enlace_publico
+from contratacion.dominio.enlaces import enlace_del_registro
 from contratacion.dominio.palabras import normalizar_termino
+from contratacion.infraestructura.adaptadores.salida.bd.claves import (
+    NORMALIZADO,
+    clave_provincia,
+    clave_tipo_proceso,
+    normalizar_ubicacion,
+)
 from contratacion.infraestructura.adaptadores.salida.bd.contexto import sin_contexto
 
 registro = logging.getLogger(__name__)
 
 # El orden nunca se interpola desde la petición: se traduce desde el enumerado del dominio a una
 # expresión fija. Es la diferencia entre ordenar y permitir ejecutar SQL arbitrario.
+#
+# Los dos órdenes por fecha son el uno el reverso exacto del otro, y eso no es casualidad: así un
+# solo índice —`ix_registro_fecha_id`, migración 0015— sirve para los dos. La coincidencia tiene que
+# ser **literal**, porque el planificador compara la definición del índice con la del `ORDER BY`, no
+# los valores: `DESC` implica `NULLS FIRST` en PostgreSQL, así que un índice `(fecha_publicacion
+# DESC, id)` **no** sirve para `DESC NULLS LAST`. Cuando no coincidió, cada página ordenaba las
+# 110.000 filas: 10,4 s medidos frente a 3,4 ms después.
 ORDENES: dict[OrdenBusqueda, str] = {
     OrdenBusqueda.RECIENTES: "r.fecha_publicacion DESC NULLS LAST, r.id",
-    OrdenBusqueda.ANTIGUOS: "r.fecha_publicacion ASC NULLS FIRST, r.id",
+    # El desempate va al revés que en «más recientes» a propósito, para que esta ordenación sea la
+    # marcha atrás del mismo índice. Con `r.id` a secas habría que construir un segundo índice
+    # idéntico salvo en eso, o volver a ordenar en cada página.
+    OrdenBusqueda.ANTIGUOS: "r.fecha_publicacion ASC NULLS FIRST, r.id DESC",
     OrdenBusqueda.NUEVOS: "r.primera_vez_visto DESC, r.id",
 }
 
@@ -70,47 +87,42 @@ INDICE_TEXTO = "to_tsvector('simple', r.texto_busqueda)"
 # problema que el CPC viene a resolver —traer todo lo que menciona la palabra— seguiría ahí.
 INDICE_CPC = "to_tsvector('simple', r.cpc_busqueda)"
 
+# La descripción **del producto** se busca contra el objeto de compra, que vive dentro de `datos`.
 #
-# Comparación de provincias tolerante a tildes y mayúsculas.
+# Se explora como expresión y no se sacó a una columna propia —que es lo que se hizo con
+# `texto_busqueda` y `cpc_busqueda`— por espacio, no por diseño: una columna nueva obliga a
+# reescribir las 110.000 filas, y eso son otros ~230 MB de espacio muerto (medido al rellenar
+# `provincia` y `tipo_proceso`). Para **filtrar**, un índice sobre la expresión sirve igual de bien
+# que sobre una columna: lo que no funciona sobre una expresión del `jsonb` son los **recuentos**
+# —el planificador los resuelve visitando el montón fila a fila— y aquí no se cuenta por ella.
 #
-# La fuente publica la provincia en mayúsculas y sin tildes («MANABI», «LOS RIOS»), mientras
-# que el panel la pide con la grafía oficial («Manabí», «Los Ríos»), porque es la que se lee
-# en un mapa. Una igualdad exacta entre las dos formas no encuentra nada, y el síntoma es el
-# peor posible: pulsar Manabí en el mapa devuelve cero contrataciones sin ningún error, como
-# si esa provincia no tuviera datos.
+# El texto tiene que coincidir **exactamente** con el del índice `ix_registro_objeto` (migración
+# 0020), sin más diferencia que el alias de la tabla. Si se separan, el índice deja de usarse y esto
+# pasa de milisegundos a recorrer el histórico entero calculando un `tsvector` por fila —unos 10 s—
+# sin que falle nada.
 #
-# El sistema anterior ya lo resolvía normalizando los dos lados —minúsculas y sin acentos—,
-# así que esto no es una interpretación nueva: es recuperar una regla que existía y se perdió
-# al reescribir.
-#
-# Se hace con `translate` y no con la extensión `unaccent` porque `translate` no exige
-# instalar nada: una extensión que no esté disponible en el servidor de producción
-# convertiría este filtro en un error de consulta, que es peor que el problema que resuelve.
-#
-PROVINCIA_NORMALIZADA = (
-    "lower(translate(COALESCE({columna}, ''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))"
+# El texto se normaliza **sin tildes** antes de indexarlo, y no es un adorno: `texto_busqueda` se
+# guarda ya normalizado (el ingest le pasa `normalizar`) y las palabras que llegan del panel también
+# —`normalizar_terminos` las deja en minúsculas y sin acentos—, así que las dos partes coinciden.
+# Indexando la descripción tal cual, quien buscara «cómputo» no encontraría nada: la palabra de la
+# consulta pierde la tilde y la del índice la conserva. Se reutiliza `NORMALIZADO` para que la tabla
+# de tildes sea la misma que la de los demás filtros.
+INDICE_OBJETO = (
+    "to_tsvector('simple', " + NORMALIZADO.format(columna="r.datos ->> 'objeto_compra'") + ")"
 )
 
-# La misma expresión, aplicada a cualquier columna de texto. Se reutiliza en lugar de escribir
-# otra igual a propósito: dos expresiones que **deben** coincidir acaban separándose en el primer
-# arreglo, y el síntoma sería un filtro que encuentra unas filas con tilde y otras no.
-NORMALIZADO = PROVINCIA_NORMALIZADA
-
-
-# Tabla de tildes a quitar en Python. Se escribe entera y no con `unicodedata` porque los
-# caracteres que aparecen en nombres de lugares del Ecuador son pocos y conocidos, y una tabla
-# explícita se puede comparar a simple vista con la del SQL de arriba.
-_TILDES = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
-
-
-def normalizar_ubicacion(valor: str | None) -> str:
-    """Minúsculas y sin tildes, igual que la expresión SQL de `PROVINCIA_NORMALIZADA`.
-
-    Las dos formas tienen que coincidir carácter a carácter: si la de aquí quitara algo que la
-    de SQL no quita, el filtro dejaría de encontrar resultados y el fallo aparecería solo con
-    las provincias cuyo nombre lleva tilde, que son siete de veinticuatro.
-    """
-    return (valor or "").translate(_TILDES).strip().lower()
+#
+# Las provincias y el tipo de proceso se comparan contra **columnas propias**, no contra el `jsonb`.
+#
+# La columna guarda la clave ya normalizada —minúsculas, sin tildes, sin el cantón— y la escribió la
+# ingesta, con la misma función que usa el filtro para normalizar lo que se pide (`clave_provincia`,
+# en `bd/claves.py`). Así la condición es una igualdad contra una columna y el planificador puede
+# usar un índice; cuando la comparación era `lower(translate(...))` sobre `datos`, tenía que leer y
+# descomprimir un `jsonb` de 2 KB en cada una de las 110.000 filas del histórico.
+#
+# El porqué de la normalización —la fuente publica «MANABI» y el mapa pide «Manabí»— está contado en
+# `bd/claves.py`, que es donde vive la regla para los dos lados.
+#
 
 
 def _patron(valor: str) -> str:
@@ -149,31 +161,84 @@ def _filtro_texto(
     return f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
 
 
+def _filtro_cpc(
+    parametros: dict[str, Any], terminos: Sequence[str], modo: ModoBusqueda
+) -> str | None:
+    """Condición del filtro por CPC, por el índice que corresponde a cada tipo de término.
+
+    Los términos con **forma de código** van juntos a `cpc_codigos`, la columna `text[]` que ya
+    tiene su índice GIN: es una contención de valor —exacta y barata— y no depende de cómo
+    tokenice el motor de texto completo. En «todas» se pide que estén todos los códigos (`@>`);
+    en «cualquiera», que esté alguno (`&&`, solapamiento). Las descripciones y los nombres
+    estándar siguen por el índice de texto, como siempre.
+
+    Antes todos los términos iban por el texto completo. Funcionaba, pero un código se comparaba
+    como prefijo de palabra y el resultado dependía de la tokenización; con la columna de códigos,
+    la pregunta «¿esta necesidad está clasificada en 871410032?» tiene una respuesta de igualdad.
+    """
+    codigos = [termino for termino in terminos if es_codigo_cpc(termino)]
+    textos = [termino for termino in terminos if not es_codigo_cpc(termino)]
+
+    grupos: list[str] = []
+    if codigos:
+        parametros["cpc_codigos"] = codigos
+        operador = "@>" if modo is ModoBusqueda.TODAS else "&&"
+        grupos.append(f"r.cpc_codigos {operador} CAST(:cpc_codigos AS text[])")
+
+    if textos:
+        expresion = expresion_busqueda(textos, modo)
+        if expresion is not None:
+            parametros["expr_cpc"] = expresion
+            grupos.append(f"{INDICE_CPC} @@ to_tsquery('simple', :expr_cpc)")
+
+    if not grupos:
+        return None
+    if len(grupos) == 1:
+        return grupos[0]
+    union = " AND " if modo is ModoBusqueda.TODAS else " OR "
+    return f"({union.join(grupos)})"
+
+
 def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     """Condiciones y parámetros de una consulta, siempre parametrizados."""
     condiciones: list[str] = []
     parametros: dict[str, Any] = {}
 
-    principal = _filtro_texto(parametros, filtros.terminos, filtros.modo)
-    if principal:
-        condiciones.append(principal)
+    # Con «solo CPC» activo, buscar por clasificación no exige además las palabras clave: es lo que
+    # quiere quien pega un código y espera ver **todo** lo clasificado así. Sin el interruptor, los
+    # dos criterios se suman, que es la intersección de siempre.
+    solo_cpc = filtros.solo_cpc and bool(filtros.cpc)
+
+    if not solo_cpc:
+        principal = _filtro_texto(parametros, filtros.terminos, filtros.modo)
+        if principal:
+            condiciones.append(principal)
 
     # El CPC es un criterio **aparte** y se suma con «y»: quien lo pida junto con términos quiere la
     # intersección de los dos. Comparte el modo —«todas» o «cualquiera»— porque la pregunta es la
     # misma: cómo se combinan entre sí varias palabras de la misma lista.
     if filtros.cpc:
-        por_cpc = _filtro_texto(
-            parametros,
-            filtros.cpc,
-            filtros.modo,
-            indice=INDICE_CPC,
-            nombre_parametro="expr_cpc",
-        )
+        por_cpc = _filtro_cpc(parametros, filtros.cpc, filtros.modo)
         if por_cpc:
             condiciones.append(por_cpc)
 
+    # La **descripción del producto** se suma con «y», como el CPC: quien la envía junto con
+    # términos quiere la intersección de las dos. Va contra su propio índice y no entra en
+    # `solo_cpc`: ese interruptor es del CPC —lo que deja de exigir son las palabras clave—, y una
+    # descripción escrita a mano es un criterio deliberado, como la provincia o las fechas.
+    if filtros.descripcion:
+        por_descripcion = _filtro_texto(
+            parametros,
+            filtros.descripcion,
+            filtros.modo,
+            indice=INDICE_OBJETO,
+            nombre_parametro="expr_descripcion",
+        )
+        if por_descripcion:
+            condiciones.append(por_descripcion)
+
     # El texto libre se suma con «y»: es un filtro más, no una sustitución de los términos.
-    if filtros.texto:
+    if filtros.texto and not solo_cpc:
         libre = _filtro_texto(parametros, [filtros.texto], ModoBusqueda.TODAS)
         if libre:
             condiciones.append(libre)
@@ -202,28 +267,25 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
         condiciones.append("FALSE")
 
     if filtros.provincias:
-        # El valor almacenado es «PROVINCIA - CANTÓN», tal y como lo publica la fuente, pero el
-        # mapa del panel envía solo la provincia. Se aceptan las dos formas: comparar únicamente
-        # contra el valor completo haría que pulsar una provincia no devolviera nada, porque la
-        # igualdad compara «PICHINCHA - QUITO» con «PICHINCHA».
+        # Una igualdad contra la columna, y nada más.
         #
-        # Se corta por el guion y no por « - » porque la fuente no es constante con los espacios, y
-        # se recorta el resultado para que «PICHINCHA» y «PICHINCHA » se traten igual.
+        # Antes eran dos comparaciones con `lower(translate(COALESCE(datos ->> 'provincia', '')))`
+        # —el valor completo «PICHINCHA - QUITO» y la parte de antes del guion—, para aceptar las
+        # dos formas en que la fuente publica el dato. Ahora la columna guarda **una** forma, la
+        # provincia ya normalizada, así que sobra la mitad de la condición y deja de hacer falta
+        # traducir nada aquí. El coste de aquello no era el `translate`: era que la expresión
+        # colgaba de `datos`, y leer el `jsonb` de cada fila para descartarla es lo que hacía que
+        # pulsar una provincia costara 8,7 s en frío.
         #
-        # `ANY` con una lista y no una igualdad repetida: son las mismas dos comparaciones de
-        # siempre, una sola vez, para cualquier número de provincias. Se mantienen las dos y no se
-        # suma una tercera: la condición es la misma, lo que cambia es que el valor de la derecha es
-        # un conjunto.
-        completo = PROVINCIA_NORMALIZADA.format(columna="r.datos ->> 'provincia'")
-        solo_provincia = PROVINCIA_NORMALIZADA.format(
-            columna="btrim(split_part(r.datos ->> 'provincia', '-', 1))"
-        )
-        condiciones.append(
-            f"({completo} = ANY(:provincias) OR {solo_provincia} = ANY(:provincias))"
-        )
-        parametros["provincias"] = [
-            normalizar_ubicacion(provincia) for provincia in filtros.provincias
-        ]
+        # La tolerancia a las dos formas no se pierde: se aplica al **valor de entrada** con
+        # `clave_provincia`, la misma función con la que se escribió la columna. Pedir
+        # «PICHINCHA - QUITO» devuelve Pichincha entera, que es la decisión que ya toma el mapa al
+        # elegir una provincia.
+        #
+        # `ANY` con una lista y no una igualdad repetida: elegir cuatro provincias en el mapa no
+        # alarga la consulta ni añade una rama de código.
+        condiciones.append("r.provincia = ANY(:provincias)")
+        parametros["provincias"] = [clave_provincia(p) for p in filtros.provincias]
 
     if filtros.estado:
         condiciones.append("r.datos ->> 'estado' = :estado")
@@ -240,13 +302,22 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
         parametros["entidad"] = _patron(normalizar_ubicacion(filtros.entidad))
 
     if filtros.tipo_proceso:
-        condiciones.append("r.datos ->> 'tipo_proceso' = :tipo_proceso")
-        parametros["tipo_proceso"] = filtros.tipo_proceso
+        # «Sin clasificar» es una clave de verdad y **encuentra sus filas**: el reparto la cuenta en
+        # su barra y pulsar esa barra tiene que traer eso. Antes no traía nada, porque el reparto la
+        # calculaba con `COALESCE` pero el filtro comparaba contra el texto crudo de `datos`, que en
+        # esas diez mil filas está vacío. Un gráfico que dice «10.110 sin clasificar» y no puede
+        # enseñarlas es peor que no ofrecerlas.
+        condiciones.append("r.tipo_proceso = :tipo_proceso")
+        parametros["tipo_proceso"] = clave_tipo_proceso(filtros.tipo_proceso)
 
     if filtros.tipo_necesidad:
         condiciones.append("r.datos ->> 'tipo_necesidad' = :tipo_necesidad")
         parametros["tipo_necesidad"] = filtros.tipo_necesidad
 
+    # El código se busca por **fragmento**, y eso manda sobre la velocidad: el NIC se pega entero o
+    # se recuerdan sus últimos dígitos, y con un prefijo estricto «26-00053» no encontraría nada
+    # —los códigos empiezan por `NIC-`—. Un `ILIKE '%…%'` no lo resuelve ningún índice; la salida
+    # sería una extensión de trigramas, y eso es una decisión aparte que conviene medir antes.
     if filtros.codigo:
         condiciones.append("COALESCE(r.datos ->> 'codigo', '') ILIKE :codigo")
         parametros["codigo"] = _patron(filtros.codigo)
@@ -271,14 +342,14 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
         parametros["ventana_nuevos"] = filtros.ventana_nuevos_min
 
     if filtros.solo_con_plazo:
-        # Se exige que el texto **empiece** por una fecha antes de convertirlo. El valor guardado es
-        # ISO 8601 porque así lo normaliza el mapeo, pero un registro sin fecha límite deja `NULL` y
-        # una fuente que cambie de formato dejaría un texto cualquiera: sin esta guarda, el CAST
-        # reventaría la consulta entera en vez de descartar esa fila.
-        condiciones.append(
-            "((r.datos ->> 'fecha_limite_proformas') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
-            "AND (r.datos ->> 'fecha_limite_proformas')::timestamptz >= now())"
-        )
+        # Se compara contra la **columna** y no contra el texto del JSON. Hasta la fase 6 esto era
+        # un `CAST` de `datos ->> 'fecha_limite_proformas'` con una guarda de patrón: funcionaba,
+        # pero tenía dos costes —no lo resuelve ningún índice y el `CAST` se hace fila a fila sobre
+        # las 111.000—. Con la columna, que la escribe la ingesta al guardar, esto es un rango.
+        #
+        # El patrón sigue en `dominio/plazos.py` y se aplica **al escribir**: una fila cuyo valor no
+        # fuera una fecha deja la columna en nulo y queda fuera del filtro, que es lo correcto.
+        condiciones.append("r.plazo_proformas_en IS NOT NULL AND r.plazo_proformas_en >= now()")
 
     return condiciones, parametros
 
@@ -309,7 +380,7 @@ def _fila_a_elemento(fila: Mapping[Any, Any]) -> Mapping[str, Any]:
     # base, para que la tabla, el listado del mapa y el archivo de Excel ofrezcan exactamente la
     # misma dirección. Resolverlo en el panel obligaría a repetir la regla en cada pantalla, y la
     # primera que se quedara atrás daría un enlace que no abre.
-    elemento["enlace_publico"] = enlace_publico(elemento.get("enlace"), fila.get("fuente_url"))
+    elemento["enlace_publico"] = enlace_del_registro(elemento, fila.get("fuente_url"))
     return elemento
 
 
@@ -509,11 +580,16 @@ class RepositorioConsultasBd:
 
         # El reparto por tipo de proceso, por la misma razón que el de provincia: se cuenta **sin su
         # propio criterio**, así que elegir un tipo no pone los demás a cero. Se agrupa por el
-        # **texto crudo** y no por una versión normalizada porque es contra ese texto contra el que
-        # compara el filtro (`r.datos ->> 'tipo_proceso' = :tipo_proceso`): la clave que devuelve
-        # esta consulta se le puede devolver tal cual, y pulsar una barra filtraría exactamente esa
-        # fila. Normalizarla obligaría a que el filtro normalizara también, y dos normalizaciones
-        # distintas —una en cada mitad— dejarían barras que no encuentran nada al pulsarlas.
+        # **texto publicado**, sin normalizar, porque el filtro compara contra ese mismo texto
+        # (`r.tipo_proceso = :tipo_proceso`): la clave que devuelve esta consulta se le puede
+        # devolver tal cual, y pulsar una barra filtra exactamente esa fila. Normalizarla obligaría
+        # a que el filtro normalizara también, y dos normalizaciones distintas —una en cada mitad—
+        # dejarían barras que no encuentran nada al pulsarlas.
+        #
+        # La columna lleva el valor ya recortado y con «sin clasificar» donde la fuente no publica
+        # nada, que es la misma clave que usa el filtro: lo escribe la ingesta con
+        # `clave_tipo_proceso` (`bd/claves.py`), la misma función que normaliza lo que llega en la
+        # petición.
         #
         # Medido el 2026-10-01 antes de ponerle tope: 18 valores distintos en 107.510 filas, y
         # 10.110 sin el campo —son las ínfimas, que no lo publican—. Con el tope en 40 el «las
@@ -524,14 +600,14 @@ class RepositorioConsultasBd:
         )
         donde_sin_tipo = " AND ".join(condiciones_sin_tipo) if condiciones_sin_tipo else "TRUE"
 
-        # La clave del reparto es la **misma expresión normalizada** que el filtro, no el texto
-        # crudo de la fuente. Agrupando por el crudo, una provincia se partía en dos:
-        # «SANTO DOMINGO DE LOS TSÁCHILAS» y «…TSACHILAS» eran dos filas con su mitad del total cada
-        # una, y con el tope de doce filas una de las mitades se quedaba fuera y la provincia entera
-        # salía con cero. Normalizada, las dos grafías son una clave que el panel sabe traducir.
-        provincia_normalizada = PROVINCIA_NORMALIZADA.format(
-            columna="btrim(split_part(r.datos ->> 'provincia', '-', 1))"
-        )
+        # La clave del reparto por provincia es la columna `r.provincia`: la escribió la ingesta con
+        # la misma función que usa el filtro, así que la barra que devuelve este reparto se puede
+        # devolver tal cual al filtro al pulsarla, y encontrar sus filas.
+        #
+        # Agrupar era el problema de verdad: cualquier plan tiene que leer todas las filas, así que
+        # lo único que lo hacía lento era **qué** leía. Con la expresión sobre `datos` descomprimía
+        # 180 MB de `TOAST` (21 s medidos); con la columna, el índice resuelve el recuento sin tocar
+        # la tabla.
 
         async with sin_contexto(self._motor) as conexion:
             por_fuente = (
@@ -583,8 +659,7 @@ class RepositorioConsultasBd:
                     await conexion.execute(
                         text(
                             f"""
-                            SELECT COALESCE(NULLIF({provincia_normalizada}, ''), 'sin provincia')
-                                       AS provincia,
+                            SELECT r.provincia AS provincia,
                                    count(*) AS total
                             FROM registro r
                             JOIN fuente f ON f.id = r.fuente_id
@@ -625,8 +700,7 @@ class RepositorioConsultasBd:
                     await conexion.execute(
                         text(
                             f"""
-                            SELECT COALESCE(NULLIF(btrim(r.datos ->> 'tipo_proceso'), ''),
-                                            'sin clasificar') AS tipo_proceso,
+                            SELECT r.tipo_proceso AS tipo_proceso,
                                    count(*) AS total
                             FROM registro r
                             JOIN fuente f ON f.id = r.fuente_id

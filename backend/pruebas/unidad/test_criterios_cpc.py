@@ -1,4 +1,4 @@
-"""Pruebas del paso de la petición a los criterios: el filtro por CPC llega y se normaliza.
+"""Pruebas del paso de la petición a los criterios: el CPC y la descripción llegan y se normalizan.
 
 Lo que se comprueba aquí es la costura entre la URL y el dominio, que es donde un filtro nuevo se
 pierde sin ruido: si el parámetro no se recoge, la consulta sale sin él y el panel devuelve **todo**
@@ -26,12 +26,16 @@ def _filtros(
     *,
     termino: list[str] | None = None,
     cpc: list[str] | None = None,
+    descripcion: list[str] | None = None,
+    solo_cpc: bool = False,
     codigo: str | None = None,
 ) -> Filtros:
     """Los criterios de una petición, con lo mínimo que exige la función."""
     return _filtros_compartidos(
         termino=termino,
         cpc=cpc,
+        descripcion=descripcion,
+        solo_cpc=solo_cpc,
         modo=ModoBusqueda.TODAS,
         fuente=None,
         categoria=None,
@@ -76,6 +80,47 @@ def test_un_codigo_de_cpc_sirve_como_termino() -> None:
     assert _filtros(cpc=["871410032"]).cpc == ("871410032",)
 
 
+def test_la_descripcion_de_la_peticion_llega_a_los_criterios() -> None:
+    assert _filtros(descripcion=["computadoras"]).descripcion == ("computadoras",)
+
+
+def test_sin_la_descripcion_no_hay_criterio() -> None:
+    """Ausente no es lo mismo que vacío: sin ella no se añade ninguna condición."""
+    assert _filtros().descripcion == ()
+    assert _filtros(descripcion=[]).descripcion == ()
+
+
+def test_los_terminos_de_la_descripcion_se_normalizan_como_los_demas() -> None:
+    """Mayúsculas y tildes no pueden crear dos búsquedas distintas del mismo producto.
+
+    No es cosmético: el índice del objeto de compra guarda el texto **sin tildes**, así que un
+    término que llegara con ellas no encontraría nada y el panel diría que ese producto no está
+    publicado. La normalización de aquí es lo que hace que «ELECTROCARDIÓGRAFO» encuentre su fila.
+    """
+    assert _filtros(descripcion=["ELECTROCARDIÓGRAFO"]).descripcion == ("electrocardiografo",)
+    assert _filtros(descripcion=["computo", "Cómputo"]).descripcion == ("computo",)
+
+
+def test_las_palabras_dentro_de_un_termino_se_ordenan() -> None:
+    """«equipo de computo» y «computo de equipo» son la misma búsqueda y la misma entrada."""
+    uno = _filtros(descripcion=["equipo de computo"]).descripcion
+    otro = _filtros(descripcion=["computo de equipo"]).descripcion
+    assert uno == ("computo de equipo",)
+    assert uno == otro
+
+
+def test_la_descripcion_no_se_mezcla_con_las_palabras_clave() -> None:
+    """Son dos criterios distintos, aunque el panel los muestre juntos.
+
+    Quien envía los dos pide la intersección. Si cayeran en el mismo campo, buscar un producto en la
+    descripción traería además todo lo que solo lo menciona en la entidad, la provincia o el código
+    del proceso, que es exactamente lo que este criterio existe para evitar.
+    """
+    filtros = _filtros(termino=["lavado"], descripcion=["vehiculos"])
+    assert filtros.terminos == ("lavado",)
+    assert filtros.descripcion == ("vehiculos",)
+
+
 def test_un_termino_demasiado_corto_se_descarta() -> None:
     """La fuente rechaza las búsquedas de menos de tres caracteres: no se llega a enviar."""
     assert _filtros(cpc=["la"]).cpc == ()
@@ -95,6 +140,13 @@ def test_el_nic_de_la_peticion_llega_a_los_criterios() -> None:
 def test_sin_el_parametro_no_hay_criterio_de_nic() -> None:
     """Ausente no es lo mismo que vacío: sin NIC no se añade ninguna condición."""
     assert _filtros().codigo is None
+
+
+def test_el_interruptor_de_solo_cpc_llega_a_los_criterios() -> None:
+    """Es la costura donde un criterio nuevo se pierde sin ruido: si no se recogiera, apagar el
+    interruptor no cambiaría nada y la pantalla seguiría recortando por las palabras clave."""
+    assert not _filtros(cpc=["871410032"]).solo_cpc
+    assert _filtros(cpc=["871410032"], solo_cpc=True).solo_cpc
 
 
 def test_el_cpc_no_toca_los_terminos_de_palabras_clave() -> None:

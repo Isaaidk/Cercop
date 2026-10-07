@@ -318,12 +318,20 @@ class RelojFalso:
 
 @dataclass(frozen=True)
 class AjustesDePrueba:
-    """Los ajustes que el worker lee de verdad, con los valores por defecto del proyecto."""
+    """Los ajustes que el worker lee de verdad, con los valores por defecto del proyecto.
+
+    El doble tiene que llevar **todas** las claves que el bucle consulta, no solo las que cada
+    prueba mira: un ajuste nuevo y aquí ausente no falla donde está el cambio, falla en todas las
+    pruebas que recorren el bucle, con un `AttributeError` que no dice nada del motivo.
+    """
 
     intervalo_ingesta_min: int = 15
     intervalo_vigilancia_seg: int = 150
     ventana_solape_ciclos: int = 2
     presupuesto_peticiones_ciclo: int = 90
+    intervalo_mantenimiento_seg: int = 300
+    purga_plazo_dias: int = 7
+    purga_max_filas_por_vuelta: int = 500
 
 
 async def _nadie_pide_nada() -> None:

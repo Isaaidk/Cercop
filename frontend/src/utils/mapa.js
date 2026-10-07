@@ -15,13 +15,39 @@
  * servir para leer nada.
  *
  * Se resuelve como lo hacen los mapas oficiales del Ecuador: **el continente ocupa el marco y
- * Galápagos va en un recuadro aparte**, con su propio encuadre y su línea de puntos que indica que
- * no está ahí. Es una convención que cualquiera del país reconoce al instante, y evita la
- * alternativa fácil —quitar Galápagos— que dejaría fuera a una provincia de verdad.
+ * Galápagos va en un recuadro aparte**, pegado a la costa y a la altura que le corresponde, con su
+ * línea de puntos que indica que no está ahí. Es una convención que cualquiera del país reconoce al
+ * instante, y evita la alternativa fácil —quitar Galápagos— que dejaría fuera a una provincia de
+ * verdad.
+ *
+ * El recuadro estaba escrito y **no hacía nada de esto**, porque la isla no se reconocía como isla:
+ * el GeoJSON la llama «Galápagos» —con tilde— y aquí se comparaba contra «Galapagos» a secas. La
+ * comparación exacta fallaba en silencio, Galápagos entraba en el encuadre del continente con sus
+ * noventa y dos grados de longitud, y el resultado era el peor de los dos mundos: la escala se
+ * hundía a la mitad —el país entero cabía en una franja de doscientos píxeles a la derecha— y el
+ * recuadro de puntos, colocado en una esquina fija, quedaba **vacío** en la otra punta. Ahora los
+ * nombres se comparan **normalizados**, como en el resto del panel (`utils/provincias`), y el
+ * recuadro se coloca a partir de la geometría: a la altura de las islas y pegado a la costa.
  */
 
-/** Provincias que no entran en el encuadre principal porque se dibujan aparte. */
-const ISLAS = 'Galapagos'
+import { normalizarNombre } from './provincias'
+
+/**
+ * La provincia que se dibuja aparte, en **forma normalizada**.
+ *
+ * Normalizada porque el nombre del mapa lleva tildes y el de la fuente no: comparar los dos textos
+ * tal cual es exactamente lo que dejó a las islas dentro del encuadre del continente.
+ */
+const ISLAS = 'galapagos'
+
+/** Tamaño máximo del recuadro de las islas y su aire interior, en píxeles. */
+const ANCHO_ISLAS = 88
+const ALTO_ISLAS = 96
+const RELLENO_ISLAS = 6
+
+/** Separación entre el recuadro y la costa, y aire mínimo hasta el borde del lienzo. */
+const HUECO_ISLAS = 8
+const AIRE_ISLAS = 6
 
 /**
  * Carga el mapa y devuelve los trazos ya proyectados.
@@ -65,7 +91,7 @@ export function proyectar(geojson, { ancho = 620, alto = 520 } = {}) {
 
   for (const feature of features) {
     const nombre = feature.properties?.shapeName || ''
-    const destino = nombre === ISLAS ? islas : continente
+    const destino = normalizarNombre(nombre) === ISLAS ? islas : continente
     destino.push({ nombre, geometria: feature.geometry })
   }
 
@@ -75,22 +101,62 @@ export function proyectar(geojson, { ancho = 620, alto = 520 } = {}) {
   const marcoIslas = calcularMarco(islas)
 
   const margen = 12
-  const proyeccionContinente = encajar(marcoContinente, ancho, alto - 40, margen)
-  const proyeccionIslas = encajar(marcoIslas, 108, 74, 6)
+  const altoUtil = alto - 40
+  const proyeccionContinente = encajar(marcoContinente, ancho, altoUtil, margen)
+  const proyeccionIslas = encajar(marcoIslas, ANCHO_ISLAS, ALTO_ISLAS, RELLENO_ISLAS)
+  const recuadro = recuadroDeLasIslas(marcoContinente, marcoIslas, proyeccionContinente, {
+    alto: altoUtil,
+  })
 
   return {
     viewBox: `0 0 ${ancho} ${alto}`,
     provincias: [
-      ...trazos(continente, proyeccionContinente, ancho, alto - 40),
-      // Las islas se desplazan a la esquina inferior izquierda, que es donde queda libre en el
-      // encuadre del continente: Ecuador se extiende hacia el norte y el este.
-      ...trazos(islas, proyeccionIslas, ancho, alto - 40, { dx: 8, dy: (alto - 40) - 82 }),
+      ...trazos(continente, proyeccionContinente, ancho, altoUtil),
+      // Las islas se dibujan dentro de su recuadro: la proyección las encuadra en un marco propio y
+      // el desplazamiento las lleva al hueco que el continente deja libre a su izquierda.
+      ...trazos(islas, proyeccionIslas, ancho, altoUtil, { dx: recuadro.x, dy: recuadro.y }),
     ],
     // El recuadro de las islas se dibuja aparte, con línea de puntos, para que se entienda que ese
     // trozo del mapa no está a escala ni en su sitio.
-    recuadroIslas: { x: 8, y: alto - 40 - 82, ancho: 108, alto: 74 },
+    recuadroIslas: recuadro,
     ancho,
     alto,
+  }
+}
+
+/**
+ * Dónde y de qué tamaño va el recuadro de las islas.
+ *
+ * **Dónde:** pegado a la costa y a la altura de las islas, no en una esquina. El recuadro dice «esto
+ * está al oeste, fuera del encuadre»; una esquina lejana dice «esto está en cualquier sitio», y es
+ * lo que hacía que Galápagos pareciera un mapa aparte olvidado en un borde.
+ *
+ * La altura se mide **en la proyección del continente**: se toma la latitud del centro de las islas
+ * y se pregunta en qué píxel cae. Así el recuadro queda frente a la costa que le toca —Galápagos
+ * está a la altura del norte de Manabí— sin escribir ninguna coordenada a mano, y sigue
+ * cuadrando si algún día cambia el archivo del mapa.
+ *
+ * **De qué tamaño:** del ancho que quede libre a la izquierda del continente. Ecuador es más alto
+ * que ancho, así que el encuadre deja una banda de océano a la izquierda; el recuadro se recorta a
+ * lo que quepa para que nunca se monte encima del país y las islas parezcan estar en la costa. El
+ * tope es `ANCHO_ISLAS`, porque un recuadro más grande que el continente deja de ser un detalle y
+ * pasa a ser el mapa.
+ */
+function recuadroDeLasIslas(marcoContinente, marcoIslas, proyeccion, { alto }) {
+  const [xCosta] = proyeccion.aPunto(marcoContinente.minLng, marcoContinente.minLat)
+  const latitud = (marcoIslas.minLat + marcoIslas.maxLat) / 2
+  const [, yIslas] = proyeccion.aPunto(0, latitud)
+
+  const ancho = Math.min(ANCHO_ISLAS, xCosta - HUECO_ISLAS - AIRE_ISLAS)
+  const altoRecuadro = Math.round(ancho * (ALTO_ISLAS / ANCHO_ISLAS))
+
+  return {
+    x: Math.round(xCosta - HUECO_ISLAS - ancho),
+    y: Math.round(
+      Math.min(Math.max(yIslas - altoRecuadro / 2, AIRE_ISLAS), alto - altoRecuadro - AIRE_ISLAS),
+    ),
+    ancho,
+    alto: altoRecuadro,
   }
 }
 

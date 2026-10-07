@@ -22,10 +22,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from contratacion.aplicacion.actor import Actor
-from contratacion.aplicacion.casos_uso.administrar_negocios import es_de_plataforma
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.aplicacion.puertos.consultas import RepositorioConsultas
 from contratacion.dominio.errores import EstadoInvalido, SinPermiso
+from contratacion.dominio.roles import es_de_plataforma
 from contratacion.dominio.serializacion import a_json, de_json
 
 # Clave de la caché donde vive la petición. Una sola: la ingesta es un recurso único —hay un
@@ -61,7 +61,7 @@ class SolicitudCiclo:
 
 
 def _exigir_plataforma(actor: Actor) -> None:
-    if not es_de_plataforma(actor):
+    if not es_de_plataforma(actor.rol):
         raise SinPermiso("Solo el superadministrador de la plataforma puede ordenar la ingesta.")
 
 

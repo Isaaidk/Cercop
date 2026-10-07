@@ -54,6 +54,18 @@ export const api = {
 
   estadoTermino: (terminoId) => http.get(`/v1/terminos/${terminoId}/estado`),
 
+  /**
+   * Da de baja la palabra clave: deja de seguirla el negocio.
+   *
+   * No borra el término del catálogo —es global y puede estar suscrito por otros negocios—, solo
+   * desactiva **esta** suscripción. Es la operación que faltaba: el panel podía deseleccionar una
+   * palabra pero no darla de baja, y por eso volver a agregarla contestaba «ya se consultó hace
+   * poco», que se lee como que ya estaba puesta.
+   *
+   * Va por `POST /quitar` y no por `DELETE /{id}` para seguir la misma forma que la baja del CPC.
+   */
+  quitarTermino: (terminoId) => http.post('/v1/terminos/quitar', { termino_id: terminoId }),
+
   // --- Términos de CPC del negocio -----------------------------------------
   //
   // Se guardan en el servidor, como las palabras clave, para que la lista sea la misma para todo el
@@ -226,6 +238,22 @@ export const api = {
 
   reactivarEmpresa: (negocioId) =>
     http.post(`/v1/plataforma/empresas/${negocioId}/reactivacion`),
+
+  /**
+   * Elimina una empresa con sus cuentas, sus accesos y su plantilla. **No se deshace.**
+   *
+   * `confirmacion` es el nombre de la empresa tal cual, y viaja como parámetro de la dirección porque
+   * el borrado no tiene cuerpo: lo que se pide no es crear nada, es que algo deje de existir. El
+   * servidor lo compara (sin distinguir mayúsculas ni espacios de sobra) y rechaza la petición si no
+   * coincide, así que este texto no es una formalidad que se pueda saltar desde fuera: es la única
+   * forma de que la operación ocurra.
+   */
+  eliminarEmpresa: (negocioId, confirmacion) =>
+    http.del(`/v1/plataforma/empresas/${negocioId}`, { confirmacion }),
+
+  /** Elimina una cuenta concreta de cualquier empresa. Se confirma con su correo. */
+  eliminarUsuarioDeEmpresa: (negocioId, usuarioId, confirmacion) =>
+    http.del(`/v1/plataforma/empresas/${negocioId}/usuarios/${usuarioId}`, { confirmacion }),
 
   // Las vistas se conceden **por cuenta**, no por empresa: el plazo es de una persona concreta para
   // una vista concreta. Por eso hay que decir de qué negocio es la cuenta (`negocio`) cuando quien

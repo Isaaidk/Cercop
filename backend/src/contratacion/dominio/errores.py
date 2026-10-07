@@ -51,6 +51,25 @@ class SinPermiso(ErrorDominio):
     codigo = "sin_permiso"
 
 
+class TokenCaducado(ErrorDominio):
+    """El token que se presentó estaba bien firmado, pero su plazo terminó.
+
+    Existe como tipo propio —y no como un `SinPermiso` más— porque lo que hay que hacer con él no
+    es pedir permiso: es **renovar y repetir la petición**, que es lo que hace el panel sin que
+    nadie se entere. El mensaje que lee una persona es el mismo en los dos casos («vuelve a
+    entrar»), así que la diferencia no puede ir en el texto: va en el tipo, y de ahí sale un 401 en
+    lugar de un 403.
+
+    Mezclarlos tuvo un efecto que se veía todos los días y no parecía un fallo: con el token de
+    acceso caducado, cada petición devolvía un 403 «sin permiso» y el panel solo intenta renovar
+    ante un 401, así que la renovación silenciosa **no llegaba a ejecutarse nunca**. Después de un
+    rato con el panel abierto aparecía «no tienes permiso para esto», que es un mensaje que no se
+    puede entender ni usar.
+    """
+
+    codigo = "token_caducado"
+
+
 class NoEncontrado(ErrorDominio):
     """El recurso pedido no existe o no está dentro del ámbito del actor.
 

@@ -4,10 +4,13 @@ Este documento responde a una pregunta concreta —**cuánta gente puede estar u
 tiempo**— y lo hace con dos honestidades por delante:
 
 1. **Esto es una estimación de diseño, no una medición.** Los costes por operación sí están medidos
-   (están más abajo, con su origen), y el modelo de carga se deduce del código. Pero **no se ha
-   hecho una prueba de carga**. La condición de cierre del plan —un ensayo con k6 y 900 usuarios
-   simulados, flujo de eventos incluido— sigue pendiente, y hasta que se haga, cualquier cifra de
-   este documento es un cálculo razonado y no un hecho.
+   (están más abajo, con su origen), y el modelo de carga se deduce del código. La prueba de carga
+   **ya existe** (`carga/panel.js`, con `backend/scripts/preparar_carga.py` para las cuentas), y se
+   ha ejecutado contra el entorno de desarrollo, pero **ahí no se puede medir capacidad**: la base y
+   el caché están al otro lado de la red y el pooler de sesión admite quince clientes (medido:
+   10,78 % de fallos con veinte usuarios concurrentes). **La escalera de mil usuarios contra este
+   despliegue sigue pendiente**, y hasta que se corra, cualquier cifra de este documento es un
+   cálculo razonado y no un hecho.
 2. **El límite no es la velocidad del sistema.** Es la memoria de la máquina y los descriptores de
    fichero. Este sistema es pequeño: su base de datos entera, con 2.263 contrataciones y 28 tablas,
    ocupa **29 MB**. Lo que decide cuánta gente cabe es cuánta memoria hay, no cuánto tarda una
@@ -112,6 +115,86 @@ relectura: cien paneles de esa empresa son **~0,7 MB/s (5 Mbit/s)** sostenidos d
 empresas pequeñas es despreciable; con una empresa muy grande, es la primera cosa que se nota en la
 factura del proveedor.
 
+## El despliegue de Docker con 1.000 paneles: la aritmética, pared por pared
+
+La pregunta era concreta —**¿el despliegue de `deploy/docker-compose.yml` sostiene alrededor de mil
+usuarios concurrentes?**— y la respuesta es **sí, con las condiciones que siguen**. Aquí está la
+cuenta de cada pared, y lo que se cambió el 2026-10-06 para que se sostenga.
+
+| Pared | Antes | Después | ¿Sostiene 1.000? |
+|---|---|---|---|
+| **Descriptores de fichero** | `api` y `proxy` con 65.536; el resto sin fijar | igual, y también en `bd` y `cache` | Sí: 1.000 flujos de eventos son 1.000 descriptores repartidos entre 4 procesos |
+| **Conexiones de base** | `max_connections=200`, pools de 10+10 por proceso | igual, con la aritmética **comprobada por un guion** | Sí: (4+1) × 20 = 100 ≤ 200. Mil usuarios no suben ese número: la conexión se usa mientras dura la consulta |
+| **Memoria** | `shared_buffers=1GB` + 4 procesos + Redis 512 MB | igual, con el reparto **medido por el guion** | Sí en 4 GB al 69 %; cómodo en 8 GB al 34 % |
+| **`work_mem`** | 16 MB sin comprobar | 16 MB con presupuesto explícito por conexión | Sí, justo: 16 MB de 16 MB de presupuesto en 4 GB. El peor caso teórico se imprime como aviso |
+| **Redis** | 512 MB con expulsión | igual, más liberación diferida | Sí y de sobra: 1.000 paneles son unas 17 expiraciones por segundo y unos cientos de comandos por segundo, sobre un servidor que hace cien mil |
+
+### Lo que se cambió, y por qué cada cosa
+
+Nada de esto es una optimización de rendimiento: son las cosas que **rompen un despliegue al llegar
+a mil usuarios** y que no aparecen en desarrollo ni con cien.
+
+1. **`shm_size: 512mb` en PostgreSQL.** El contenedor trae 64 MB de `/dev/shm` y PostgreSQL lo usa
+   para el paralelismo y para construir índices. Con 64 MB, un `CREATE INDEX` grande —o el `ANALYZE`
+   de una migración— falla con «could not resize shared memory segment», que no dice nada de la
+   causa. Es un fallo **al desplegar**, no en desarrollo.
+2. **`stop_grace_period` en la base (60 s) y en Redis (30 s).** El valor por defecto son diez
+   segundos y luego SIGKILL: PostgreSQL tendría que hacer recuperación al arrancar —minutos con un
+   histórico de este tamaño— y Redis puede perder lo que le quede sin escribir en el AOF.
+3. **Tope a los registros de Docker.** El conductor `json-file` **no tiene límite por defecto** y el
+   API escribe una línea por petición: con mil paneles son millones de líneas al día. El fichero
+   crece hasta llenar el disco y el servidor se cae entero, con PostgreSQL dentro. Tres ficheros de
+   10 MB por servicio acotan esa avería a 30 MB.
+4. **Ajustes de PostgreSQL para una máquina dedicada**, no para un servidor compartido:
+   `effective_cache_size` (pista al planificador, no memoria), `maintenance_work_mem` y
+   `autovacuum_work_mem` separados, `autovacuum_vacuum_scale_factor=0.05` —la tabla recibe filas
+   muertas en cada ciclo de ingesta y el 0,2 por defecto significa esperar a 22.000—, puntos de
+   control más espaciados (`checkpoint_timeout`, `max_wal_size`, `wal_compression`) porque la
+   ingesta escribe a ráfagas, y `log_min_duration_statement=1000` para que las consultas lentas
+   aparezcan en el registro del servidor y no en una queja.
+5. **`random_page_cost=1.1`.** El valor por defecto, 4, es de cuando los discos giraban. Con disco
+   de estado sólido, 1,1 le dice al planificador la verdad y prefiere los índices. **Cambia los
+   planes**, y los de este proyecto se eligieron midiendo: hay que comprobarlos **en el servidor**
+   con `scripts/medir_consultas.py` —que mide y muestra el plan— y volver a 4 con `BD_RANDOM_PAGE_COST=4`
+   si alguno empeora. Está en el `.env.example` con esa advertencia.
+6. **`--timeout-keep-alive 65` en el API.** Caddy reutiliza conexiones contra el API, pero uvicorn
+   cierra la suya a los cinco segundos: con mil clientes eso es abrir y cerrar constantemente.
+7. **`--forwarded-allow-ips` en el API.** La aceptación de términos guarda la IP del cliente como
+   evidencia, y sin esto lo que guardaba era la del contenedor de Caddy. Confiar en la cabecera solo
+   es seguro porque el puerto del API está publicado **únicamente en `127.0.0.1`**: el guion de
+   verificación comprueba esa condición, porque publicarlo en todas las interfaces la rompería.
+8. **Liberación diferida en Redis** (`lazyfree-lazy-eviction`, `lazyfree-lazy-expire`). Redis tiene
+   un solo hilo para los comandos y ese hilo es el que atiende los mil paneles; soltar la memoria de
+   las claves que caducan o se desalojan se va a un hilo de fondo. Es una red de seguridad: el
+   consumo medido son decenas de megas.
+
+### Lo que **no** se ha tocado, y por qué
+
+- **No se añade PgBouncer.** Con 100 conexiones de 200 y la base en la misma máquina, no hace falta;
+  un salto más en medio complica el diagnóstico de cualquier cosa que vaya lenta.
+- **No se ponen límites de memoria ni de CPU por contenedor.** Un `mem_limit` mal puesto mata
+  PostgreSQL por memoria —el que no se puede reiniciar—, mientras que el reparto se controla mejor
+  con `shared_buffers` y `work_mem`, que es lo que el guion comprueba.
+- **No se cambian las imágenes base.** `postgres:17-alpine`, `redis:7-alpine` y `python:3.12-slim`
+  son las correctas para esto; lo que estaba mal no era la imagen sino su configuración.
+
+### Cómo se comprueba en el servidor
+
+```bash
+cd backend
+python scripts/verificar_despliegue.py --ram-gb 4     # o --ram-gb 8
+```
+
+Lee el `compose` y el `.env` y comprueba las nueve cuentas —conexiones, procesos, memoria,
+`shm_size`, cierres ordenados, registros, descriptores, presupuesto de `work_mem` y la condición que
+hace segura la cabecera del cliente—. Sale con código 1 si alguna falla. Y después, la medida de
+verdad, que es la que falta:
+
+```bash
+cd ..
+k6 run -e BASE_URL=https://api.mi-dominio.com -e VUS=1000 -e DURACION=10m carga/panel.js
+```
+
 ## Dimensionamiento
 
 | Máquina | Paneles simultáneos | Para quién |
@@ -187,6 +270,16 @@ tamaño de servidor.
    > panel dejan de crecer con el número de paneles de la misma empresa. Los 1.500–3.000 usuarios
    > simultáneos de la configuración de 4 vCPU / 8 GB pasan de «pidiendo el arreglo» a «con el
    > arreglo puesto».
+   >
+   > **Cambio de alcance (2026-10-06).** El cuadro de presencia pasa a verlo **solo el
+   > superadministrador de la plataforma**: quién está conectado es información de la operación, no un
+   > dato de contratación, y un administrador de empresa ya no lo ve. Con un solo rol autorizado, hoy
+   > el único alcance posible es `todos`, así que el filtro por alcance **no llega a actuar**; se
+   > conserva igualmente, con sus pruebas, como red de seguridad para el día que el cuadro se vuelva a
+   > abrir a más gente. Lo que **no** cambia es el latido: lo sigue mandando todo el mundo, porque es
+   > la señal de vida de la propia sesión —y lo que la mantiene viva en el almacén de sesiones vivas—
+   > y no cuenta nada de nadie. La aritmética de abajo, por tanto, no se mueve: el coste lo fijaba el
+   > número de paneles, no quién los mira.
 
 2. **Fijar `ulimits: nofile` en el `compose`.** Una línea que convierte una pared invisible en algo
    que no llega a ocurrir. Ya está puesto en `api` y en `proxy` —los dos procesos que mantienen las

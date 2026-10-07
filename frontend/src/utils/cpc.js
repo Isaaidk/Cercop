@@ -20,43 +20,6 @@ export function itemsDe(fila) {
   return crudos.filter((item) => item && String(item.codigo || '').trim())
 }
 
-/** Longitud mínima de un término, la misma que exige el servidor. */
-export const LONGITUD_MINIMA = 3
-
-/**
- * Separa una lista pegada por el usuario en términos.
- *
- * Se aceptan comas, punto y coma y saltos de línea porque son los tres separadores que aparecen al
- * copiar de una hoja de cálculo, que es de donde sale casi siempre una lista de clasificaciones.
- *
- * Las palabras de menos de tres letras se descartan **y se cuentan**: el contador de la pantalla dice
- * cuántas se van a añadir antes de pulsar, y quien pega veinte términos merece saber que uno se
- * quedó fuera por corto en lugar de descubrirlo después contando chips.
- *
- * Los repetidos se unifican sin distinguir mayúsculas —«Lavado» y «lavado» son el mismo filtro,
- * porque el servidor normaliza— y se conserva la primera grafía escrita, que es la que la persona
- * reconoce. Se resuelve aquí, en una sola función, para que el contador y el alta no puedan
- * discrepar: si cada una contara a su manera, el botón diría «Añadir 7» y añadiría 5.
- */
-export function terminosDeLista(texto, minimo = LONGITUD_MINIMA) {
-  const partes = String(texto || '')
-    .split(/[,;\n]/)
-    .map((parte) => parte.trim())
-    .filter(Boolean)
-
-  const utiles = new Map()
-  let cortas = 0
-  for (const parte of partes) {
-    if (parte.length < minimo) {
-      cortas += 1
-      continue
-    }
-    const clave = parte.toLowerCase()
-    if (!utiles.has(clave)) utiles.set(clave, parte)
-  }
-  return { terminos: [...utiles.values()], cortas }
-}
-
 /** Códigos distintos y ordenados. */
 export function codigosCpc(fila) {
   return [...new Set(itemsDe(fila).map((item) => String(item.codigo)))].sort()

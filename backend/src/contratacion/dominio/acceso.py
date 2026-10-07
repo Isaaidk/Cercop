@@ -16,7 +16,6 @@ Decisiones centrales, y por qué:
 
 from __future__ import annotations
 
-import calendar
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -26,6 +25,7 @@ from uuid import UUID
 
 from contratacion.dominio.errores import ErrorDominio, SinPermiso
 from contratacion.dominio.ingesta import ZONA_FUENTE
+from contratacion.dominio.plazos import sumar_meses
 from contratacion.dominio.roles import Rol, es_administrativo
 
 # Antelación con la que se avisa de un vencimiento próximo, para poder renovar a tiempo.
@@ -112,10 +112,10 @@ class Plazo(StrEnum):
         if self is Plazo.D30:
             return desde + timedelta(days=30)
         if self is Plazo.M3:
-            return _sumar_meses(desde, 3)
+            return sumar_meses(desde, 3)
         if self is Plazo.M6:
-            return _sumar_meses(desde, 6)
-        return _sumar_meses(desde, 12)
+            return sumar_meses(desde, 6)
+        return sumar_meses(desde, 12)
 
 
 ETIQUETAS_PLAZO: dict[Plazo, str] = {
@@ -125,19 +125,6 @@ ETIQUETAS_PLAZO: dict[Plazo, str] = {
     Plazo.M6: "6 meses",
     Plazo.A1: "1 año",
 }
-
-
-def _dias_del_mes(anio: int, mes: int) -> int:
-    return calendar.monthrange(anio, mes)[1]
-
-
-def _sumar_meses(momento: datetime, meses: int) -> datetime:
-    """Suma meses de calendario ajustando el día al último del mes de destino."""
-    indice = momento.month - 1 + meses
-    anio = momento.year + indice // 12
-    mes = indice % 12 + 1
-    dia = min(momento.day, _dias_del_mes(anio, mes))
-    return momento.replace(year=anio, month=mes, day=dia)
 
 
 def plazo_desde_codigo(codigo: str) -> Plazo:

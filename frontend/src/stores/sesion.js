@@ -19,12 +19,14 @@ import { api } from '@/api/endpoints'
 import {
   alCaducarSesion,
   alSuspenderEmpresa,
+  anunciarCierreDeSesion,
   guardarAcceso,
   guardarRenovacion,
   leerRenovacion,
   olvidarTokens,
+  programarRenovacion,
 } from '@/api/cliente'
-import { esAdministrativo, puedeExportar } from '@/utils/roles'
+import { esAdministrativo, esDePlataforma, puedeExportar } from '@/utils/roles'
 
 const estado = reactive({
   usuario: null,
@@ -73,8 +75,16 @@ export const sesion = {
   estado,
 
   estaIdentificado: computed(() => Boolean(estado.usuario)),
-  /** Solo un rol administrativo ve el panel de accesos y la presencia de los demás. */
+  /** Solo un rol administrativo ve el panel de accesos. */
   esAdministrativo: computed(() => esAdministrativo(estado.rol)),
+  /**
+   * El dueño de la plataforma, y nadie más.
+   *
+   * Distinto de `esAdministrativo` a propósito: la presencia, el panel de empresas y los borrados
+   * no son «cosas de administradores», son cosas del dueño del sistema. Un administrador de empresa
+   * es un cliente.
+   */
+  esDePlataforma: computed(() => esDePlataforma(estado.rol)),
   /** Puede descargar el histórico. El servidor vuelve a comprobarlo antes de entregar el archivo. */
   puedeExportar: computed(() => puedeExportar(estado.rol)),
   debeAceptar: computed(() => estado.pendientes.length > 0),
@@ -168,6 +178,11 @@ export const sesion = {
     }
 
     olvidarTokens()
+    // Las otras pestañas tienen que enterarse. El token de renovación es **el de la misma sesión**,
+    // así que al cerrarla aquí dejan de tener algo con lo que trabajar: sin el aviso seguirían
+    // enseñando el panel y fallando petición tras petición hasta que caducara su token de acceso,
+    // que son hasta quince minutos de pantallas rotas por haber pulsado «Salir».
+    anunciarCierreDeSesion()
     estado.usuario = null
     estado.sesionId = null
     estado.nombre = ''
@@ -182,6 +197,10 @@ export const sesion = {
 function aplicarSesion(datos) {
   guardarAcceso(datos.token_acceso)
   guardarRenovacion(datos.token_renovacion)
+  // El panel ya sabe cuándo caduca el token de acceso, así que no tiene por qué esperar a que una
+  // petición falle para pedir otro. La hora la pone el servidor: el reloj del navegador puede ir
+  // adelantado o atrasado y no es de fiar para decidir cuándo caduca algo que emitió otro.
+  programarRenovacion(datos.acceso_expira_en)
 
   estado.usuario = datos.usuario_id
   estado.sesionId = datos.sesion_id

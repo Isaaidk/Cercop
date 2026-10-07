@@ -20,6 +20,15 @@ const props = defineProps({
   nombre: { type: String, default: '' },
   email: { type: String, default: '' },
   admin: { type: Boolean, default: false },
+  /**
+   * Si esta persona es el dueño de la plataforma.
+   *
+   * El punto de presencia se enseña solo entonces. No es lo mismo que `admin`: un administrador de
+   * empresa administra su propia gente, y quién está conectado es información de la operación que
+   * ve el dueño del sistema. Con `admin` en su lugar, cualquier cliente vería a sus usuarios
+   * conectados y —peor— el servidor le respondería con un 403 que parecería un fallo del panel.
+   */
+  presencia: { type: Boolean, default: false },
   panelAbierto: { type: Boolean, default: false },
   /** Si los filtros se están viendo. En escritorio es la columna; en móvil, el cajón abierto. */
   filtrosAbiertos: { type: Boolean, default: true },
@@ -77,6 +86,7 @@ const iniciales = computed(() => {
 
     <div class="barra__acciones">
       <IndicadorPresencia
+        v-if="presencia"
         :conectados="conectados"
         :total="total"
         :personas="personas"

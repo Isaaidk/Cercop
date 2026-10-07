@@ -27,6 +27,7 @@ from contratacion.dominio.busqueda import (
     clave_generacion,
     clave_resultados,
     coincide,
+    es_codigo_cpc,
     expresion_busqueda,
     huella_filtros,
     limitar_elementos,
@@ -169,6 +170,41 @@ def test_la_huella_cambia_al_cambiar_un_filtro() -> None:
     base = Filtros(terminos=("obras",))
     con_provincia = Filtros(terminos=("obras",), provincias=("Azuay",))
     assert huella_filtros(base) != huella_filtros(con_provincia)
+
+
+def test_la_huella_distingue_la_descripcion_de_los_terminos() -> None:
+    """Buscar «obras» en toda la convocatoria no es buscarlo en la descripción del producto.
+
+    Comparten la forma —una lista de términos y el mismo modo— y por eso es fácil confundirlos: si
+    los dos acabaran en la misma clave de la huella, dos consultas distintas devolverían el
+    resultado de la primera, sin ningún error que lo delate.
+    """
+    como_termino = Filtros(terminos=("obras",))
+    como_descripcion = Filtros(descripcion=("obras",))
+
+    assert huella_filtros(como_termino) != huella_filtros(como_descripcion)
+
+
+def test_la_huella_ignora_el_orden_de_la_descripcion() -> None:
+    uno = Filtros(descripcion=normalizar_terminos(["pantallas", "teclados"]))
+    otro = Filtros(descripcion=normalizar_terminos(["teclados", "pantallas"]))
+
+    assert huella_filtros(uno) == huella_filtros(otro)
+
+
+def test_la_descripcion_si_se_cachea() -> None:
+    """Es deliberada y se repite, como el CPC: no es una caja de búsqueda «mientras se escribe».
+
+    `texto` y `codigo` quedan fuera del caché porque su espacio de combinaciones es ilimitado. La
+    descripción del producto no: describe lo que esa empresa compra siempre, así que dos personas
+    que buscan lo mismo comparten entrada. Si algún día se consultara al teclear, habría que
+    sacarla, y por eso queda escrito.
+    """
+    assert Filtros(descripcion=("equipo de computo",)).cacheable
+
+
+def test_el_resumen_menciona_la_descripcion() -> None:
+    assert "descripcion=equipos" in Filtros(descripcion=("equipos",)).resumen()
 
 
 def test_la_huella_ignora_el_orden_de_las_provincias() -> None:
@@ -384,3 +420,37 @@ def test_la_regla_no_depende_de_otros_filtros() -> None:
     """Un rango de fechas o una palabra clave no cambian la decisión: la decide el texto libre."""
     assert Filtros(desde=date(2026, 1, 1), hasta=date(2026, 6, 30), terminos=("obras",)).cacheable
     assert not Filtros(desde=date(2026, 1, 1), terminos=("obras",), texto="viales").cacheable
+
+
+# --------------------------------------------------------------------------- #
+# Qué es un código de CPC y el interruptor «solo CPC»
+#
+# La distinción decide **por qué índice** se busca, y de ella depende que un código encuentre todas
+# las filas clasificadas así. El interruptor decide si las palabras clave se exigen además, y por
+# eso tiene que estar en la huella: fuera de ella, dos consultas distintas compartirían página.
+# --------------------------------------------------------------------------- #
+
+
+def test_un_codigo_de_cpc_se_reconoce_por_su_forma() -> None:
+    """El CPC es una nomenclatura numérica: el código se pega tal cual."""
+    assert es_codigo_cpc("871410032")
+    assert es_codigo_cpc("002110011")
+
+
+def test_una_descripcion_no_es_un_codigo() -> None:
+    """Confundirlos no da un error: da menos filas de las que hay."""
+    assert not es_codigo_cpc("lavado")
+    assert not es_codigo_cpc("87141")
+    assert not es_codigo_cpc("87141003A")
+
+
+def test_la_huella_distingue_solo_cpc_de_cpc_mas_palabras() -> None:
+    """Faltando en la huella, «solo CPC» recibiría la página de «CPC + palabras».
+
+    Es la trampa que ya apareció con `solo_con_plazo` y con la categoría: el resultado es correcto
+    para *otra* consulta y no hay ningún error que lo delate.
+    """
+    con_palabras = Filtros(cpc=("871410032",), terminos=("hospital",))
+    solo_cpc = Filtros(cpc=("871410032",), terminos=("hospital",), solo_cpc=True)
+
+    assert huella_filtros(con_palabras) != huella_filtros(solo_cpc)

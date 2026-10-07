@@ -15,11 +15,17 @@
  * Arriba del todo va el trabajo de los workers, que es lo otro que se administra desde aquí: la
  * ingesta no la lanza un cliente ni el navegador, así que su estado y su botón viven en la pantalla
  * de quien responde por el sistema.
+ *
+ * Suspender y eliminar están juntos y no se parecen. **Suspender** corta el acceso y se deshace;
+ * **eliminar** borra la empresa con sus cuentas y no hay vuelta atrás, así que exige escribir su
+ * nombre. La traba está en el servidor —compara el texto y rechaza la petición—; el botón
+ * deshabilitado de aquí solo evita mandar algo que se sabe que va a ser rechazado.
  */
 import { computed, onMounted, ref } from 'vue'
 
 import TrabajoWorkers from '@/components/TrabajoWorkers.vue'
 import { api } from '@/api/endpoints'
+import { sesion } from '@/stores/sesion'
 import { fechaCorta } from '@/utils/formato'
 
 const empresas = ref([])
@@ -36,6 +42,39 @@ const ocupado = ref('')
 
 /** El plazo elegido para cada cuenta. Arranca en el mínimo, que es el que menos compromete. */
 const plazos = ref({})
+
+/**
+ * Qué borrado está pidiendo confirmación, y qué se ha escrito en la casilla.
+ *
+ * Hay un solo par de variables para las dos cosas —empresas y cuentas— porque dos confirmaciones a
+ * la vez no significan nada, y tener dos estados distintos dejaría la puerta abierta a que las dos
+ * casillas estuvieran vivas enseñando el mismo texto.
+ */
+const borrando = ref('')
+const confirmacion = ref('')
+
+function abrirBorrado(clave) {
+  borrando.value = borrando.value === clave ? '' : clave
+  confirmacion.value = ''
+  error.value = ''
+  aviso.value = ''
+}
+
+function cerrarBorrado() {
+  borrando.value = ''
+  confirmacion.value = ''
+}
+
+/**
+ * ¿Lo escrito coincide con lo que hay que escribir?
+ *
+ * Se compara en minúsculas y sin espacios de sobra, igual que el servidor: es una traba contra el
+ * descuido, no un examen de mecanografía. La comprobación de verdad es la del servidor, que la
+ * repite por si alguien llama a la API sin pasar por esta pantalla.
+ */
+function confirmaCon(texto) {
+  return confirmacion.value.trim().toLowerCase() === (texto || '').trim().toLowerCase()
+}
 
 const plazosDisponibles = computed(() => catalogo.value.plazos || [])
 const vistas = computed(() => catalogo.value.vistas || [])
@@ -136,6 +175,61 @@ function textoEstado(empresa) {
   if (empresa.estado === 'prueba') return 'En prueba'
   return empresa.estado
 }
+
+/**
+ * Elimina una empresa con sus cuentas. **No se deshace**, y la confirmación viaja con la petición.
+ *
+ * Después se recarga la lista: la empresa ya no está, y dejarla pintada haría que el siguiente clic
+ * sobre ella fallara con «esa empresa no existe», que parece un error del panel y es el resultado
+ * correcto de lo que se acaba de hacer.
+ */
+async function eliminarEmpresa(empresa) {
+  ocupado.value = empresa.negocio_id
+  error.value = ''
+  aviso.value = ''
+  try {
+    const resultado = await api.eliminarEmpresa(empresa.negocio_id, confirmacion.value.trim())
+    aviso.value = `${resultado.nombre} se ha eliminado: ${resultado.cuentas_borradas} ${
+      resultado.cuentas_borradas === 1 ? 'cuenta' : 'cuentas'
+    } y ${resultado.sesiones_cerradas} ${
+      resultado.sesiones_cerradas === 1 ? 'sesión cerrada' : 'sesiones cerradas'
+    }.`
+    cerrarBorrado()
+    if (abierta.value === empresa.negocio_id) abierta.value = null
+    await cargar()
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = ''
+  }
+}
+
+/** Elimina una cuenta concreta. Se confirma con su correo, que es lo que se enseña al pedirlo. */
+async function eliminarUsuario(usuario) {
+  const negocioId = abierta.value
+  ocupado.value = usuario.usuario_id
+  error.value = ''
+  aviso.value = ''
+  try {
+    const resultado = await api.eliminarUsuarioDeEmpresa(
+      negocioId,
+      usuario.usuario_id,
+      confirmacion.value.trim(),
+    )
+    aviso.value = `${resultado.nombre || usuario.email} ya no existe. Se cerraron ${
+      resultado.sesiones_cerradas
+    } ${resultado.sesiones_cerradas === 1 ? 'sesión' : 'sesiones'}.`
+    cerrarBorrado()
+    const datos = await api.usuariosDeNegocio(negocioId)
+    usuarios.value = datos.usuarios || []
+    // El recuento de cuentas de la cabecera acaba de cambiar; se refresca para no mentir.
+    await cargar()
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = ''
+  }
+}
 </script>
 
 <template>
@@ -148,7 +242,8 @@ function textoEstado(empresa) {
         <p class="plataforma__pista">
           <span class="numeros">{{ empresas.length }}</span>
           {{ empresas.length === 1 ? 'empresa registrada' : 'empresas registradas' }}. Suspende o
-          devuelve el acceso, y ajusta hasta cuándo puede ver cada persona.
+          devuelve el acceso, ajusta hasta cuándo puede ver cada persona, o elimina una empresa con
+          sus cuentas.
         </p>
       </div>
     </header>
@@ -207,6 +302,54 @@ function textoEstado(empresa) {
             >
               {{ empresa.activa ? 'Suspender' : 'Reactivar' }}
             </button>
+
+            <!-- Suspender y eliminar están juntos porque son la misma familia de decisiones, pero
+                 no se parecen en nada: suspender se deshace y esto no. El estilo y la confirmación
+                 son lo único que lo dice antes de pulsar. -->
+            <button
+              type="button"
+              class="boton boton--fantasma boton--pequeno plataforma__eliminar"
+              :aria-expanded="borrando === `empresa:${empresa.negocio_id}`"
+              :disabled="ocupado === empresa.negocio_id"
+              @click="abrirBorrado(`empresa:${empresa.negocio_id}`)"
+            >
+              Eliminar
+            </button>
+          </div>
+        </div>
+
+        <!-- Borrado de la empresa: exige escribir su nombre. -->
+        <div
+          v-if="borrando === `empresa:${empresa.negocio_id}`"
+          class="plataforma__borrado aparece"
+        >
+          <p class="plataforma__borrado-aviso">
+            Vas a <strong>eliminar «{{ empresa.nombre }}»</strong> con todas sus cuentas. Se pierde
+            el registro de aceptación de los términos de su gente y no se puede deshacer. Si solo
+            quieres que deje de entrar, usa <strong>Suspender</strong>: es reversible y no borra nada.
+          </p>
+          <label class="campo">
+            <span class="campo__etiqueta">
+              Escribe <code>{{ empresa.nombre }}</code> para confirmar
+            </span>
+            <input v-model="confirmacion" class="entrada" type="text" autocomplete="off" />
+          </label>
+          <div class="plataforma__borrado-botones">
+            <button
+              type="button"
+              class="boton boton--peligro boton--pequeno"
+              :disabled="!confirmaCon(empresa.nombre) || ocupado === empresa.negocio_id"
+              @click="eliminarEmpresa(empresa)"
+            >
+              Eliminar la empresa definitivamente
+            </button>
+            <button
+              type="button"
+              class="boton boton--fantasma boton--pequeno"
+              @click="cerrarBorrado"
+            >
+              Cancelar
+            </button>
           </div>
         </div>
 
@@ -244,6 +387,51 @@ function textoEstado(empresa) {
                     </option>
                   </select>
                 </label>
+
+                <button
+                  v-if="usuario.usuario_id !== sesion.estado.usuario"
+                  type="button"
+                  class="boton boton--fantasma boton--pequeno"
+                  :aria-expanded="borrando === `usuario:${usuario.usuario_id}`"
+                  :disabled="ocupado === usuario.usuario_id"
+                  @click="abrirBorrado(`usuario:${usuario.usuario_id}`)"
+                >
+                  Eliminar
+                </button>
+              </div>
+
+              <!-- Borrado de la cuenta: se confirma con su correo. -->
+              <div
+                v-if="borrando === `usuario:${usuario.usuario_id}`"
+                class="plataforma__borrado aparece"
+              >
+                <p class="plataforma__borrado-aviso">
+                  Vas a <strong>borrar la cuenta {{ usuario.email }}</strong> definitivamente. Se
+                  pierde su registro de aceptación de los términos, y no se puede deshacer.
+                </p>
+                <label class="campo">
+                  <span class="campo__etiqueta">
+                    Escribe <code>{{ usuario.email }}</code> para confirmar
+                  </span>
+                  <input v-model="confirmacion" class="entrada" type="text" autocomplete="off" />
+                </label>
+                <div class="plataforma__borrado-botones">
+                  <button
+                    type="button"
+                    class="boton boton--peligro boton--pequeno"
+                    :disabled="!confirmaCon(usuario.email) || ocupado === usuario.usuario_id"
+                    @click="eliminarUsuario(usuario)"
+                  >
+                    Eliminar la cuenta definitivamente
+                  </button>
+                  <button
+                    type="button"
+                    class="boton boton--fantasma boton--pequeno"
+                    @click="cerrarBorrado"
+                  >
+                    Cancelar
+                  </button>
+                </div>
               </div>
 
               <div class="plataforma__vistas">
@@ -437,5 +625,44 @@ function textoEstado(empresa) {
 .plataforma__vence {
   font-weight: 400;
   opacity: 0.85;
+}
+
+/*
+ * La confirmación de un borrado, en línea y dentro de la fila.
+ *
+ * Se queda en el sitio en lugar de abrir un diálogo: lo que hay que leer es de qué empresa se trata,
+ * y un diálogo tapa justo la ficha que permite comprobarlo. Misma elección que en la gestión de
+ * cuentas, donde el panel en línea también sustituye al diálogo.
+ */
+.plataforma__borrado {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-3);
+  padding: var(--e-4);
+  border-top: 1px solid var(--borde);
+  border-left: 3px solid var(--error);
+  background: var(--error-suave);
+}
+
+.plataforma__borrado-aviso {
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  color: var(--texto);
+}
+
+.plataforma__borrado-botones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-2);
+}
+
+/* El botón de eliminar va apagado hasta que se pasa por encima: la acción destructiva no compite en
+   peso visual con «Suspender», que es la que se usa casi siempre. */
+.plataforma__eliminar {
+  opacity: 0.75;
+}
+
+.plataforma__eliminar:hover {
+  opacity: 1;
 }
 </style>

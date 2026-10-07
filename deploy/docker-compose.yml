@@ -22,6 +22,18 @@
 
 name: contratacion
 
+# Tope a los registros de Docker, y no es un detalle de limpieza: el conductor `json-file` **no
+# tiene límite por defecto**, y el API escribe una línea por petición. Con mil paneles abiertos eso
+# son millones de líneas al día; el fichero crece hasta llenar el disco y el servidor se cae entero
+# —con PostgreSQL dentro, que es quien no puede permitirse quedarse sin sitio—. Tres ficheros de
+# 10 MB por servicio acotan cualquier avería de este tipo a 30 MB por servicio.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # ---------------------------------------------------------------------------
   # Datos
@@ -35,17 +47,81 @@ services:
       POSTGRES_PASSWORD: ${BD_CLAVE:?falta BD_CLAVE en el entorno}
     command:
       # Una máquina dedicada no necesita los valores por defecto de PostgreSQL, pensados para un
-      # servidor compartido. `max_connections` es el que decide cuántos workers caben: el techo real
-      # del sistema es la suma de los pools de todos los procesos de API.
+      # servidor compartido. Los que importan para mil usuarios concurrentes:
+      #
+      # - **`max_connections`** decide cuántos procesos caben: el techo real del sistema es la suma
+      #   de los pools de todos los procesos de API más el del worker. Con 4 procesos de API y uno
+      #   de ingesta, a 20 conexiones cada uno (BD_POOL_SIZE + BD_MAX_OVERFLOW), son 100. 200 deja
+      #   margen para la migración y para mirar la base a mano. `scripts/verificar_despliegue.py`
+      #   comprueba esta aritmética contra el `.env`.
+      # - **`effective_cache_size`** es una pista para el planificador, no memoria reservada: se le
+      #   dice cuánta caché hay **en todo el sistema** (el `shared_buffers` más la del sistema
+      #   operativo). Con 4 GB de máquina, 3 GB. No cuesta un byte y evita que el planificador
+      #   subestime lo que ya está en memoria.
+      # - **`random_page_cost`**: 1,1 es lo correcto para disco de estado sólido —el valor por
+      #   defecto, 4, es de cuando los discos giraban y cada lectura aleatoria costaba—. **Hay que
+      #   comprobarlo en el servidor** con `scripts/medir_consultas.py`, que mide y **muestra el
+      #   plan**: los planes de este proyecto se eligieron midiendo, y algún plan puede empeorar. Si
+      #   pasa, `BD_RANDOM_PAGE_COST=4` lo devuelve al valor de PostgreSQL sin tocar este archivo.
+      # - **`work_mem` es por operación y por conexión**, no por base: 80 conexiones activas con
+      #   tres ordenaciones cada una son 3,8 GB con 16 MB. Por eso está parametrizado y por eso
+      #   conviene bajarlo a 8MB si la máquina es de 4 GB y aparece el asesino por memoria.
+      # - **`maintenance_work_mem`** (trabajo a mano) va separado del de autovacuum: la tabla
+      #   recibe filas muertas en cada ciclo de ingesta y el análisis automático no puede quedarse
+      #   sin memoria, pero tampoco puede reservar 256 MB por trabajador.
+      # - **Puntos de control**: la ingesta escribe a ráfagas (1.700 filas por vuelta). Con
+      #   `max_wal_size` pequeño, cada ráfaga fuerza un punto de control y con él escrituras
+      #   sincronizadas que paran todo lo demás.
       - postgres
       - -c
-      - max_connections=200
+      - max_connections=${BD_MAX_CONNECTIONS:-200}
       - -c
-      - shared_buffers=1GB
+      - shared_buffers=${BD_SHARED_BUFFERS:-1GB}
       - -c
-      - work_mem=16MB
+      - effective_cache_size=${BD_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=${BD_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - autovacuum_work_mem=64MB
+      - -c
+      - random_page_cost=${BD_RANDOM_PAGE_COST:-1.1}
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=2GB
+      - -c
+      - min_wal_size=512MB
+      - -c
+      - wal_compression=on
+      - -c
+      - autovacuum_vacuum_scale_factor=0.05
+      - -c
+      - autovacuum_analyze_scale_factor=0.02
+      - -c
+      - autovacuum_naptime=30s
+      - -c
+      - log_min_duration_statement=1000
     volumes:
       - datos-bd:/var/lib/postgresql/data
+    # `/dev/shm` vale 64 MB por defecto en un contenedor, y PostgreSQL lo usa para el paralelismo y
+    # para construir índices. Con 64 MB, un `CREATE INDEX` de los grandes —o el `ANALYZE` de una
+    # migración— falla con «could not resize shared memory segment», un error que no dice nada de la
+    # causa y que aparece **al desplegar**, no en desarrollo. Esta es la línea que lo evita.
+    shm_size: 512mb
+    # 200 conexiones son 200 descriptores como mínimo, más los del WAL.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Diez segundos —el valor por defecto— no le dan tiempo a cerrar: PostgreSQL tiene que terminar
+    # el punto de control y cerrar limpio. Si se le mata, la siguiente arranque hace recuperación y
+    # tarda minutos con un histórico de este tamaño.
+    stop_grace_period: 60s
+    logging: *logging
     # No se publica el puerto a propósito: PostgreSQL solo se ve dentro de la red del compose.
     # Exponerlo a internet convierte un descuido de configuración en una brecha.
     healthcheck:
@@ -98,9 +174,28 @@ services:
       - --appendfsync
       - everysec
       - --maxmemory
-      - 512mb
+      - ${CACHE_MAXMEMORY:-512mb}
       - --maxmemory-policy
       - allkeys-lru
+      # Cuando el límite **sí** se alcanza, liberar el valor desalojado es trabajo del único hilo que
+      # tiene Redis, y ese hilo es el que atiende a los mil paneles. Con esto, la liberación se va a
+      # un hilo de fondo y ninguna petición espera a que se recoja la basura. Es una red de
+      # seguridad: con el consumo medido —megas— la expulsión no llega a dispararse.
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+    # Las claves que más caducan son las de presencia, una por panel y sesenta segundos de vida: con
+    # mil paneles son unas diecisiete expiraciones por segundo, cada una con liberación diferida.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Un `restart` manda SIGTERM y, a los diez segundos, SIGKILL. Con el AOF a `everysec`, el cierre
+    # ordenado vacía lo que quede en el búfer: sin él se pierden los últimos inicios de sesión y el
+    # fichero puede necesitar reparación al arrancar.
+    stop_grace_period: 30s
+    logging: *logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -124,6 +219,7 @@ services:
     # Se ejecuta una vez y termina. Sin `restart`, un fallo se ve en los registros en vez de
     # reintentarse en silencio hasta que alguien mire.
     restart: "no"
+    logging: *logging
     depends_on:
       bd:
         condition: service_healthy
@@ -156,6 +252,23 @@ services:
       - "8001"
       - --workers
       - ${API_WORKERS:-4}
+      # Caddy reutiliza las conexiones contra el API, pero uvicorn cierra la suya a los cinco
+      # segundos por defecto: con mil clientes, eso es abrir y cerrar conexiones constantemente, con
+      # sus descriptores en `TIME_WAIT`. Un minuto deja margen de sobra bajo el de Caddy.
+      - --timeout-keep-alive
+      - "65"
+      # La dirección real del cliente, para lo que se guarda como evidencia (la aceptación de
+      # términos registra IP y agente). Sin esto, lo que se guarda es la IP del contenedor de Caddy.
+      #
+      # Confiar en la cabecera **solo es seguro porque el puerto del API está publicado únicamente en
+      # `127.0.0.1`**, así que nadie de fuera puede hablar con él saltándose el proxy; quien pueda
+      # ejecutar algo en esta máquina ya está dentro por otro camino. Si algún día se publica ese
+      # puerto en todas las interfaces, esta línea convierte la cabecera en algo que cualquiera puede
+      # inventarse.
+      - --forwarded-allow-ips
+      - "*"
+    stop_grace_period: 30s
+    logging: *logging
     ports:
       # Solo en la interfaz local: quien atiende a internet es Caddy. Publicarlo en todas las
       # interfaces saltaría el TLS y el límite de tamaño de las peticiones.
@@ -189,6 +302,7 @@ services:
     # Un solo worker de ingesta: el ciclo se protege con un bloqueo de asesoría de PostgreSQL, así
     # que un segundo proceso no duplicaría el trabajo, solo esperaría.
     command: ["python", "-m", "contratacion.tareas.worker"]
+    logging: *logging
     depends_on:
       bd:
         condition: service_healthy
@@ -218,6 +332,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - datos-caddy:/data
       - config-caddy:/config
+    logging: *logging
     depends_on:
       - api
 

@@ -13,8 +13,10 @@
  *   negocio y la búsqueda se hace **contra el histórico ya descargado**, que es una consulta a la
  *   base y no una llamada al SERCOP: el resultado sale al instante. No se muestra ningún estado de
  *   espera porque, para el listado de ínfimas cuantías, no hay nada que esperar.
- * - **Quitar una palabra de la selección** sin borrarla del catálogo. Son dos cosas distintas:
- *   dejar de buscar por ella hoy no es lo mismo que darla de baja.
+ * - **Quitar una palabra de la selección** sin borrarla del catálogo, y **darla de baja** con su ✕.
+ *   Son dos cosas distintas: dejar de buscar por ella hoy no es lo mismo que dejar de seguirla. La
+ *   baja es real —desactiva la suscripción en el servidor—, así que volver a agregarla la encola
+ *   otra vez en lugar de contestar que «ya se consultó hace poco».
  */
 import { computed, ref } from 'vue'
 
@@ -25,6 +27,7 @@ const agregando = ref(false)
 const error = ref('')
 const aviso = ref('')
 const mostrandoCampo = ref(false)
+const quitando = ref(null)
 
 const lote = ref('')
 const mostrandoLote = ref(false)
@@ -58,6 +61,30 @@ function cancelar() {
   mostrandoCampo.value = false
   nueva.value = ''
   error.value = ''
+}
+
+/**
+ * Da de baja la palabra clave del negocio.
+ *
+ * Es la operación que **no existía**: el panel podía deseleccionar una palabra —dejar de filtrar por
+ * ella— pero no darla de baja, así que la suscripción seguía activa y volver a agregarla contestaba
+ * «ya se consultó hace poco», que se lee como «ya estaba puesta».
+ *
+ * Se espera la respuesta del servidor antes de tocar la lista: así, volver a agregarla de inmediato
+ * la encola de verdad en vez de encontrarla todavía activa.
+ */
+async function darDeBaja(palabra) {
+  error.value = ''
+  aviso.value = ''
+  quitando.value = palabra.termino_id
+  try {
+    await filtros.quitarPalabraDefinitiva(palabra.termino_id)
+    aviso.value = `«${palabra.texto}» ya no se sigue. Si la vuelves a agregar, se buscará otra vez.`
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    quitando.value = null
+  }
 }
 
 /**
@@ -168,7 +195,7 @@ function cancelarLote() {
     </p>
 
     <ul v-else class="palabras__lista">
-      <li v-for="palabra in estado.palabras" :key="palabra.termino_id">
+      <li v-for="palabra in estado.palabras" :key="palabra.termino_id" class="palabras__item">
         <button
           type="button"
           class="chip"
@@ -185,6 +212,21 @@ function cancelarLote() {
             palabra encuentra ya lo que hay, y la etiqueta daba a entender que la búsqueda estaba
             pendiente cuando el resultado que se veía era el definitivo.
           -->
+        </button>
+        <!--
+          La baja va en su propio botón y **separada** del chip: uno selecciona y el otro deja de
+          seguir la palabra. Pegados, pulsar «quitar» cuando se quería «seleccionar» sería un
+          accidente de un píxel, y la baja no se deshace sola.
+        -->
+        <button
+          type="button"
+          class="palabras__baja"
+          :aria-label="`Dar de baja la palabra clave ${palabra.texto}`"
+          :title="`Dejar de seguir «${palabra.texto}»`"
+          :disabled="quitando === palabra.termino_id"
+          @click="darDeBaja(palabra)"
+        >
+          <span aria-hidden="true">✕</span>
         </button>
       </li>
     </ul>
@@ -327,6 +369,40 @@ function cancelarLote() {
   list-style: none;
   padding: 0;
   margin: var(--e-1) 0;
+}
+
+/* El chip y su botón de baja viajan juntos: la ficha es una fila. */
+.palabras__item {
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--e-1);
+}
+
+/*
+ * La baja, sobria en reposo y roja solo al pasar por encima: no es un gesto frecuente y no debe
+ * invitar a pulsarla por error al seleccionar. El color aparece cuando la intención ya es clara.
+ */
+.palabras__baja {
+  padding: 0 0.5rem;
+  border: 1px solid var(--borde);
+  border-radius: var(--r-redondo);
+  background: transparent;
+  color: var(--texto-tenue);
+  font-size: var(--t-xs);
+  cursor: pointer;
+  transition: color var(--rapido) var(--curva), border-color var(--rapido) var(--curva),
+    background-color var(--rapido) var(--curva);
+}
+
+.palabras__baja:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+  background: var(--error-suave);
+}
+
+.palabras__baja:disabled {
+  opacity: 0.5;
+  cursor: progress;
 }
 
 .chip {

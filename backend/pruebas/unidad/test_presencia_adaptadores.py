@@ -32,7 +32,11 @@ from contratacion.infraestructura.adaptadores.salida.presencia.memoria import (
 )
 from contratacion.infraestructura.adaptadores.salida.presencia.redis import deserializar_latido
 
-AHORA = datetime(2026, 10, 5, 15, 0, tzinfo=UTC)
+# Un instante fijo **no sirve** para las señales: `vivas()` descarta lo caducado comparando con el
+# reloj real, así que una fecha escrita a mano acaba fallando sola el día que el calendario la
+# alcanza —y la prueba se lee como un defecto del almacén cuando lo que envejeció fue el dato—.
+# Se ancla al reloj, igual que las otras pruebas de este archivo que ya lo hacían.
+AHORA = datetime.now(UTC)
 TTL = 60
 
 NEGOCIO = UUID("22222222-2222-2222-2222-222222222222")

@@ -104,6 +104,8 @@ def _filtros_compartidos(
     *,
     termino: list[str] | None,
     cpc: list[str] | None,
+    descripcion: list[str] | None,
+    solo_cpc: bool,
     modo: ModoBusqueda,
     fuente: str | None,
     categoria: Categoria | None,
@@ -148,6 +150,8 @@ def _filtros_compartidos(
     return Filtros(
         terminos=normalizar_terminos(termino),
         cpc=normalizar_terminos(cpc),
+        descripcion=normalizar_terminos(descripcion),
+        solo_cpc=solo_cpc,
         modo=modo,
         fuente=fuente,
         categoria=categoria,
@@ -196,6 +200,28 @@ async def criterios(
                 "y no en el texto libre de la convocatoria. Se puede repetir para combinar "
                 "varias: `?cpc=871410032&cpc=lavado`. Es independiente de `termino`; si se "
                 "envían los dos, se exigen ambos."
+            )
+        ),
+    ] = None,
+    solo_cpc: Annotated[
+        bool,
+        Query(
+            description=(
+                "Con `true`, buscar por CPC **no** exige además las palabras clave: devuelve todo "
+                "lo clasificado en esos términos. Sin él, `cpc` y `termino` se exigen juntos y el "
+                "resultado se recorta."
+            )
+        ),
+    ] = False,
+    descripcion: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Busca en la **descripción del producto** —el objeto de compra— y no en el resto "
+                "del texto de la convocatoria, que también incluye el código, la entidad, la "
+                "provincia y los tipos. Se puede repetir para combinar varias: "
+                "`?descripcion=equipo+de+computo`. Es independiente de `termino` y de `cpc`; si se "
+                "envían juntos, se exigen todos."
             )
         ),
     ] = None,
@@ -267,6 +293,8 @@ async def criterios(
         _filtros_compartidos(
             termino=termino,
             cpc=cpc,
+            descripcion=descripcion,
+            solo_cpc=solo_cpc,
             modo=modo,
             fuente=fuente,
             categoria=categoria,
@@ -348,6 +376,10 @@ async def exportar_registros(
     - **No se pagina.** Un archivo con las veinticinco filas de la página en curso no sirve para
       trabajar fuera de la plataforma, que es justo para lo que se exporta. El tope que sí se aplica
       es el de configuración, y si se supera se rechaza en lugar de entregar un archivo incompleto.
+    - **No llega más atrás de tres meses.** Es la única operación que lee el histórico entero sin
+      paginar, así que la ventana se acota por fecha de publicación y una petición que se remonte
+      más atrás se rechaza indicando desde cuándo sí se puede. Rechazar y no recortar es deliberado:
+      un archivo al que le faltan filas sin decirlo deja de coincidir con lo que hay en pantalla.
     - **Pide permiso de exportación, no de consulta.** Un lector ve la tabla y no descarga el
       archivo: lo que sale de la plataforma deja de estar bajo nuestro control.
 
