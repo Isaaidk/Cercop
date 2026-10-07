@@ -29,7 +29,16 @@ from contratacion.infraestructura.config.ajustes import obtener_ajustes
 
 registro = logging.getLogger(__name__)
 
+# Nombres que solo existen dentro de una red privada. La plataforma que los sirve no publica
+# certificados, así que pedir cifrado ahí no protege nada y **rompe la conexión**: el intento de TLS
+# llega a un servidor que no lo habla y contesta «rejected SSL upgrade».
+#
+# Esto costó un despliegue entero en Railway: la base estaba viva, el nombre se resolvía y el API
+# fallaba con un error de cifrado que parecía un problema de certificados. La regla de «TLS
+# obligatorio» se escribió para Supabase, donde la base está al otro lado de internet; dentro de una
+# plataforma, la base y el API hablan por la red interna y no salen de ahí.
 HOSTS_LOCALES = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+SUFIJOS_PRIVADOS = (".internal", ".svc.cluster.local")
 CONTROLADORES_ACEPTADOS = frozenset(
     {"postgres", "postgresql", "postgresql+psycopg2", "postgresql+asyncpg"}
 )
@@ -38,17 +47,36 @@ _motor: AsyncEngine | None = None
 _fabrica_sesiones: async_sessionmaker[AsyncSession] | None = None
 
 
-def _es_host_local(host: str | None) -> bool:
-    return host is None or host in HOSTS_LOCALES
+def _es_host_privado(host: str | None) -> bool:
+    """`True` si el servidor vive dentro de una red privada y por tanto **no** habla TLS.
+
+    Tres casos, y los tres han aparecido ya en este proyecto: los nombres locales conocidos
+    (`localhost`, `127.0.0.1`, `host.docker.internal`), un nombre **sin punto** (`bd`, `cache`,
+    que es como se llama el servicio en el `docker-compose` de `deploy/`) y un nombre con **sufijo
+    privado** (`postgres.railway.internal` en Railway, `algo.svc.cluster.local` en Kubernetes).
+
+    Una dirección IPv6 literal no entra por ninguna de las tres puertas: si no está en la lista de
+    nombres conocidos se trata como remota, que es el lado seguro por el que equivocarse —de pedir
+    cifrado de más se sale con `?ssl=disable`, y de pedir de menos, no tan fácil—.
+    """
+    if host is None or host in HOSTS_LOCALES:
+        return True
+    if ":" in host:
+        return False
+    if "." not in host:
+        return True
+    return any(host.endswith(sufijo) for sufijo in SUFIJOS_PRIVADOS)
 
 
 def normalizar_url_bd(destino: str) -> URL:
     """Adapta la URI de PostgreSQL al controlador asíncrono.
 
     - Acepta `postgresql://` y `postgres://` (lo que copia el panel de Supabase) y añade `asyncpg`.
-    - Añade `ssl=require` en hosts remotos cuando el usuario no indica cifrado, porque los
+    - Añade `ssl=require` en hosts **públicos** cuando el usuario no indica cifrado, porque los
       proveedores gestionados lo exigen y, sin él, el error resultante es difícil de interpretar.
-      Para desactivarlo, hay que indicar `?ssl=disable` de forma explícita.
+      **No** lo añade en una red privada —`bd`, `postgres.railway.internal`, `localhost`—, donde el
+      servidor no tiene certificado y el intento de cifrado solo consigue tumbar la conexión.
+      Para forzarlo o desactivarlo, `?ssl=require` y `?ssl=disable`, que siempre mandan.
     """
     url = make_url(destino)
 
@@ -61,7 +89,7 @@ def normalizar_url_bd(destino: str) -> URL:
     if url.drivername != "postgresql+asyncpg":
         url = url.set(drivername="postgresql+asyncpg")
 
-    if "ssl" not in url.query and not _es_host_local(url.host):
+    if "ssl" not in url.query and not _es_host_privado(url.host):
         url = url.update_query_dict({"ssl": "require"})
 
     return url
@@ -93,8 +121,20 @@ def obtener_motor() -> AsyncEngine:
     global _motor
     if _motor is None:
         ajustes = obtener_ajustes()
+        destino = normalizar_url_bd(ajustes.database_url)
+        # A dónde se conecta y si cifra, en el registro del arranque y **sin la credencial**. Es la
+        # línea que faltaba cuando el despliegue decía «Postgres no responde» y nada más: con el
+        # servidor, la base y el cifrado a la vista, se diagnostica en dos segundos lo que si no
+        # hay que deducir de una traza de veinte pantallas.
+        registro.info(
+            "Base de datos: %s:%s/%s · cifrado=%s",
+            destino.host,
+            destino.port or 5432,
+            destino.database,
+            destino.query.get("ssl", "no"),
+        )
         _motor = create_async_engine(
-            normalizar_url_bd(ajustes.database_url),
+            destino,
             pool_pre_ping=False,
             pool_size=ajustes.bd_pool_size,
             max_overflow=ajustes.bd_max_overflow,
