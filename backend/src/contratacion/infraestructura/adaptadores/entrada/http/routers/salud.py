@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 
-from contratacion.infraestructura.adaptadores.salida.bd.sesion import verificar_bd
+from contratacion.infraestructura.adaptadores.salida.bd.sesion import estado_bd
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import estado_cache
 
 router = APIRouter(tags=["Salud"])
@@ -32,14 +32,22 @@ async def salud() -> dict[str, str]:
 
 @router.get("/listo", summary="Las dependencias responden")
 async def listo() -> JSONResponse:
-    """Verifica PostgreSQL y el caché. Devuelve 503 indicando qué es lo que falla."""
+    """Verifica PostgreSQL y el caché. Devuelve 503 indicando qué es lo que falla.
+
+    Cuando Postgres no responde se añade **el motivo**, en las palabras de este repositorio: «no se
+    pudo resolver el nombre del servidor», «credenciales rechazadas». No es información sensible
+    —nunca es el mensaje del controlador, así que no puede llevar la cadena de conexión— y es la
+    diferencia entre saber qué arreglar y adivinar. La frase la elige `motivo_legible` de una lista
+    cerrada, y en el peor caso es el nombre del tipo de excepción.
+    """
     cache = await estado_cache()
+    postgres_responde, motivo = await estado_bd()
     dependencias = {
-        "postgres": "ok" if await verificar_bd() else "error",
+        "postgres": "ok" if postgres_responde else "error",
         "cache": cache,
     }
 
-    listo_para_servir = dependencias["postgres"] == "ok" and cache in ESTADOS_ACEPTABLES_CACHE
+    listo_para_servir = postgres_responde and cache in ESTADOS_ACEPTABLES_CACHE
     cuerpo = {
         "servicio": NOMBRE_SERVICIO,
         "listo": listo_para_servir,
@@ -47,4 +55,6 @@ async def listo() -> JSONResponse:
     }
     if listo_para_servir:
         return JSONResponse(status_code=status.HTTP_200_OK, content=cuerpo)
+    if not postgres_responde:
+        cuerpo["motivo"] = motivo
     return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=cuerpo)
