@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from contratacion.infraestructura.adaptadores.salida.bd.motivos import motivo_legible
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
 
 registro = logging.getLogger(__name__)
@@ -114,15 +115,30 @@ def obtener_fabrica_sesiones() -> async_sessionmaker[AsyncSession]:
     return _fabrica_sesiones
 
 
-async def verificar_bd() -> bool:
-    """`True` si Postgres responde a una consulta trivial."""
+async def estado_bd() -> tuple[bool, str]:
+    """`True` si Postgres responde a una consulta trivial, y **por qué no** cuando no responde.
+
+    Devuelve el motivo y no solo el booleano porque un despliegue que falla tiene que poder
+    diagnosticarse desde el registro. Sin esto, el arranque decía `Postgres no responde` y nada más:
+    en un despliegue en la nube, con el nombre del servicio mal puesto, eso obliga a probar a ciegas
+    una lista de sospechas y no hay forma de saber cuál era. El motivo sale de `motivo_legible`, que
+    lo escribe este repositorio —nunca el mensaje del controlador, que puede llevar la cadena de
+    conexión y con ella la contraseña—.
+    """
     try:
         async with obtener_motor().connect() as conexion:
             await conexion.execute(text("SELECT 1"))
-    except Exception:  # noqa: BLE001 - cualquier fallo de conexión significa "no disponible"
-        registro.warning("Postgres no responde", exc_info=False)
-        return False
-    return True
+    except Exception as error:  # noqa: BLE001 - cualquier fallo de conexión significa "no disponible"
+        motivo = motivo_legible(error)
+        registro.warning("Postgres no responde: %s", motivo)
+        return False, motivo
+    return True, ""
+
+
+async def verificar_bd() -> bool:
+    """`True` si Postgres responde a una consulta trivial."""
+    responde, _ = await estado_bd()
+    return responde
 
 
 async def cerrar_bd() -> None:
