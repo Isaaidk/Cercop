@@ -21,6 +21,7 @@ from contratacion.dominio.plazos import (
     NIVEL_SIN_FECHA,
     NIVEL_VERDE,
     dias_para_proforma,
+    instante_de_limite,
     nivel_de_plazo,
     texto_de_plazo,
 )
@@ -58,6 +59,44 @@ def test_sin_fecha_no_hay_color() -> None:
     assert texto_de_plazo(None) == "Sin fecha límite"
     assert dias_para_proforma(None, ahora=AHORA) is None
     assert dias_para_proforma("", ahora=AHORA) is None
+
+
+# --------------------------------------------------------------------------- #
+# El instante que se guarda en la columna de la que dependen el filtro y el borrado
+# --------------------------------------------------------------------------- #
+
+
+def test_una_fecha_iso_sin_zona_se_lee_como_utc() -> None:
+    """`fecha_limite_proformas` llega como texto sin zona, y la columna es `timestamptz`.
+
+    Suponer que está en UTC y suponerlo en la hora local dan instantes distintos por horas enteras:
+    una ínfima que vence hoy a las 18:00 podría contarse como vencida o como vigente según el
+    servidor. Se fija aquí para que la decisión sea una y esté escrita.
+    """
+    assert instante_de_limite("2026-09-30T18:00:00") == datetime(2026, 9, 30, 18, 0, tzinfo=UTC)
+    assert instante_de_limite("2026-09-30") == datetime(2026, 9, 30, 0, 0, tzinfo=UTC)
+
+
+def test_un_texto_que_no_es_fecha_no_llega_a_la_columna() -> None:
+    """Sin esta guarda un texto cualquiera se guardaría en una columna de la que cuelga un borrado.
+
+    El `CAST` reventaría la escritura de la tanda entera —y una tanda son 1.700 filas— en lugar de
+    dejar esa en nulo. La fila se queda sin plazo, que es lo que corresponde.
+    """
+    for basura in (None, "", "   ", "sin fecha", "2026", "30/09/2026", "2026-9-3", "pending"):
+        assert instante_de_limite(basura) is None
+
+
+def test_un_instante_ya_con_zona_no_se_toca() -> None:
+    original = datetime(2026, 9, 30, 18, 0, tzinfo=UTC)
+    assert instante_de_limite(original) == original
+
+
+def test_la_misma_fecha_en_dos_formatos_da_el_mismo_instante() -> None:
+    """Es lo que hace que el relleno de la migración y la escritura de la ingesta coincidan."""
+    assert instante_de_limite("2026-09-30T18:00:00Z") == instante_de_limite(
+        "2026-09-30T18:00:00+00:00"
+    )
     assert dias_para_proforma("no es una fecha", ahora=AHORA) is None
 
 

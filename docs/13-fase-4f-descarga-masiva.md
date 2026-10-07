@@ -23,12 +23,13 @@ procedimientos en ficheros mensuales, así que la vía correcta es **doce petici
 - **Los ítems con CPC del fichero.** Vienen —4.294 en septiembre, con código, cantidad y precios— y
   hoy solo se consiguen leyendo la ficha de cada necesidad a una petición por necesidad. Decisión
   del 2026-10-01: primero la vía, sin ítems. No hay que volver a pedirlos: están en el fichero.
+  **Cerrado el 2026-10-06**: se guardan, con el mismo formato que los de las ínfimas, en
+  `docs/27-fase-4o-desglose-del-producto.md`.
 - Guardar el `crudo` completo del estándar (`tender`, `awards`, `parties`…). Se guarda la fila
   plana, igual que hace hoy el listado, para no multiplicar por cinco el peso de cada registro.
 - Años anteriores (el guion acepta `--anio`).
 
 ## 3. Implementaciones realizadas
-
 | Componente | Archivo / símbolo | Qué hace |
 |---|---|---|
 | Traducción | `fuentes/ocds_masiva.py` · `traducir_publicacion` | Publicación OCDS → las **mismas quince claves** que publica el listado, para que `ocds_mapeos.MAPEOS_POR_DEFECTO` siga valiendo tal cual |
@@ -45,6 +46,28 @@ las URLs en el HTML: el listado de descargas lo construye un script de Vue con
 `/PLATAFORMA/download?type=json&year=&month=&method=all` y `/PLATAFORMA/get-totals`. Los totales
 cuadran con el listado (103.628 para 2026) y el `month=0` no sirve el año entero: hay que pedir mes a
 mes.
+
+### ¿Está duplicado el año? Comprobado: no (2026-10-06)
+
+Cuando el censo llegó a ~105.000 ofertas, la pregunta razonable fue si había filas repetidas. Se
+midió, por partes, y la respuesta es que **el año tiene ese tamaño de verdad**:
+
+| Qué se comprobó | Resultado |
+|---|---|
+| Filas frente a claves naturales distintas | 104.693 filas · **104.693** claves (`ocid`) · sin repetidos, en OCDS y en NCO |
+| Códigos distintos | 104.542 códigos para 104.693 filas: **96 códigos aparecen dos veces** |
+| Esos 96, ¿son el mismo proceso? | **Los 96 tienen el contenido idéntico** (entidad, objeto, fecha y monto): la fuente publica la misma **orden de compra** con dos `ocid` que solo difieren en el sufijo. 0 de dos procesos distintos compartiendo código |
+| Reparto por meses de publicación contra los ficheros | Enero **3.812 = 3.812**, marzo 18.774 ≈ 18.772, y de ahí en adelante el exceso crece hacia los meses recientes (+214 en agosto, +208 en septiembre) |
+| Total | 104.693 en la base frente a **103.906** procedimientos distintos en los ZIP: **+0,76 %**, que es lo que entra por el listado en vivo y todavía no está en la foto del mes |
+
+Las **55 filas sin código** son publicaciones de octubre recién entradas por el rabo, cuyo anuncio
+(`tender`) aún no ha llegado: no son duplicados, son procesos en curso.
+
+**Los 96 repetidos de la fuente no se tocan, a propósito.** La identidad del registro es el `ocid`,
+no el código: si se borrara una de las dos filas, la siguiente vuelta la volvería a escribir —la
+fuente publica las dos—, así que la única forma de «arreglarlo» sería **ignorar** una publicación de
+la fuente, y eso es una decisión con consecuencias (¿cuál de las dos se conserva?) a cambio de
+0,09 % de las filas. Queda medido y escrito para que nadie lo investigue dos veces.
 
 **Traducir en lugar de adaptar la tubería.** La ingesta —mapeos, huella, `upsert`, historial,
 pendientes, invalidación de caché— no se toca: se le entrega una fila plana idéntica a la del
@@ -132,9 +155,11 @@ hueco lo cierra el ciclo de cada quince minutos.
 
 ## 8. Deuda técnica y pendientes
 
-- **Los ítems con CPC del fichero no se guardan.** Es la mejora más grande pendiente: daría
-  clasificación CPC a los procedimientos publicados, que hoy solo tienen las ínfimas, y sin una
-  petición por necesidad.
+- **Los ítems con CPC del fichero no se guardan.** Era la mejora más grande pendiente: dar
+  clasificación CPC a los procedimientos publicados, que hasta ahora solo tenían las ínfimas, y sin
+  una petición por necesidad. **Resuelto el 2026-10-06** — ver
+  `docs/27-fase-4o-desglose-del-producto.md` —, y sin volver a descargar nada: los ZIP ya estaban en
+  `tmp/ocds_2026`.
 - **El `crudo` guardado es la fila plana**, no el estándar completo. Con él no se pueden reconstruir
   `tender`/`awards`; si algún día se quieren, hay que volver a los ficheros (que el portal conserva).
 - **La importación no está automatizada.** Es manual a propósito para el histórico; para el mes en

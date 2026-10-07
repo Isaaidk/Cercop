@@ -18,7 +18,7 @@
 import { computed, ref } from 'vue'
 
 import { filtros } from '@/stores/filtros'
-import { LONGITUD_MINIMA, terminosDeLista } from '@/utils/cpc'
+import { LONGITUD_MINIMA_TERMINO, terminosDeLista } from '@/utils/terminos'
 
 const estado = filtros.estado
 
@@ -30,7 +30,7 @@ const error = ref('')
 const aviso = ref('')
 const guardando = ref(false)
 
-const puedeAgregar = computed(() => nuevo.value.trim().length >= LONGITUD_MINIMA)
+const puedeAgregar = computed(() => nuevo.value.trim().length >= LONGITUD_MINIMA_TERMINO)
 
 /**
  * «Todas» con más de una clasificación solo puede devolver cero.
@@ -56,7 +56,7 @@ async function agregar() {
     if (!resultado.agregado) {
       error.value =
         resultado.motivo === 'corta'
-          ? `«${texto}» tiene menos de ${LONGITUD_MINIMA} letras.`
+          ? `«${texto}» tiene menos de ${LONGITUD_MINIMA_TERMINO} letras.`
           : `«${texto}» ya está en la lista de CPC.`
       return
     }
@@ -79,7 +79,7 @@ async function agregarLote() {
     const { agregadas, repetidas, cortas } = await filtros.agregarVariasCpc(lote.value)
     aviso.value = [
       `${agregadas.length} ${agregadas.length === 1 ? 'término guardado' : 'términos guardados'}.`,
-      cortas ? `Se descartaron ${cortas} por tener menos de ${LONGITUD_MINIMA} letras.` : '',
+      cortas ? `Se descartaron ${cortas} por tener menos de ${LONGITUD_MINIMA_TERMINO} letras.` : '',
       repetidas ? `${repetidas} ya ${repetidas === 1 ? 'estaba' : 'estaban'} en la lista.` : '',
       'La tabla ya los está buscando.',
     ]
@@ -150,6 +150,30 @@ async function usarPalabrasClave() {
           ? ' Con «Todas» se exigen todos los términos añadidos aquí.'
           : ' Con «Cualquiera» basta con que aparezca uno de los términos añadidos aquí.'
       }}
+    </p>
+
+    <!--
+      «Solo CPC»: con el interruptor activo, buscar por clasificación **no** exige además las palabras
+      clave marcadas en el gestor de arriba.
+
+      Es lo que quiere quien pega un código y espera ver todo lo clasificado así. Sin él, el servidor
+      suma los dos criterios y las palabras clave de fondo recortan el resultado, de modo que el
+      código parece no encontrar necesidades que sí existen.
+    -->
+    <label class="cpc__interruptor">
+      <input
+        type="checkbox"
+        class="cpc__interruptor-control"
+        :checked="estado.cpcSolo"
+        @change="filtros.actualizar({ cpcSolo: $event.target.checked })"
+      />
+      <span>
+        Buscar <strong>solo por CPC</strong>, sin exigir además las palabras clave marcadas.
+      </span>
+    </label>
+
+    <p v-if="estado.cpcSolo && !estado.cpc.length" class="cpc__ayuda" role="status">
+      No hay ningún término en la lista de CPC, así que «solo CPC» todavía no cambia nada.
     </p>
 
     <!--
@@ -234,7 +258,7 @@ async function usarPalabrasClave() {
         class="entrada"
         type="text"
         autofocus
-        :placeholder="`lavado, 871410032… (mínimo ${LONGITUD_MINIMA} letras)`"
+        :placeholder="`lavado, 871410032… (mínimo ${LONGITUD_MINIMA_TERMINO} letras)`"
         @keydown.esc="cancelarCampo"
       />
       <div class="cpc__nueva-acciones">
@@ -269,7 +293,7 @@ async function usarPalabrasClave() {
           {{ delLote.terminos.length === 1 ? 'término' : 'términos' }}.
         </template>
         <template v-if="delLote.cortas">
-          Se descartarán {{ delLote.cortas }} por tener menos de {{ LONGITUD_MINIMA }} letras.
+          Se descartarán {{ delLote.cortas }} por tener menos de {{ LONGITUD_MINIMA_TERMINO }} letras.
         </template>
       </p>
       <div class="cpc__nueva-acciones">
@@ -305,6 +329,27 @@ async function usarPalabrasClave() {
   font-size: var(--t-xs);
   color: var(--texto-tenue);
   line-height: 1.45;
+}
+
+/*
+ * El interruptor de «solo CPC»: mismo tamaño y contraste que la ayuda que tiene al lado, porque es
+ * una decisión sobre el filtro y no una acción. En reposo no llama la atención; se entiende leyendo.
+ */
+.cpc__interruptor {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-2);
+  font-size: var(--t-xs);
+  color: var(--texto-suave);
+  cursor: pointer;
+}
+
+.cpc__interruptor-control {
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  accent-color: var(--acento);
 }
 
 .cpc__vacio {
@@ -379,12 +424,20 @@ async function usarPalabrasClave() {
 /* Los dos botones de alta, uno al lado del otro: individual y en bloque. */
 .cpc__nueva--dual {
   flex-direction: row;
+  flex-wrap: wrap;
   gap: var(--e-2);
 }
 
+/*
+ * `max-content` como ancho mínimo, y no cero: cada botón mide al menos lo que mide su texto, y
+ * cuando los dos juntos no caben el segundo **baja a la línea siguiente**. Sin esto, en una columna
+ * estrecha los dos botones empujaban el ancho del contenido por encima de la columna y era la
+ * columna entera la que se iba de lado: aparecía una barra horizontal en el panel de filtros y las
+ * líneas de texto quedaban cortadas por la derecha.
+ */
 .cpc__nueva--dual .cpc__nuevo-boton {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: max-content;
 }
 
 .cpc__nueva-acciones {

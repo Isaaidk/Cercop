@@ -116,6 +116,22 @@ export function nombreDeProvincia(codigo) {
 }
 
 /**
+ * Convierte el código interno de una provincia en el valor que espera la API.
+ *
+ * La API filtra por provincia comparando con la parte de antes del guion de `"PROVINCIA - CANTÓN"`,
+ * así que lo que hay que enviar es el nombre tal y como lo publica la fuente, en mayúsculas. El
+ * servidor recorta y compara sin distinguir mayúsculas por su parte, de modo que una diferencia de
+ * grafía no rompe la búsqueda; aun así se envía en mayúsculas porque es la forma del dato original y
+ * hace que el filtro sea evidente al mirar la URL o los registros del servidor.
+ *
+ * Vive aquí y no en cada pantalla porque lo usan el panel lateral —lo que elige el mapa— y la
+ * pestaña de ofertas, y dos copias de esta regla acabarían discrepando en una provincia.
+ */
+export function nombreParaApi(codigo) {
+  return String(codigo || '').toUpperCase()
+}
+
+/**
  * Separa «PROVINCIA - CANTÓN» en sus dos partes.
  *
  * Se corta por el **primer** guion porque el cantón puede llevar más («PICHINCHA - SAN MIGUEL DE

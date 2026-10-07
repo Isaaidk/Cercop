@@ -151,10 +151,18 @@ export function usePresencia() {
   // Ya no hace falta el aviso: al cerrar la pestaña de verdad el token se va con ella y el punto de
   // presencia pasa a rojo cuando vence el latido. Y la sesión no se cierra por cerrar una ventana,
   // sino al pulsar «Salir», al superar el tope de sesiones o al caducar.
+  //
+  // El latido lo manda **todo el mundo** y el cuadro lo ve solo el dueño de la plataforma. No es una
+  // incoherencia: el latido no cuenta nada de nadie —es una señal de vida de la propia sesión, y es
+  // lo que mantiene viva la sesión de cualquiera—, mientras que el cuadro dice quién está trabajando
+  // ahora mismo, y eso es información de la operación, no un dato de contratación.
+  //
+  // A quien no es de la plataforma no se le abre el canal: pedirlo daría un 403, que en el registro
+  // del navegador parece un fallo del panel. Se pide solo lo que se puede tener.
   onMounted(async () => {
     await latir()
     programarLatido()
-    consumirEventos()
+    if (almacenSesion.esDePlataforma.value) consumirEventos()
   })
 
   onBeforeUnmount(() => {

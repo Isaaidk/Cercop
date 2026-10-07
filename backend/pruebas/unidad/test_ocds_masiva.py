@@ -11,6 +11,9 @@ silencio al sustituir una vía por otra:
    ficheros reales. Aquí se fija esa medida para que un cambio en la traducción se note.
 3. **Los importes.** `mapeo._a_decimal` lee `999.999` como miles; por eso la traducción escribe seis
    decimales. Si alguien «simplifica» pasando el número tal cual, el importe sale mil veces mayor.
+4. **El desglose del producto.** El fichero trae el CPC de cada ítem y la traducción lo estaba
+tirando: es lo que permite que la ficha de una oferta diga **qué se compra** y no solo el párrafo
+   del objeto.
 """
 
 from __future__ import annotations
@@ -30,9 +33,25 @@ from contratacion.infraestructura.adaptadores.salida.fuentes.ocds_masiva import 
     FuenteOcdsMasiva,
     _importe,
     combinar,
+    items_del_proceso,
     leer_publicaciones,
+    traducir_item,
     traducir_publicacion,
 )
+
+# Un ítem real (recortado): el CPC del bien y lo que escribió la entidad son cosas distintas y se
+# guardan separadas, igual que en las ínfimas cuantías.
+ITEM_CRUDO: dict[str, Any] = {
+    "id": "4610623-DS-SO",
+    "unit": {"id": "436", "name": "Unidad", "scheme": "SERCOP"},
+    "quantity": 1,
+    "description": "SERVICIO DE CONSULTORIA EN INGENIERIA SANITARIA AMBIENTAL",
+    "classification": {
+        "id": "832110112",
+        "scheme": "CPC",
+        "description": "SERVICIO DE CONSULTORIA EN INGENIERIA SANITARIA AMBIENTAL",
+    },
+}
 
 # Una publicación real de septiembre de 2026, recortada a lo que la traducción lee. El listado del
 # mismo `ocid` está en LISTADO: es el par que se usó para medir cada equivalencia.
@@ -60,6 +79,7 @@ PUBLICACION: dict[str, Any] = {
         "procurementMethod": "open",
         "procurementMethodDetails": "Subasta Inversa Electrónica",
         "value": {"amount": 13000.0, "currency": "USD"},
+        "items": [ITEM_CRUDO],
     },
     "awards": [
         {
@@ -122,9 +142,14 @@ def test_la_traduccion_entrega_exactamente_las_claves_que_espera_el_mapeo() -> N
     No falla nada, no avisa nadie: la tabla de mapeos busca `key` en el crudo, no la encuentra y
     deja el campo sin dato en **todas** las filas. Se comprueba el conjunto completo, no una lista
     de campos «importantes», porque el que se olvide será justo el que nadie mira.
+
+    `_items` es la única clave que no sale del catálogo de mapeos, y está aquí a propósito: el
+    desglose del producto no tiene columna en el `jsonb` de datos —se guarda en la suya—, así que no
+    es un campo canónico. Si algún día se renombrara sin guion, el mapeo lo anotaría como «clave sin
+    mapear» en cada ciclo y el contador de campos nuevos del panel diría que la fuente ha cambiado.
     """
     esperadas = {mapeo["clave_cruda"] for mapeo in ocds_mapeos.MAPEOS_POR_DEFECTO}
-    assert set(traducir_publicacion(PUBLICACION)) == esperadas
+    assert set(traducir_publicacion(PUBLICACION)) == esperadas | {"_items"}
 
 
 @pytest.mark.parametrize("clave", sorted(LISTADO))
@@ -151,6 +176,92 @@ def test_el_montos_es_el_adjudicado_y_no_el_presupuestado() -> None:
     traducido = traducir_publicacion(PUBLICACION)
     assert traducido["amount"] == "12430.420000"
     assert traducido["budget"] == "13000.000000"
+
+
+# --------------------------------------------------------------------------- #
+# El desglose del producto
+# --------------------------------------------------------------------------- #
+
+
+def test_un_item_se_traduce_a_la_forma_que_ya_usa_el_resto_del_sistema() -> None:
+    """La misma forma que los ítems de las ínfimas, para no tener dos lecturas del mismo dato.
+
+    Si esto cambiara, el detalle de una oferta necesitaría su propio componente, su propio filtro y
+    su propia regla de exportación: tres copias de lo mismo esperando a separarse.
+    """
+    assert traducir_item(ITEM_CRUDO, 1) == {
+        "numero": 1,
+        "codigo": "832110112",
+        "descripcion_cpc": "SERVICIO DE CONSULTORIA EN INGENIERIA SANITARIA AMBIENTAL",
+        "descripcion": "SERVICIO DE CONSULTORIA EN INGENIERIA SANITARIA AMBIENTAL",
+        "unidad": "Unidad",
+        "cantidad": "1",
+    }
+
+
+def test_un_item_sin_clasificacion_se_descarta() -> None:
+    """Un ítem sin código no se guarda a medias.
+
+    Guardarlo con el código vacío lo eliminaría `items_desde_crudos` al leerlo, así que el contador
+    de «cuántos ítems trae» mentiría en el panel. Se descarta al traducir, que es donde se puede
+    contar bien.
+    """
+    sin_cpc = {"quantity": 3, "description": "SIN CLASIFICAR"}
+    assert traducir_item(sin_cpc, 2) is None
+
+
+def test_la_cantidad_se_guarda_como_texto() -> None:
+    """El resto de la casa la guarda como texto y el fichero la publica como número.
+
+    Normalizar aquí es lo que evita que el panel tenga que decidir cómo se escribe un decimal, y
+    que el mismo dato salga «1» en la tabla y «1.0» en el Excel.
+    """
+    item = traducir_item({**ITEM_CRUDO, "quantity": 12.5}, 1)
+    assert item is not None
+    assert item["cantidad"] == "12.5"
+
+
+def test_los_items_se_buscan_en_el_anuncio_y_si_no_en_la_adjudicacion() -> None:
+    """Tres sitios y en orden: `tender`, `planning` y la adjudicación.
+
+    La adjudicación es donde aparecen cuando el proceso se publicó sin desglose, así que mirar solo
+    el anuncio dejaría sin producto justo a los procesos más antiguos.
+    """
+    del_anuncio = {"tender": {"items": [ITEM_CRUDO]}}
+    de_la_planificacion = {"planning": {"items": [ITEM_CRUDO]}}
+    de_la_adjudicacion = {"awards": [{"items": [ITEM_CRUDO]}]}
+
+    assert len(items_del_proceso(del_anuncio)) == 1
+    assert len(items_del_proceso(de_la_planificacion)) == 1
+    assert len(items_del_proceso(de_la_adjudicacion)) == 1
+    assert items_del_proceso({}) == []
+
+
+def test_el_anuncio_gana_a_la_adjudicacion() -> None:
+    """Si los dos traen ítems se queda el del anuncio: es el que publica el CPC del proceso."""
+    publicacion = {
+        "tender": {"items": [ITEM_CRUDO]},
+        "awards": [{"items": [{**ITEM_CRUDO, "classification": {"id": "999999999"}}]}],
+    }
+    items = items_del_proceso(publicacion)
+    assert [item["codigo"] for item in items] == ["832110112"]
+
+
+def test_los_items_sobreviven_a_la_combinacion_por_ocid() -> None:
+    """El fichero es un delta: el anuncio trae los ítems y la adjudicación, el resto del proceso.
+
+    `combinar` se queda con el primer valor no vacío de cada campo, así que una lista vacía en la
+    publicación que no los trae impediría que la otra los dejara. Por eso la traducción **omite**
+    el campo en lugar de escribir `[]`, y esta es la prueba que lo fija.
+    """
+    anuncio = traducir_publicacion(PUBLICACION)
+    adjudicacion = {clave: valor for clave, valor in anuncio.items()}
+    adjudicacion["_items"] = None
+    adjudicacion["amount"] = "500.000000"
+
+    combinadas = combinar([anuncio, adjudicacion])
+    assert len(combinadas) == 1
+    assert len(combinadas[0]["_items"] or []) == 1
 
 
 # --------------------------------------------------------------------------- #

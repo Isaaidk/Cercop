@@ -24,9 +24,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import pytest
 from starlette.requests import Request
 
 from contratacion.aplicacion.actor import Actor
+from contratacion.dominio.errores import SinPermiso
 from contratacion.dominio.presencia import (
     EstadoPresencia,
     EventoPresencia,
@@ -42,6 +44,8 @@ AHORA = datetime(2026, 10, 5, 15, 0, tzinfo=UTC)
 NEGOCIO = UUID("22222222-2222-2222-2222-222222222222")
 USUARIO = UUID("11111111-1111-1111-1111-111111111111")
 ADMIN = Actor(usuario_id=USUARIO, negocio_id=NEGOCIO, rol="admin_negocio")
+# El cuadro —y por tanto el flujo que lo retransmite— lo ve solo el dueño de la plataforma.
+PLATAFORMA = Actor(usuario_id=USUARIO, negocio_id=NEGOCIO, rol="super_admin")
 
 
 class PeticionQueSeVa(Request):
@@ -196,11 +200,12 @@ async def _abrir_flujo(
     peticion: Request,
     bus: BusQueCuenta,
     accesos: CuentasDeMentira | None = None,
+    actor: Actor = PLATAFORMA,
 ) -> Any:
     """Llama al endpoint sin pasar por el enrutador, como haría Starlette."""
     return await eventos(
         peticion=peticion,
-        actor=ADMIN,
+        actor=actor,
         ajustes=obtener_ajustes(),
         accesos=accesos or CuentasDeMentira(),
         sesiones=SesionesDeMentira(),
@@ -211,6 +216,21 @@ async def _abrir_flujo(
 
 async def _consumir(respuesta: Any) -> list[str]:
     return [trozo async for trozo in respuesta.body_iterator]
+
+
+async def test_un_administrador_de_empresa_no_abre_el_flujo() -> None:
+    """La negativa tiene que ser un error, no un 200 con un flujo que se muere por dentro.
+
+    El permiso se comprueba en el endpoint **antes** de construir el generador: si se comprobara
+    solo al componer el cuadro, la respuesta ya tendría enviada la cabecera `text/event-stream` y el
+    navegador no tendría forma de saber que no tiene permiso.
+    """
+    with pytest.raises(SinPermiso):
+        await _abrir_flujo(
+            peticion=PeticionQueSeVa(desconectada_a_partir_de=99),
+            bus=BusQueCuenta(),
+            actor=ADMIN,
+        )
 
 
 async def test_el_flujo_termina_cuando_el_cliente_se_desconecta() -> None:

@@ -11,10 +11,13 @@ segundo cuesta unos segundos de base de datos en la siguiente visita.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
+from contratacion.aplicacion.casos_uso.mantener_registros import ResultadoMantenimiento
+from contratacion.infraestructura.config.ajustes import obtener_ajustes
 from contratacion.tareas import worker
 
 
@@ -68,3 +71,53 @@ async def test_el_ciclo_precalienta_sin_que_nadie_se_lo_pida(
 
     assert len(precalentado_vigilado) == 1
     assert codigo == 0
+
+
+@dataclass
+class _OpcionesMantenimiento:
+    intervalo_seg: int
+    dias_retencion: int
+    maximo_por_vuelta: int
+    simular: bool
+
+
+@pytest.fixture
+def mantenimiento_vigilado(monkeypatch: pytest.MonkeyPatch) -> list[_OpcionesMantenimiento]:
+    """Sustituye el caso de uso por uno que anota con qué se le llamó."""
+    llamadas: list[_OpcionesMantenimiento] = []
+
+    async def falso(_repositorio: Any, _cache: Any, **opciones: Any) -> ResultadoMantenimiento:
+        llamadas.append(_OpcionesMantenimiento(**opciones))
+        return ResultadoMantenimiento(0, 0, 0, 0, simulado=False)
+
+    monkeypatch.setattr(worker, "mantener_registros", falso)
+    return llamadas
+
+
+async def test_el_mantenimiento_pasa_los_ajustes_al_caso_de_uso(
+    mantenimiento_vigilado: list[_OpcionesMantenimiento],
+) -> None:
+    """La vuelta de mantenimiento tiene que usar la configuración, no valores escritos a mano.
+
+    Un `7` copiado dentro del `worker` y otro en el `.env` es la forma habitual de que la retención
+    borre más de lo que alguien cree haber configurado.
+    """
+    ajustes = obtener_ajustes()
+
+    await worker.mantener_historico()
+
+    assert len(mantenimiento_vigilado) == 1
+    opciones = mantenimiento_vigilado[0]
+    assert opciones.dias_retencion == ajustes.purga_plazo_dias
+    assert opciones.maximo_por_vuelta == ajustes.purga_max_filas_por_vuelta
+    assert opciones.intervalo_seg == ajustes.intervalo_mantenimiento_seg
+    assert opciones.simular is False
+
+
+async def test_la_simulacion_llega_al_caso_de_uso(
+    mantenimiento_vigilado: list[_OpcionesMantenimiento],
+) -> None:
+    """`--simular` es la única forma de saber cuánto se llevaría antes de activarlo."""
+    await worker.mantener_historico(simular=True)
+
+    assert mantenimiento_vigilado[0].simular is True

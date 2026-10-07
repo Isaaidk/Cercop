@@ -139,8 +139,14 @@ async def agregar_termino(
         maximo_terminos=maximo_terminos,
     )
     ultima = _fecha(alta, "ultima_ingesta_en")
+    nueva = bool(alta.get("suscripcion_nueva", True))
 
-    en_cola = ultima is None or (instante - ultima) > timedelta(minutes=intervalo_min)
+    # Una suscripción **nueva o reactivada** vuelve a la cola aunque el término se haya consultado
+    # hace un minuto: quien acaba de dar de baja una palabra y la vuelve a agregar está pidiendo que
+    # se busque otra vez, y contestarle «ya se consultó hace poco» se lee como que no se le ha hecho
+    # caso. Además `ultima_ingesta_en` es del catálogo **global** —lo comparten todos los negocios—,
+    # así que tampoco dice nada sobre lo que este negocio necesita ver.
+    en_cola = nueva or ultima is None or (instante - ultima) > timedelta(minutes=intervalo_min)
     aviso = AVISO_EN_COLA if en_cola else AVISO_RECIENTE
     identificador = _identificador(alta)
     if identificador is None:
@@ -149,7 +155,7 @@ async def agregar_termino(
     return ResultadoAltaTermino(
         termino=limpio,
         termino_id=identificador,
-        suscripcion_nueva=bool(alta.get("suscripcion_nueva", True)),
+        suscripcion_nueva=nueva,
         en_cola=en_cola,
         ultima_ingesta=ultima,
         suscriptores=int(alta.get("suscriptores") or 0),
@@ -196,6 +202,25 @@ async def agregar_terminos(
         terminos=tuple(str(fila.get("texto", "")) for fila in filas if fila.get("texto")),
         nuevas=sum(1 for fila in filas if fila.get("suscripcion_nueva")),
     )
+
+
+async def quitar_termino(
+    termino_id: UUID,
+    *,
+    actor: Actor,
+    repositorio: RepositorioTerminos,
+) -> bool:
+    """Da de baja la suscripción del negocio a un término. `True` si estaba activa.
+
+    Es la mitad que faltaba: el panel podía **dejar de filtrar** por una palabra clave
+    —deseleccionarla— pero no darla de baja, así que la suscripción seguía activa para siempre. El
+    usuario lo percibía al revés: quitaba una palabra, volvía a agregarla y el sistema le contestaba
+    que «ya se consultó hace poco», que se lee como «ya estaba puesta».
+
+    No borra el término del catálogo: es global y puede estar suscrito por otros negocios. Lo que se
+    desactiva es **esta** suscripción, y no llama a la fuente: dar de baja no consulta nada.
+    """
+    return await repositorio.desuscribir(actor.negocio_id, termino_id)
 
 
 async def consultar_estado(

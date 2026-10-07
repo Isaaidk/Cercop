@@ -123,6 +123,24 @@ def categoria_de_fuente(fuente: str | None) -> Categoria | None:
 # así que un término como «a|b» dejaría de ser una búsqueda y pasaría a ser otra consulta distinta.
 PALABRA_VALIDA = re.compile(r"[^a-z0-9]+")
 
+# Un término de CPC que sea **solo dígitos** y tenga longitud de código es un código de la
+# nomenclatura, no una descripción. Se reconoce por su forma y no con una lista porque el CPC es
+# numérico: quien filtra por clasificación pega el código tal cual («871410032»).
+#
+# Seis dígitos como mínimo: los códigos del CPC que se ven hoy tienen nueve, y el mínimo deja margen
+# a que la nomenclatura publique niveles más cortos sin que dejen de reconocerse como código.
+PATRON_CODIGO_CPC = re.compile(r"^\d{6,}$")
+
+
+def es_codigo_cpc(termino: str) -> bool:
+    """¿El término de CPC es un código de la nomenclatura y no una descripción?
+
+    La distinción decide **por qué índice se busca**: un código es un valor y se compara por
+    igualdad contra la columna de códigos; una descripción es texto y va por el índice de texto
+    completo. Confundirlos no da un error, da menos filas de las que hay.
+    """
+    return bool(PATRON_CODIGO_CPC.match(termino.strip()))
+
 
 def palabras_de(termino: str) -> tuple[str, ...]:
     """Divide un término en las palabras que se pueden buscar con seguridad.
@@ -257,6 +275,29 @@ class Filtros:
     # Los dos criterios **se suman**, no se sustituyen: quien envíe los dos pide la intersección, y
     # el panel decide cuál usar.
     cpc: tuple[str, ...] = ()
+    # «Solo CPC»: con el interruptor activo, buscar por clasificación **no** exige además las
+    # palabras clave seleccionadas.
+    #
+    # El defecto es el de siempre —`cpc` se suma a `terminos`— y es lo correcto cuando se quiere
+    # acotar. Pero quien pega un código de clasificación espera «todo lo clasificado así», y con
+    # palabras clave marcadas de fondo el resultado se recorta: el código encuentra menos de lo que
+    # existe y parece que el filtro no funciona. El panel ofrece el interruptor para elegir.
+    solo_cpc: bool = False
+    #
+    # Descripción del **producto**: los términos se buscan solo en el objeto de compra, no en el
+    # resto del texto de la convocatoria.
+    #
+    # Es un criterio aparte de `terminos` y no una variante suya por la misma razón que el CPC: el
+    # texto de búsqueda reúne el código, el objeto, la entidad, la provincia, el cantón y los dos
+    # tipos de proceso, así que buscar «muebles» trae todo lo que menciona la palabra en cualquiera
+    # de esos campos —una entidad cuyo nombre la lleva, una necesidad que la cita de pasada—. Quien
+    # busca por la descripción del producto quiere lo que **es** ese producto, y esa pregunta se
+    # responde mirando un solo campo.
+    #
+    # Comparte el modo con los términos —«todas» o «cualquiera»— porque la pregunta es la misma:
+    # cómo se combinan entre sí varias palabras de la misma lista. Y se **suma** a los demás
+    # criterios con «y», igual que el CPC: quien envía los dos pide la intersección.
+    descripcion: tuple[str, ...] = ()
     fuente: str | None = None
     # Familia de contratación. Es un filtro de verdad —restringe las filas— y no una opción de
     # presentación, y por eso vive aquí con los demás criterios y no en el exportador.
@@ -362,6 +403,13 @@ class Filtros:
         se usaran como caja de búsqueda «mientras se escribe», esta decisión habría que revisarla:
         ese es exactamente el caso de `texto`, y llenaría el almacén de entradas que nadie repite.
 
+        La **descripción del producto** se cachea por el mismo motivo que el CPC: llega normalizada
+        —minúsculas, sin repetir, ordenada— y es un criterio que se repite, porque describe lo que
+        esa empresa compra siempre («equipo de cómputo», «medicamentos»). Se decide a propósito y no
+        se parece a `texto`: aquí no se escribe para ver qué sale, se escribe lo que se busca. Si
+        algún día se convirtiera en un campo que consulta al teclear, habría que sacarla de la
+        caché como a `texto`, y por eso queda escrito aquí.
+
         Se comparan los valores ya recortados porque un espacio suelto no es un filtro: si contara,
         escribir y borrar el mismo texto dejaría la caché desactivada sin que nadie lo notara.
         """
@@ -376,6 +424,14 @@ class Filtros:
             "t": list(self.terminos),
             "m": str(self.modo),
             "cc": list(self.cpc),
+            # La descripción del producto **tiene** que estar aquí. Faltando, dos búsquedas que solo
+            # se diferenciaran en ella compartirían entrada de caché y la segunda recibiría la
+            # página de la primera: el resultado correcto de otra consulta, sin ningún error.
+            "dp": list(self.descripcion),
+            # `solo_cpc` **tiene** que estar aquí. Faltando, «CPC + palabras» y «solo CPC» con los
+            # mismos términos compartirían entrada de caché y la segunda recibiría la página de la
+            # primera: menos filas o más, pero sin ningún error que lo delate.
+            "sc": self.solo_cpc,
             "f": self.fuente or "",
             # La categoría **tiene** que estar aquí. Faltando, una exportación de ínfimas y otra de
             # ofertas con los mismos filtros compartirían entrada de caché, y la segunda recibiría
@@ -430,13 +486,22 @@ class Filtros:
             completo.pop(clave, None)
         return completo
 
-    def descripcion(self) -> str:
-        """Texto legible para los avisos y los registros de auditoría."""
+    def resumen(self) -> str:
+        """Texto legible para los avisos y los registros de auditoría.
+
+        Se llama `resumen` y no `descripcion` desde que existe el criterio `descripcion`: un campo
+        de la clase con el mismo nombre taparía a este método y la llamada devolvería la lista de
+        términos en lugar del texto.
+        """
         partes = [f"modo={self.modo}"]
         if self.terminos:
             partes.append(f"terminos={','.join(self.terminos)}")
+        if self.descripcion:
+            partes.append(f"descripcion={','.join(self.descripcion)}")
         if self.cpc:
             partes.append(f"cpc={','.join(self.cpc)}")
+        if self.solo_cpc:
+            partes.append("solo_cpc")
         if self.fuente:
             partes.append(f"fuente={self.fuente}")
         if self.categoria:

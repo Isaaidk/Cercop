@@ -150,6 +150,65 @@ def _direccion_del_comprador(publicacion: Mapping[str, Any]) -> Mapping[str, Any
     return {}
 
 
+def traducir_item(item: Mapping[str, Any], numero: int) -> dict[str, Any] | None:
+    """Un ítem del fichero → la misma forma que los ítems que ya guarda el sistema.
+
+    No se inventa un formato nuevo: se traduce a la forma de `dominio.cpc.ItemCpc`, que es la que ya
+    usan las ínfimas cuantías. Así el desglose de una oferta y el de una necesidad se pintan con el
+    mismo componente, se filtran con la misma columna y se exportan con la misma regla; un formato
+    propio para OCDS habría duplicado las tres cosas el día menos pensado.
+
+    El `classification` del estándar es el CPC del bien o servicio —`832110112 SERVICIO DE
+    CONSULTORIA EN INGENIERIA SANITARIA AMBIENTAL`— y `description` es lo que escribió la entidad,
+    que es texto libre. Se guardan separados por la misma razón que en las ínfimas: el primero es
+    vocabulario cerrado y con él se busca; el segundo solo sirve para que la persona reconozca el
+    ítem cuando abre el detalle.
+
+    Un ítem sin `classification` devuelve `None` y quien llama lo descarta. Guardarlo con el código
+    vacío sería peor que no guardarlo: `items_desde_crudos` lo tiraría al leer y el contador de
+    «cuántos ítems trae» mentiría en el panel.
+    """
+    clasificacion = item.get("classification") or {}
+    codigo = str(clasificacion.get("id") or "").strip()
+    if not codigo:
+        return None
+
+    unidad = item.get("unit") or {}
+    cantidad = item.get("quantity")
+    return {
+        "numero": numero,
+        "codigo": codigo,
+        "descripcion_cpc": str(clasificacion.get("description") or "").strip(),
+        "descripcion": str(item.get("description") or "").strip(),
+        "unidad": str(unidad.get("name") or "").strip(),
+        # La cantidad viene como número (`1`, `12.5`) y el resto de la casa la guarda como texto: se
+        # normaliza aquí para que el panel no tenga que decidir cómo se escribe un decimal.
+        "cantidad": "" if cantidad in (None, "") else str(cantidad),
+    }
+
+
+def items_del_proceso(publicacion: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Los ítems del producto que publica una publicación, ya traducidos.
+
+    Se buscan en tres sitios y en este orden: `tender.items` —el anuncio, donde el SERCOP pone la
+    clasificación—, `planning.items` y, si el anuncio no los trae, los de la **adjudicación**, que
+    es donde aparecen cuando el proceso se publicó sin desglose. Es el mismo orden que usa el
+    estándar para acumular el detalle de un proceso.
+
+    Si al final no queda ninguno se devuelve la lista vacía, que significa «esta publicación no trae
+    desglose» y es lo que evita guardar un desglose que no existe.
+    """
+    crudos: list[Mapping[str, Any]] = list((publicacion.get("tender") or {}).get("items") or [])
+    if not crudos:
+        crudos = list((publicacion.get("planning") or {}).get("items") or [])
+    if not crudos:
+        for adjudicacion in publicacion.get("awards") or []:
+            crudos.extend(adjudicacion.get("items") or [])
+
+    traducidos = [traducir_item(item, numero) for numero, item in enumerate(crudos, start=1)]
+    return [item for item in traducidos if item is not None]
+
+
 def traducir_publicacion(publicacion: Mapping[str, Any]) -> dict[str, Any]:
     """Una publicación OCDS → la fila plana que espera la tabla de mapeos.
 
@@ -198,6 +257,16 @@ def traducir_publicacion(publicacion: Mapping[str, Any]) -> dict[str, Any]:
         "month": int(fecha[5:7]) if len(fecha) >= 7 and fecha[5:7].isdigit() else None,
         "method": contrato.get("procurementMethod"),
         "budget": _importe(presupuesto),
+        # El desglose del producto viaja con un guion bajo delante porque **no es un campo
+        # canónico**: no hay una columna del `datos` que lo reciba, se guarda en su propia columna
+        # de la tabla. El guion es la convención que ya usa este adaptador para sus marcas internas,
+        # y es lo que hace que el mapeo lo ignore en lugar de anotarlo como «clave sin mapear» en
+        # cada ciclo.
+        #
+        # Se omite cuando no hay ninguno, y eso importa: `combinar` se queda con el primer valor no
+        # vacío de cada campo, así que una lista vacía en la publicación del anuncio impediría que
+        # la de la adjudicación —posterior— dejara sus ítems.
+        "_items": items_del_proceso(publicacion) or None,
     }
 
 

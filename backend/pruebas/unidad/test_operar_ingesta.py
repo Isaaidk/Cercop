@@ -110,9 +110,7 @@ class ConsultasFalsas:
         self.pedidos.append("estado_fuentes")
         return self.fuentes
 
-    async def historial_sincronizaciones(
-        self, por_fuente: int = 24
-    ) -> Sequence[Mapping[str, Any]]:
+    async def historial_sincronizaciones(self, por_fuente: int = 24) -> Sequence[Mapping[str, Any]]:
         self.pedidos.append("historial_sincronizaciones")
         return self.historial
 

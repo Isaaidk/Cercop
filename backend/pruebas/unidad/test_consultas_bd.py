@@ -8,27 +8,46 @@ error**: la pantalla se queda vacía y parece que esa provincia no tiene datos. 
 veinticuatro provincias, así que el fallo afectaría a casi un tercio del mapa y no se
 manifestaría como una excepción.
 
-Las pruebas se reparten en dos grupos:
+Las pruebas se reparten en cuatro grupos:
 
-- El **acuerdo entre las dos normalizaciones**. La de SQL y la de Python tienen que quitar
-  exactamente los mismos caracteres. Si divergieran, el filtro funcionaría en las pruebas y fallaría
-  en producción, o al revés, según cuál de las dos se hubiera tocado.
-- La **forma de la condición generada**, para que siga siendo parametrizada y siga aceptando las dos
-  formas del dato: el valor completo y solo la provincia.
+- El **acuerdo entre las dos normalizaciones**. La que se escribe en SQL —el relleno de la
+  migración— y la que se escribe en Python —la ingesta y el filtro— tienen que quitar exactamente
+  los mismos caracteres. Si divergieran, unas filas tendrían una clave que el filtro ya no pide y
+  desaparecerían de las búsquedas sin ningún error.
+- La **forma de la condición generada**: parametrizada, contra la columna `provincia` y sin tocar
+  `datos`. Es la diferencia entre poder usar un índice y recorrer 110.000 filas descomprimiendo un
+  `jsonb` de 2 KB en cada una.
+- El **acuerdo entre el SQL y el índice** del orden por defecto, que tiene que coincidir con la
+  definición que crea la migración 0015. Si divergen, el índice deja de usarse y **no falla nada**:
+  cada página vuelve a ordenar 110.000 filas y el único síntoma es que va lenta.
+- El **acuerdo entre lo que se escribe y lo que se compara**: la clave que la ingesta guarda en la
+  columna tiene que ser la que el filtro pide, y la que devuelve un reparto tiene que poder volver
+  al filtro y encontrar sus filas.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 
-from contratacion.dominio.busqueda import Filtros, ModoBusqueda
-from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
+from contratacion.dominio.busqueda import Filtros, ModoBusqueda, OrdenBusqueda
+from contratacion.dominio.plazos import PATRON_FECHA_ISO
+from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     PROVINCIA_NORMALIZADA,
-    _condiciones,
+    SIN_CLASIFICAR,
+    SIN_PROVINCIA,
+    clave_provincia,
+    clave_tipo_proceso,
     normalizar_ubicacion,
+)
+from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
+    INDICE_OBJETO,
+    ORDENES,
+    _condiciones,
 )
 
 # Las dos listas de caracteres de `translate`, extraídas del propio fragmento de SQL para que la
@@ -101,14 +120,23 @@ def test_los_conjuntos_de_caracteres_del_sql_estan_emparejados() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_compara_normalizado_por_los_dos_lados() -> None:
+def test_compara_contra_la_columna_y_no_contra_el_jsonb() -> None:
+    """La condición es una igualdad contra `r.provincia`, sin tocar `datos`.
+
+    Es la diferencia entre 8,7 s y unos cientos de milisegundos al pulsar una provincia, y también
+    entre poder usar un índice y no poder: una expresión sobre `datos` obliga a leer y descomprimir
+    un `jsonb` de 2 KB en cada una de las 110.000 filas del histórico, porque `datos` no está en
+    ningún índice y la expresión tampoco sirve como índice de un recuento.
+
+    El valor que viaja como parámetro es la **clave**, la misma que la ingesta escribió en la
+    columna al guardar la fila.
+    """
     condicion, parametros = _condicion_de_provincia()
 
-    assert "lower(translate(" in condicion
-    assert condicion.count("lower(translate(") == 2
-    # El valor que viaja como parámetro ya está normalizado: comparar contra «Manabí» tal cual no
-    # encontraría «MANABI».
-    assert parametros["provincias"] == ["manabi"]
+    assert "r.provincia = ANY(:provincias)" in condicion
+    assert "datos" not in condicion
+    assert "translate(" not in condicion
+    assert parametros["provincias"] == [clave_provincia("Manabí")] == ["manabi"]
 
 
 def test_varias_provincias_viajan_en_un_solo_parametro() -> None:
@@ -119,10 +147,10 @@ def test_varias_provincias_viajan_en_un_solo_parametro() -> None:
     una rama de código. Con `ANY`, la consulta es la misma y solo cambia la lista.
     """
     condiciones, parametros = _condiciones(Filtros(provincias=("Manabi", "Pichincha", "Azuay")))
-    de_provincia = [c for c in condiciones if "lower(translate(" in c]
+    de_provincia = [c for c in condiciones if "r.provincia" in c]
 
     assert len(de_provincia) == 1, "las tres provincias se comparan en una sola condición"
-    assert de_provincia[0].count("ANY(:provincias)") == 2
+    assert de_provincia[0].count("ANY(:provincias)") == 1
     assert parametros["provincias"] == ["manabi", "pichincha", "azuay"]
 
 
@@ -140,11 +168,18 @@ def test_mas_provincias_no_puede_devolver_menos() -> None:
 
 
 def test_acepta_el_valor_completo_y_solo_la_provincia() -> None:
-    # El dato almacenado puede ser «PICHINCHA - QUITO» o solo «PICHINCHA». Se admiten las dos formas
-    # porque el mapa envía una y las importaciones antiguas pueden tener la otra.
-    condicion, _ = _condicion_de_provincia()
-    assert "split_part(" in condicion
-    assert "btrim(" in condicion
+    """«PICHINCHA - QUITO», «Pichincha» y «PICHINCHA» son la misma clave.
+
+    La fuente publica el valor completo y el mapa manda solo la provincia. La tolerancia ya no vive
+    en la consulta —que compara una igualdad contra una columna— sino en `clave_provincia`, la
+    **misma función** que escribió la columna: es lo que garantiza que las dos formas coincidan, en
+    lugar de dos normalizaciones parecidas que se separan en el primer arreglo.
+    """
+    assert clave_provincia("PICHINCHA - QUITO") == "pichincha"
+    assert clave_provincia("Pichincha") == "pichincha"
+    assert clave_provincia("  pichincha  ") == "pichincha"
+    assert clave_provincia("Pichincha-Cayambe") == "pichincha"
+    assert clave_provincia("Manabí") == clave_provincia("MANABI")
 
 
 def test_el_valor_no_se_interpola_en_el_sql() -> None:
@@ -156,7 +191,7 @@ def test_el_valor_no_se_interpola_en_el_sql() -> None:
 
 def test_sin_provincia_no_se_anade_ninguna_condicion() -> None:
     condiciones, parametros = _condiciones(Filtros())
-    assert all("translate(" not in condicion for condicion in condiciones)
+    assert all("r.provincia" not in condicion for condicion in condiciones)
     assert "provincias" not in parametros
 
 
@@ -171,11 +206,11 @@ def test_el_filtro_no_depende_del_resto_de_criterios() -> None:
         fuentes_permitidas=("NCO",),
     )
     assert parametros["provincias"] == ["manabi"]
-    assert "translate(" in con_mas
+    assert "r.provincia = ANY(:provincias)" in con_mas
     assert ":desde" in con_mas
     assert ":hasta" in con_mas
     assert ":fuente" in con_mas
-    assert solo_provincia.count("translate(") == con_mas.count("translate(")
+    assert solo_provincia.count("r.provincia") == con_mas.count("r.provincia")
 
 
 def test_sqlalchemy_reconoce_todos_los_parametros() -> None:
@@ -262,3 +297,389 @@ def test_un_cpc_sin_palabras_buscables_no_filtra() -> None:
 
     assert "expr_cpc" not in parametros
     assert not any("cpc_busqueda" in condicion for condicion in condiciones)
+
+
+# --------------------------------------------------------------------------- #
+# El filtro por **código** de CPC
+#
+# Aquí está el defecto que se reportó: «al ingresar un código CPC no salen todos los resultados con
+# ese código». La causa principal era de datos —fichas sin leer, con `cpc_busqueda` vacío—, pero
+# además un código se comparaba como texto. Ahora un código es un valor y se compara por igualdad
+# contra la columna de códigos, que tiene su propio índice.
+# --------------------------------------------------------------------------- #
+
+
+def test_un_codigo_de_cpc_usa_la_columna_de_codigos() -> None:
+    """Un código es un valor, no texto: se compara por igualdad contra `cpc_codigos`."""
+    condiciones, parametros = _condiciones(Filtros(cpc=("871410032",)))
+    unida = " AND ".join(condiciones)
+
+    assert "cpc_codigos @>" in unida
+    assert parametros["cpc_codigos"] == ["871410032"]
+    assert "expr_cpc" not in parametros
+
+
+def test_con_cualquiera_los_codigos_se_solapan() -> None:
+    """«Cualquiera» con dos códigos es «alguna de las dos clasificaciones», no «las dos»."""
+    condiciones, parametros = _condiciones(
+        Filtros(cpc=("871410032", "431510128"), modo=ModoBusqueda.CUALQUIERA)
+    )
+
+    assert "cpc_codigos &&" in " AND ".join(condiciones)
+    assert parametros["cpc_codigos"] == ["871410032", "431510128"]
+
+
+def test_un_codigo_y_una_descripcion_se_combinan() -> None:
+    """Los dos tipos de término conviven: cada uno por su índice y los dos se exigen."""
+    condiciones, parametros = _condiciones(Filtros(cpc=("871410032", "lavado")))
+    unida = " AND ".join(condiciones)
+
+    assert "cpc_codigos @>" in unida
+    assert "cpc_busqueda" in unida
+    assert parametros["cpc_codigos"] == ["871410032"]
+    assert parametros["expr_cpc"] == "(lavado:*)"
+
+
+def test_solo_cpc_no_exige_las_palabras_clave() -> None:
+    """El interruptor existe para esto: buscar por clasificación sin que las palabras recorten."""
+    condiciones, parametros = _condiciones(
+        Filtros(terminos=("hospital",), cpc=("871410032",), solo_cpc=True)
+    )
+    unida = " AND ".join(condiciones)
+
+    assert "cpc_codigos @>" in unida
+    assert "texto_busqueda" not in unida
+    assert "expr" not in parametros
+
+
+def test_sin_solo_cpc_las_palabras_clave_siguen_exigiendose() -> None:
+    """El interruptor cambia algo: apagado, los dos criterios se suman como siempre."""
+    condiciones, _ = _condiciones(Filtros(terminos=("hospital",), cpc=("871410032",)))
+
+    assert "texto_busqueda" in " AND ".join(condiciones)
+
+
+# --------------------------------------------------------------------------- #
+# El código del proceso se busca por **fragmento**
+#
+# Esta prueba existe para que una optimización futura no rompa el filtro sin querer. Se intentó
+# indexarlo con un btree de prefijo y hubo que dar marcha atrás: un btree solo resuelve «empieza
+# por», y con «26-00053» —los últimos dígitos de un NIC, que es como lo recuerda la gente— no
+# encontraría nada, porque los códigos empiezan por `NIC-`. El fragmento acota mejor y se paga con
+# un recorrido completo, que es una decisión deliberada y no un descuido.
+# --------------------------------------------------------------------------- #
+
+
+def test_el_codigo_se_busca_por_fragmento() -> None:
+    """Un fragmento del código —no solo su principio— tiene que encontrar la fila."""
+    condiciones, parametros = _condiciones(Filtros(codigo="26-00053"))
+    unida = " AND ".join(condiciones)
+
+    assert "ILIKE :codigo" in unida
+    assert parametros["codigo"] == "%26-00053%"
+
+
+def test_los_comodines_del_codigo_van_escapados() -> None:
+    """Un `%` escrito por el usuario no puede convertirse en «cualquier cosa»."""
+    _, parametros = _condiciones(Filtros(codigo="NIC%2026"))
+
+    assert parametros["codigo"] == "%NIC\\%2026%"
+
+
+# --------------------------------------------------------------------------- #
+# El filtro por descripción del producto
+#
+# Busca en el objeto de compra **y solo ahí**. Lo que se protege es dónde busca: si fuera contra
+# `texto_busqueda` devolvería lo mismo que las palabras clave —todo lo que menciona la palabra,
+# incluida la entidad o el código— y el filtro no serviría para lo que se le pide.
+# --------------------------------------------------------------------------- #
+
+
+def test_la_descripcion_busca_solo_en_el_objeto_de_compra() -> None:
+    condiciones, parametros = _condiciones(Filtros(descripcion=("equipo de computo",)))
+    unida = " AND ".join(condiciones)
+
+    assert INDICE_OBJETO in unida
+    assert "objeto_compra" in unida
+    assert "texto_busqueda" not in unida
+    # Un término con espacios sigue siendo **un** término: sus palabras se exigen todas.
+    assert parametros["expr_descripcion"] == "(equipo:* & de:* & computo:*)"
+
+
+def test_la_descripcion_respeta_el_modo() -> None:
+    """«Todas» exige cada término y «cualquiera» basta con uno, igual que en las palabras clave."""
+    _, todas = _condiciones(Filtros(descripcion=("mesas", "sillas")))
+    _, cualquiera = _condiciones(
+        Filtros(descripcion=("mesas", "sillas"), modo=ModoBusqueda.CUALQUIERA)
+    )
+
+    assert todas["expr_descripcion"] == "(mesas:*) & (sillas:*)"
+    assert cualquiera["expr_descripcion"] == "(mesas:*) | (sillas:*)"
+
+
+def test_sin_descripcion_no_se_anade_ninguna_condicion() -> None:
+    condiciones, parametros = _condiciones(Filtros(terminos=("obras",)))
+
+    assert all("objeto_compra" not in condicion for condicion in condiciones)
+    assert "expr_descripcion" not in parametros
+
+
+def test_la_descripcion_no_la_silencia_solo_cpc() -> None:
+    """«Solo CPC» deja de exigir las **palabras clave**, no una descripción escrita a mano.
+
+    Son cosas distintas: las palabras clave son una suscripción de fondo que se mantiene puesta
+    durante meses, y la descripción es una pregunta que se hace en ese momento. Callarla al buscar
+    por clasificación devolvería filas que nadie pidió.
+    """
+    condiciones, _ = _condiciones(
+        Filtros(cpc=("871410032",), solo_cpc=True, descripcion=("computo",), terminos=("obras",))
+    )
+    unida = " AND ".join(condiciones)
+
+    assert "objeto_compra" in unida
+    assert "texto_busqueda" not in unida
+    assert "cpc_codigos" in unida
+
+
+def test_el_indice_de_la_descripcion_es_el_de_la_consulta() -> None:
+    """El texto del índice y el de la condición tienen que ser el mismo, o el índice no se usa.
+
+    Sin la coincidencia exacta no hay ningún error: la búsqueda pasa de milisegundos a recorrer el
+    histórico entero calculando un `tsvector` por fila —unos 10 s— y el único síntoma es que va
+    lenta. Esta prueba es lo único que avisa.
+    """
+    migracion = _sin_huecos(
+        RUTA_MIGRACION_DESCRIPCION.read_text(encoding="utf-8").replace("{TILDES}", TILDES_SQL)
+    )
+
+    # El índice nombra la columna sin el alias de la tabla: `datos`, no `r.datos`.
+    assert _sin_huecos(INDICE_OBJETO).replace("r.", "") in migracion
+
+
+# --------------------------------------------------------------------------- #
+# El SQL y los índices tienen que decir lo mismo
+#
+# Estas pruebas no comprueban un resultado: comprueban que dos textos siguen coincidiendo. Es lo
+# único que hay entre un índice que se usa y uno que ya no, porque cuando dejan de coincidir no hay
+# error, ni aviso, ni fila de más: solo una consulta que vuelve a recorrer 110.000 filas.
+# --------------------------------------------------------------------------- #
+
+RUTA_MIGRACION_ORDEN = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0015_indices_agregados.py"
+)
+
+
+# --------------------------------------------------------------------------- #
+# El plazo de proformas: de texto dentro del JSON a columna con índice parcial
+# --------------------------------------------------------------------------- #
+
+
+def test_el_plazo_se_filtra_por_la_columna_y_no_por_el_texto() -> None:
+    """Un `CAST` sobre `datos` no lo resuelve ningún índice: recorre y descomprime las 111.000.
+
+    No falla nada al hacerlo mal —devuelve el resultado correcto—, así que lo único que lo detecta
+    es esta comprobación.
+    """
+    condiciones, parametros = _condiciones(Filtros(solo_con_plazo=True))
+    unida = " AND ".join(condiciones)
+
+    assert "plazo_proformas_en" in unida
+    assert "fecha_limite_proformas" not in unida
+    assert parametros == {}
+
+
+def test_sin_plazo_no_se_anade_ninguna_condicion() -> None:
+    condiciones, _ = _condiciones(Filtros())
+    assert not any("plazo_proformas_en" in condicion for condicion in condiciones)
+
+
+def test_el_patron_de_la_migracion_es_el_del_dominio() -> None:
+    """El relleno de la migración y la escritura de la ingesta tienen que aceptar lo mismo.
+
+    Si el de la migración fuera más estrecho, las filas que ya estaban se quedarían sin plazo y
+    desaparecerían del filtro «solo con plazo»; si fuera más ancho, entraría en la columna un texto
+    del que dependen un filtro y un borrado. Ninguna de las dos cosas da un error.
+    """
+    migracion = _migracion_de_la_retencion()
+    encontrado = re.search(r'^PATRON = r"(.*)"$', migracion, re.MULTILINE)
+
+    assert encontrado is not None, "la migración declara el patrón como constante"
+    assert encontrado.group(1) == PATRON_FECHA_ISO
+
+
+def test_el_indice_del_plazo_es_parcial_sobre_la_columna() -> None:
+    """Sin el `WHERE`, el índice cargaría las 104.000 filas de OCDS que nunca tienen plazo."""
+    migracion = _sin_huecos(_migracion_de_la_retencion())
+
+    assert "ix_registro_plazo_proformas ON registro (plazo_proformas_en)" in migracion
+    assert "WHERE plazo_proformas_en IS NOT NULL" in migracion
+
+
+def _migracion_de_la_retencion() -> str:
+    """El texto de la migración que añade la columna del plazo."""
+    ruta = Path(__file__).resolve().parents[2] / "alembic" / "versions"
+    return (ruta / "0021_plazo_proformas.py").read_text(encoding="utf-8")
+
+
+def _sin_huecos(texto: str) -> str:
+    """Compara dos SQL escritos con saltos de línea distintos, sin tocar los espacios que cuentan.
+
+    Solo se quitan los huecos que existían por partir la línea —los de junto a un paréntesis—, que
+    es la única diferencia que puede haber entre la expresión de una constante de Python y la misma
+    escrita a mano en el SQL de una migración. Los espacios de dentro de los literales se respetan.
+    """
+    texto = re.sub(r"\s+", " ", texto)
+    texto = re.sub(r"\(\s+", "(", texto)
+    return re.sub(r"\s+\)", ")", texto)
+
+
+def _marcha_atras(clausula: str) -> str:
+    """La cláusula de orden que recorre el mismo índice al revés.
+
+    Un índice de varias columnas se puede leer en los dos sentidos, pero el segundo sentido no es
+    «lo mismo con el signo cambiado»: al invertir el recorrido se invierte el sentido de **todas**
+    las columnas, y los nulos pasan de ir al final a ir al principio. Por eso el desempate lleva
+    `DESC` cuando la fecha lleva `ASC`.
+    """
+    piezas: list[str] = []
+    for trozo in clausula.split(", "):
+        if " DESC" in trozo:
+            trozo = trozo.replace(" DESC", " ASC")
+        elif " ASC" in trozo:
+            trozo = trozo.replace(" ASC", " DESC")
+        else:
+            trozo = f"{trozo} DESC"
+        if "NULLS LAST" in trozo:
+            trozo = trozo.replace("NULLS LAST", "NULLS FIRST")
+        elif "NULLS FIRST" in trozo:
+            trozo = trozo.replace("NULLS FIRST", "NULLS LAST")
+        elif trozo.endswith(" ASC"):
+            # `ASC` es lo que ya dice una columna sin sentido declarado, así que la forma canónica
+            # no lo escribe: `r.id` y `r.id ASC` son la misma cláusula.
+            trozo = trozo[: -len(" ASC")]
+        piezas.append(trozo)
+    return ", ".join(piezas)
+
+
+def test_el_orden_mas_antiguo_es_la_marcha_atras_del_mas_reciente() -> None:
+    """Los dos órdenes por fecha caben en un solo índice, y eso exige que sean reversos exactos.
+
+    Si el desempate de «más antiguos» volviera a ser `r.id` —una corrección que parece inofensiva—
+    el índice dejaría de servir para ese orden y cada página volvería a ordenar el histórico
+    entero. Medido: 10,4 s por página.
+    """
+    recientes = ORDENES[OrdenBusqueda.RECIENTES]
+    antiguos = ORDENES[OrdenBusqueda.ANTIGUOS]
+
+    assert _marcha_atras(recientes) == antiguos
+    assert _marcha_atras(antiguos) == recientes
+
+
+def test_el_orden_por_defecto_declara_los_nulos_como_el_indice() -> None:
+    """`NULLS LAST` no es un adorno: es la diferencia entre usar el índice y ordenar 110.000 filas.
+
+    En PostgreSQL `DESC` implica `NULLS FIRST`, así que un índice `(fecha_publicacion DESC, id)` no
+    sirve para `ORDER BY fecha_publicacion DESC NULLS LAST`. Aquí se comprueba que la cláusula
+    declara el sentido de los nulos y que la migración que construye el índice lo declara igual.
+    """
+    migracion = _sin_huecos(RUTA_MIGRACION_ORDEN.read_text(encoding="utf-8"))
+
+    assert "DESC NULLS LAST" in ORDENES[OrdenBusqueda.RECIENTES]
+    assert "fecha_publicacion DESC NULLS LAST, id" in migracion
+
+
+# --------------------------------------------------------------------------- #
+# La clave que se escribe y la que se compara tienen que ser la misma
+#
+# La clave vive ahora en una columna: la escribe la ingesta al guardar cada fila y la comparan las
+# consultas al filtrar. Si las dos reglas se separaran, unas filas se encontrarían y otras no, y el
+# reparto dibujaría barras que al pulsarlas no traen nada, sin ningún error que lo delate.
+# --------------------------------------------------------------------------- #
+
+RUTA_MIGRACION_CLAVES = (
+    Path(__file__).resolve().parents[2]
+    / "alembic"
+    / "versions"
+    / "0017_provincia_y_tipo_proceso.py"
+)
+
+RUTA_MIGRACION_DESCRIPCION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0020_indice_descripcion.py"
+)
+
+# La migración escribe la tabla de tildes como un marcador (`{TILDES}`) para no repetirla dentro del
+# mismo archivo, así que aquí se sustituye por la que usa Python. La sustitución es, de paso, una
+# comprobación: si la migración cambiara de tabla de tildes, el texto dejaría de encontrarse.
+TILDES_SQL = f"'{CON_ACENTO}', '{SIN_ACENTO}'"
+
+
+def test_las_claves_del_relleno_son_las_de_la_ingesta() -> None:
+    """El relleno de la migración y la ingesta tienen que escribir exactamente la misma clave.
+
+    La migración rellena 110.000 filas con SQL escrito a mano y la ingesta escribe con Python. Si
+    las dos formas se separan —una tilde que una quita y la otra no, un `btrim` que falta—, la mitad
+    del histórico quedaría con una clave que el filtro ya no pide y esas filas desaparecerían de las
+    búsquedas por provincia **sin ningún error**. Esta prueba es lo único que avisa.
+    """
+    migracion = _sin_huecos(
+        RUTA_MIGRACION_CLAVES.read_text(encoding="utf-8").replace("{TILDES}", TILDES_SQL)
+    )
+    provincia_esperada = _sin_huecos(
+        "COALESCE(NULLIF("
+        + PROVINCIA_NORMALIZADA.format(columna="btrim(split_part(datos ->> 'provincia', '-', 1))")
+        + ", ''), 'sin provincia')"
+    )
+
+    assert provincia_esperada in migracion
+    assert (
+        _sin_huecos("COALESCE(NULLIF(btrim(datos ->> 'tipo_proceso'), ''), 'sin clasificar')")
+        in migracion
+    )
+
+
+def test_la_clave_que_pide_el_filtro_es_la_que_escribe_la_ingesta() -> None:
+    """El mismo valor, dicho por la fuente y por el panel, da la misma clave en los dos lados."""
+    _, del_filtro = _condiciones(Filtros(provincias=("Manabí",)))
+
+    assert del_filtro["provincias"] == [clave_provincia("MANABI")]
+
+
+def test_la_barra_sin_clasificar_encuentra_sus_filas() -> None:
+    """Pulsar «sin clasificar» en el reparto tiene que traer esas filas, no cero.
+
+    El reparto siempre las contó —son las ínfimas, que no publican el tipo de proceso—, pero el
+    filtro comparaba contra el texto crudo de `datos`, que en ellas está vacío: la barra se podía
+    pulsar y la tabla se quedaba vacía. Un gráfico que dice «10.110 sin clasificar» y no puede
+    enseñarlas es peor que no ofrecerlas.
+    """
+    _, parametros = _condiciones(Filtros(tipo_proceso="sin clasificar"))
+
+    assert parametros["tipo_proceso"] == SIN_CLASIFICAR
+    assert parametros["tipo_proceso"] == clave_tipo_proceso(None)
+    assert parametros["tipo_proceso"] == clave_tipo_proceso("   ")
+
+
+def test_la_barra_del_reparto_vuelve_al_filtro_y_encuentra_sus_filas() -> None:
+    """La clave de un reparto, devuelta al filtro, tiene que encontrar esas mismas filas."""
+    barra = "Subasta Inversa Electrónica"
+    _, parametros = _condiciones(Filtros(tipo_proceso=barra))
+
+    # No se normalizan mayúsculas ni tildes a propósito: la barra y el filtro coinciden carácter a
+    # carácter, que es lo que hace que pulsarla devuelva exactamente esa fila.
+    assert parametros["tipo_proceso"] == clave_tipo_proceso(barra)
+    assert parametros["tipo_proceso"] == barra
+
+
+def test_un_valor_ausente_tiene_su_clave_y_no_deja_la_columna_vacia() -> None:
+    """Las dos claves existen aunque la fuente no publique el dato.
+
+    Es lo que permite que las columnas sean `NOT NULL` —y por tanto que ninguna fila se quede fuera
+    de un filtro por olvidarse alguien de escribirla— y que el reparto tenga su barra para lo que no
+    se sabe ubicar.
+    """
+    assert clave_provincia(None) == SIN_PROVINCIA
+    assert clave_provincia("") == SIN_PROVINCIA
+    assert clave_provincia("   ") == SIN_PROVINCIA
+    assert clave_tipo_proceso(None) == SIN_CLASIFICAR
+    assert clave_tipo_proceso("") == SIN_CLASIFICAR
+    assert clave_tipo_proceso("  En Curso  ") == "En Curso"

@@ -132,8 +132,7 @@ async def main() -> int:
         elegida = "Zamora Chinchipe"
         total_provincia, datos_provincia = await cuadro(filtros(provincias=(elegida,)))
         reparto = {
-            str(fila["provincia"]): int(fila["total"])
-            for fila in datos_provincia["por_provincia"]
+            str(fila["provincia"]): int(fila["total"]) for fila in datos_provincia["por_provincia"]
         }
         suyo = reparto.get("zamora chinchipe")
         print(f"  tabla con {elegida}: {total_provincia} · su barra en el mapa: {suyo}")
@@ -230,6 +229,60 @@ async def main() -> int:
         _comprobar(
             suma_tipos_termino == total_termino,
             "el reparto por tipo suma lo mismo que la tabla con ese filtro",
+        )
+
+        print()
+        print("=" * 70)
+        print("7. El mapa cambia con la familia: ínfimas, ofertas y las dos")
+        print("=" * 70)
+        # El mapa tiene un selector de familia, y lo que se comprueba aquí es que el reparto que lo
+        # pinta **depende** de ella. Se mira el reparto y no el mapa porque el mapa dibuja lo que le
+        # llega: si el reparto no cambiara, el mapa tampoco, y el selector parecería decorativo.
+        cuadros: dict[str, tuple[int, dict[str, Any]]] = {}
+        for familia in (None, "infimas", "ofertas"):
+            cuadros[str(familia)] = await cuadro(filtros(categoria=familia))
+        for familia, (total_familia, datos_familia) in cuadros.items():
+            reparto_familia = [dict(fila) for fila in datos_familia["por_provincia"]]
+            print(
+                f"  familia={familia:8} tabla {total_familia:>7} · "
+                f"reparto {len(reparto_familia):>2} filas, suma {_suma(reparto_familia):>7}"
+            )
+            _comprobar(
+                _suma(reparto_familia) == total_familia,
+                f"con la familia «{familia}» el reparto suma el total de su tabla",
+            )
+        total_ambas = cuadros["None"][0]
+        total_infimas = cuadros["infimas"][0]
+        total_ofertas = cuadros["ofertas"][0]
+        _comprobar(
+            total_infimas + total_ofertas == total_ambas,
+            f"las dos familias suman la vista de ambas "
+            f"({total_infimas} + {total_ofertas} = {total_ambas})",
+        )
+        # El caso que se veía mal: el reparto de una familia **no** puede ser el de la otra. Con el
+        # encuadre roto del mapa las cifras cambiaban y el dibujo no; y si el reparto ignorara la
+        # familia, el mapa enseñaría los mismos números en las tres posiciones del selector.
+        reparto_infimas = {
+            str(fila["provincia"]): int(fila["total"])
+            for fila in cuadros["infimas"][1]["por_provincia"]
+        }
+        reparto_ofertas = {
+            str(fila["provincia"]): int(fila["total"])
+            for fila in cuadros["ofertas"][1]["por_provincia"]
+        }
+        compartidas = set(reparto_infimas) & set(reparto_ofertas)
+        distintas = [
+            provincia
+            for provincia in compartidas
+            if reparto_infimas[provincia] != reparto_ofertas[provincia]
+        ]
+        print(
+            f"  provincias con cifra distinta entre familias: "
+            f"{len(distintas)} de {len(compartidas)}"
+        )
+        _comprobar(
+            len(distintas) == len(compartidas),
+            "el reparto de ínfimas y el de ofertas no comparten ni una cifra",
         )
     finally:
         await cerrar_bd()

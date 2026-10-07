@@ -16,9 +16,7 @@ coverage.xml
 htmlcov/
 
 # Variables de entorno — NUNCA versionar credenciales
-.env
-.env.*
-!.env.example
+
 
 # Bases de datos locales
 *.db
@@ -38,6 +36,18 @@ backups/
 # Salida de `levantar.ps1`: los registros de cada proceso (cubiertos por `*.log`) y la ficha con
 # los identificadores de lo que está corriendo, que solo tiene sentido en la máquina que lo lanzó.
 registros/
+
+# Los ficheros mensuales del portal con los que se comparó el listado del año (~130 MB). Son datos de
+# trabajo, no código: se descargan del portal o con `scripts/sondear_ocds_masivo.py`, y meterlos en el
+# repositorio hace que cada clon —el del servidor, el de otro equipo— se lleve 103 MB de ZIP que no
+# hacen falta para funcionar.
+backend/tmp/ocds_2026/
+
+# Prueba de carga: las credenciales de las cuentas que crea `preparar_carga.py` y el resultado de
+# cada ejecución. El archivo de credenciales lleva contraseñas y tokens de verdad, y el de resultado
+# pesa megas y solo interesa el día que se corre la prueba.
+carga/credenciales.json
+carga/resultado.json
 
 # Copias de seguridad y la clave que las abre
 #

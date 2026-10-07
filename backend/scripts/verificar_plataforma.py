@@ -345,6 +345,57 @@ async def main() -> None:
                         bool(arrancados),
                         f"ciclos arrancados después de la petición: {sorted(arrancados)}",
                     )
+
+            _seccion("11. La sesión: caducidad visible, rotación y ventana de gracia")
+            entrada = (
+                await c.post(
+                    "/v1/auth/sesion",
+                    json={"email": correo_empresa, "contrasena": clave_empresa},
+                )
+            ).json()
+            # El panel programa su renovación con esa hora, así que si faltara no habría forma de
+            # adelantarse a la caducidad: cada sesión esperaría al 401 y luego renovaría.
+            _marca(
+                "acceso_expira_en" in entrada and "renovacion_expira_en" in entrada,
+                "el inicio de sesión dice cuándo caduca cada token",
+            )
+            print(
+                f"  el acceso caduca en {entrada.get('acceso_expira_en')} "
+                f"y la renovación en {entrada.get('renovacion_expira_en')}"
+            )
+            primera = entrada["token_renovacion"]
+
+            r = await c.post("/v1/auth/sesion/renovacion", json={"token_renovacion": primera})
+            _marca(r.status_code == 200, f"POST /v1/auth/sesion/renovacion -> {r.status_code}")
+            segunda = r.json().get("token_renovacion", "")
+            _marca(
+                bool(segunda) and segunda != primera,
+                "el token de renovación rota: el nuevo no es el mismo que el usado",
+            )
+            cab_nueva = {"Authorization": f"Bearer {r.json().get('token_acceso', '')}"}
+            _marca(
+                (await c.get("/v1/negocio", headers=cab_nueva)).status_code == 200,
+                "el token de acceso recién emitido sirve para leer",
+            )
+
+            # Y ahora el tamaño de la ventana, que es lo que se cambió. Se espera **más** que los
+            # treinta segundos del valor anterior para que la comprobación distinga una ventana de
+            # segundos de una de minutos: con el valor viejo, presentar aquí el token de la
+            # generación anterior se habría leído como «hay dos copias en circulación» y el servidor
+            # habría cerrado **todas** las sesiones de la cuenta.
+            espera = 35
+            print(f"  esperando {espera} s para volver a presentar el token anterior...")
+            await asyncio.sleep(espera)
+            r = await c.post("/v1/auth/sesion/renovacion", json={"token_renovacion": primera})
+            _marca(
+                r.status_code == 200,
+                f"el token de la generación anterior sigue valiendo a los {espera} s "
+                f"-> {r.status_code}",
+            )
+            _marca(
+                (await c.get("/v1/negocio", headers=cab_empresa)).status_code == 200,
+                "la otra sesión de la cuenta sigue viva: dentro de la ventana no se cierra nada",
+            )
     finally:
         if negocio_empresa is not None:
             await _borrar_empresa(negocio_empresa)

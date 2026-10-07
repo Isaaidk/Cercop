@@ -113,6 +113,24 @@ def es_administrativo(rol: str | Rol) -> bool:
         return False
 
 
+def es_de_plataforma(rol: str | Rol) -> bool:
+    """¿Este rol es el dueño del sistema?
+
+    Es la capacidad más alta y la única que actúa sobre **empresas ajenas**. Vive aquí, junto al
+    resto de las capacidades, porque tenía dos sitios que la necesitaban —administrar empresas y
+    enseñar quién está conectado— y una definición repetida es una que un día dice dos cosas.
+
+    Se normaliza el rol antes de compararlo en vez de comparar cadenas: puede llegar del token como
+    enumeración o como texto, y una comparación directa negaría el paso a quien sí lo tiene. Negar
+    el paso al dueño del sistema es un fallo que se nota tarde —cuando alguien no puede hacer su
+    trabajo y no hay ningún error que lo explique—.
+    """
+    try:
+        return Rol(str(rol).strip().lower()) is Rol.SUPER_ADMIN
+    except ValueError:
+        return False
+
+
 def puede_asignar(rol_solicitado: Rol) -> bool:
     """¿Un administrador de empresa puede crear una cuenta con este rol?"""
     return rol_solicitado in ROLES_ASIGNABLES_POR_ADMIN

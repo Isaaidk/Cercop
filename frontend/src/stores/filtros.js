@@ -16,10 +16,8 @@
 import { computed, reactive } from 'vue'
 
 import { api } from '@/api/endpoints'
-import { terminosDeLista } from '@/utils/cpc'
-
-/** Longitud mínima de una palabra clave, la misma que exige el servidor. */
-const LONGITUD_MINIMA = 3
+import { nombreParaApi } from '@/utils/provincias'
+import { LONGITUD_MINIMA_TERMINO, claveDeTermino, terminosDeLista } from '@/utils/terminos'
 
 const estado = reactive({
   /** Todas las palabras clave del negocio, con su estado de ingesta. */
@@ -40,6 +38,32 @@ const estado = reactive({
    * `871410032`— porque la búsqueda también cubre el código.
    */
   cpc: [],
+  /**
+   * «Solo CPC»: con el interruptor activo, buscar por clasificación **no** exige además las palabras
+   * clave marcadas arriba.
+   *
+   * Quien pega un código de CPC quiere ver **todo** lo que está clasificado así. Con las palabras
+   * clave puestas de fondo, el resultado se recorta y parece que el código no encuentra lo que sí
+   * existe; el interruptor deja elegir entre «solo esto» y «esto y lo que ya vigilaba».
+   */
+  cpcSolo: false,
+
+  /**
+   * La **descripción del producto**: lo que se busca en el objeto de compra y solo ahí.
+   *
+   * Es una lista, como las palabras clave y el CPC, y comparte con ellos el modo —«todas» o
+   * «cualquiera»—: la pregunta es la misma, cómo se combinan entre sí varios términos de la lista.
+   *
+   * Se distingue de las palabras clave en **dónde busca**, y esa es toda su razón de ser: una palabra
+   * clave se busca en el texto entero de la convocatoria —el código, la entidad, la provincia, los
+   * tipos de proceso—, así que trae todo lo que la menciona de pasada; esto mira un solo campo, el
+   * objeto de compra, y responde a «qué se está comprando». Quien busca «computadoras» quiere
+   * computadoras, no una capacitación sobre computación.
+   *
+   * Va en el borrador, no se aplica al añadir: es una pregunta que se escribe y se ajusta, y el panel
+   * ya tiene un botón que dice cuántos cambios hay pendientes.
+   */
+  descripcion: [],
 
   /**
    * Las provincias elegidas en el mapa. **Es una lista**, no un valor suelto.
@@ -133,6 +157,8 @@ const estado = reactive({
 const CAMPOS_DE_CRITERIO = [
   'seleccionadas',
   'cpc',
+  'cpcSolo',
+  'descripcion',
   'modo',
   'provincias',
   'canton',
@@ -193,6 +219,8 @@ export const filtros = {
     () =>
       aplicados.seleccionadas.length > 0 ||
       aplicados.cpc.length > 0 ||
+      (aplicados.cpcSolo && aplicados.cpc.length > 0) ||
+      aplicados.descripcion.length > 0 ||
       aplicados.provincias.length > 0 ||
       Boolean(aplicados.estadoRegistro) ||
       Boolean(aplicados.codigo) ||
@@ -207,6 +235,8 @@ export const filtros = {
   cuantos: computed(() => {
     let total = aplicados.seleccionadas.length > 1 ? 1 : aplicados.seleccionadas.length
     if (aplicados.cpc.length) total += 1
+    if (aplicados.cpcSolo && aplicados.cpc.length) total += 1
+    if (aplicados.descripcion.length) total += 1
     if (aplicados.provincias.length) total += 1
     if (aplicados.estadoRegistro) total += 1
     if (aplicados.codigo) total += 1
@@ -252,6 +282,56 @@ export const filtros = {
   },
 
   /**
+   * Añade una descripción del producto a la lista del **borrador**.
+   *
+   * No la aplica: el panel ya tiene un botón que dice cuántos cambios hay pendientes, y una frase se
+   * escribe y se corrige antes de buscar. Devuelve el motivo cuando **no** la añade —«corta» o
+   * «repetida»— para que el componente pueda explicarlo en lugar de dejar al usuario pulsando sin
+   * reacción, que es lo que se lee como que la pantalla está rota.
+   *
+   * La comparación para detectar repetidas ignora mayúsculas y acentos, igual que el servidor: si
+   * añadiera «Cómputo» y «computo» como dos términos, el filtro los exigiría los dos con «todas» y no
+   * devolvería nada.
+   */
+  agregarDescripcion(texto) {
+    const limpio = String(texto || '').trim()
+    if (limpio.length < LONGITUD_MINIMA_TERMINO) return 'corta'
+    const clave = claveDeTermino(limpio)
+    if (estado.descripcion.some((termino) => claveDeTermino(termino) === clave)) return 'repetida'
+    estado.descripcion.push(limpio)
+    return null
+  },
+
+  /**
+   * Añade una lista pegada de descripciones al **borrador** y devuelve lo que hizo.
+   *
+   * Se apoya en `terminosDeLista`, la misma función que usan las palabras clave y el CPC: el troceo,
+   * el descarte de las cortas y la unificación de repetidas se deciden **una vez** para los tres
+   * sitios. Se hace aquí y no en el componente porque «repetida» no se puede saber sin ver la lista
+   * completa, y la lista es del almacén.
+   *
+   * Devuelve las tres cuentas —añadidas, repetidas y cortas— en lugar de un total: quien pega veinte
+   * términos merece saber que dos ya estaban y uno se descartó por corto, en vez de contar fichas para
+   * descubrirlo.
+   */
+  agregarVariasDescripcion(texto) {
+    const { terminos, cortas } = terminosDeLista(texto)
+    const agregadas = []
+    let repetidas = 0
+    for (const termino of terminos) {
+      const motivo = filtros.agregarDescripcion(termino)
+      if (motivo) repetidas += 1
+      else agregadas.push(termino)
+    }
+    return { agregadas, repetidas, cortas }
+  },
+
+  /** Quita una descripción de la lista del borrador. */
+  quitarDescripcion(texto) {
+    estado.descripcion = estado.descripcion.filter((termino) => termino !== texto)
+  },
+
+  /**
    * Traduce los criterios **en vigor** a los parámetros que entiende la API.
    *
    * Los campos vacíos se omiten en lugar de enviarse en blanco. No es lo mismo: `?provincia=` es un
@@ -264,6 +344,13 @@ export const filtros = {
       termino: aplicados.seleccionadas,
       cpc: aplicados.cpc,
       modo: aplicados.modo,
+      // Con «solo CPC» activo pero la lista vacía el criterio no hace nada, así que se omite: no es
+      // lo mismo «buscar solo por CPC» que «no exigir las palabras clave», y sin términos no hay
+      // nada por lo que buscar. El servidor aplica la misma regla.
+      solo_cpc: aplicados.cpcSolo && aplicados.cpc.length ? true : null,
+      // La descripción del producto viaja como lista, igual que los términos y el CPC: la API acepta
+      // el parámetro repetido y el servidor los combina con el mismo modo.
+      descripcion: aplicados.descripcion,
       orden: estado.orden,
       pagina: estado.pagina,
       tamano: estado.tamano,
@@ -286,6 +373,9 @@ export const filtros = {
     // Mismo motivo que con los términos: `?cpc=` en blanco es «CPC vacío» y no devuelve nada,
     // mientras que no enviar el parámetro es «sin filtro por CPC».
     if (!aplicados.cpc.length) salida.cpc = null
+    // Mismo motivo que con los términos: `?descripcion=` en blanco es «descripción vacía» y no
+    // devuelve nada, mientras que no enviar el parámetro es «sin filtro por descripción».
+    if (!aplicados.descripcion.length) salida.descripcion = null
     return salida
   }),
 
@@ -347,7 +437,7 @@ export const filtros = {
       .filter(Boolean)
 
     const unicas = [...new Set(partes.map((parte) => parte.toLowerCase()))]
-    const validas = unicas.filter((parte) => parte.length >= LONGITUD_MINIMA)
+    const validas = unicas.filter((parte) => parte.length >= LONGITUD_MINIMA_TERMINO)
     if (!validas.length) return { terminos: [], descartadas: unicas.length }
 
     const resultado = await api.agregarTerminos(validas)
@@ -368,6 +458,25 @@ export const filtros = {
   quitarPalabra(texto) {
     const indice = estado.seleccionadas.indexOf(texto)
     if (indice !== -1) estado.seleccionadas.splice(indice, 1)
+  },
+
+  /**
+   * Da de baja la palabra clave: deja de seguirla el negocio.
+   *
+   * Es distinto de `quitarPalabra`, que solo la **deselecciona** para dejar de filtrar por ella hoy.
+   * Hasta ahora no había forma de dar de baja, así que la suscripción seguía activa y volver a
+   * agregar la misma palabra contestaba «ya se consultó hace poco»: se leía como que el sistema no
+   * había hecho caso, o como que la palabra «seguía puesta» sin estarlo.
+   *
+   * Se **espera** la respuesta antes de recargar la lista, por el mismo motivo que en el CPC: si se
+   * quitara de la pantalla antes de que el servidor confirme, volver a agregarla de inmediato podría
+   * encontrarla todavía activa.
+   */
+  async quitarPalabraDefinitiva(terminoId) {
+    await api.quitarTermino(terminoId)
+    // Recargar poda la selección con las palabras que siguen vigentes, así que la baja desaparece
+    // también de lo aplicado y deja de viajar en la consulta.
+    await this.cargarPalabras()
   },
 
   seleccionarTodas() {
@@ -416,10 +525,10 @@ export const filtros = {
    */
   async agregarCpc(texto) {
     const limpio = String(texto || '').trim()
-    if (limpio.length < LONGITUD_MINIMA) return { agregado: false, motivo: 'corta' }
+    if (limpio.length < LONGITUD_MINIMA_TERMINO) return { agregado: false, motivo: 'corta' }
 
-    const clave = normalizarClave(limpio)
-    if (estado.cpc.some((termino) => normalizarClave(termino) === clave)) {
+    const clave = claveDeTermino(limpio)
+    if (estado.cpc.some((termino) => claveDeTermino(termino) === clave)) {
       return { agregado: false, motivo: 'repetida' }
     }
 
@@ -433,16 +542,20 @@ export const filtros = {
     return { agregado: true, motivo: '' }
   },
 
-  quitarCpc(texto) {
+  /**
+   * Quita un término de CPC de la lista guardada.
+   *
+   * **Primero el servidor y después la pantalla.** Antes se quitaba de la lista al instante y el
+   * borrado viajaba sin esperar la respuesta; si en ese hueco se volvía a agregar el mismo término,
+   * el servidor todavía lo tenía activo y contestaba «ya está en la lista de CPC» —un resultado que
+   * dependía de una carrera y que el usuario veía como que el borrado no había funcionado—. Quitar
+   * un término es un gesto poco frecuente: la espera no se nota y a cambio deja de haber carrera.
+   */
+  async quitarCpc(texto) {
+    await api.quitarCpc(texto)
     const indice = estado.cpc.indexOf(texto)
     if (indice !== -1) estado.cpc.splice(indice, 1)
     aplicarClavesCpc()
-    // El borrado viaja sin esperar a la respuesta: la ficha ya no está en la pantalla, y si el
-    // servidor falla se dice en el aviso sin devolverla a una lista de la que la persona la acaba
-    // de sacar. Al recargar manda el servidor.
-    return api.quitarCpc(texto).catch(() =>
-      Promise.reject(new Error('No se pudo quitar el término de la lista guardada.')),
-    )
   },
 
   async limpiarCpc() {
@@ -471,8 +584,8 @@ export const filtros = {
     const agregadas = (datos.claves || []).map((clave) => String(clave))
 
     for (const termino of agregadas) {
-      const clave = normalizarClave(termino)
-      if (!estado.cpc.some((guardado) => normalizarClave(guardado) === clave)) {
+      const clave = claveDeTermino(termino)
+      if (!estado.cpc.some((guardado) => claveDeTermino(guardado) === clave)) {
         estado.cpc.push(termino)
       }
     }
@@ -505,6 +618,21 @@ export const filtros = {
     const indice = estado.provincias.indexOf(codigo)
     if (indice === -1) estado.provincias.push(codigo)
     else estado.provincias.splice(indice, 1)
+    estado.canton = null
+  },
+
+  /**
+   * Deja la selección de provincias exactamente en la lista que se pasa.
+   *
+   * Es lo que necesitan las casillas del panel de filtros: marcar y desmarcar escribe una lista
+   * completa, no un cambio sobre la anterior. Se ordena aquí y no en el componente para que el orden
+   * de la selección no dependa de en qué orden se marcaron las casillas —y para que la clave del
+   * caché no tenga dos formas de la misma elección—. El cantón se descarta por el mismo motivo que
+   * en los demás caminos: un cantón de otra provincia no devolvería nada y no se vería por ningún
+   * lado.
+   */
+  fijarProvincias(codigos) {
+    estado.provincias = [...new Set(codigos)].sort()
     estado.canton = null
   },
 
@@ -589,6 +717,8 @@ export const filtros = {
   limpiarTodo() {
     estado.seleccionadas = []
     estado.cpc = []
+    estado.cpcSolo = false
+    estado.descripcion = []
     estado.provincias = []
     estado.canton = null
     estado.estadoRegistro = null
@@ -601,33 +731,4 @@ export const filtros = {
     Object.assign(aplicados, criteriosDe(estado))
     estado.pagina = 1
   },
-}
-
-/**
- * Convierte el código interno de una provincia en el nombre que espera la API.
- *
- * La API filtra por provincia comparando con la parte de antes del guion de `"PROVINCIA - CANTÓN"`,
- * así que lo que hay que enviar es el nombre en mayúsculas tal y como lo publica la fuente. El
- * servidor recorta y compara sin distinguir mayúsculas por su parte, de modo que una diferencia de
- * grafía no rompe la búsqueda; aun así se envía en mayúsculas porque es la forma del dato original y
- * hace que el filtro sea evidente al mirar la URL o los registros del servidor.
- */
-function nombreParaApi(codigo) {
-  return String(codigo).toUpperCase()
-}
-
-/**
- * Clave con la que se comparan dos términos para no repetir: sin mayúsculas ni acentos.
- *
- * Es la misma reducción que aplica el servidor (`normalizar_termino`): «LAVADO», «Lavado» y «lavado»
- * son el mismo filtro, porque la búsqueda los reduce al mismo término. Se hace también aquí para que
- * la ficha no se duplique en pantalla mientras el servidor responde, y para no depender de que la
- * respuesta llegue para saber si algo estaba repetido.
- */
-function normalizarClave(texto) {
-  return String(texto || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase()
 }

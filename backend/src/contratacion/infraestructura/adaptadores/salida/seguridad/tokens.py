@@ -16,8 +16,12 @@ Lo que este adaptador comprueba, y por qué cada cosa importa
   renovación para leer. Sin ello, robar uno de minutos daría acceso indefinido.
 - **La caducidad, el emisor y la audiencia se verifican.** La caducidad evita el uso diferido; el
   emisor y la audiencia evitan que un token de otro sistema con la misma clave sirva aquí.
-- **Los fallos no se detallan.** Cualquier problema devuelve el mismo mensaje: distinguir «firmado
-  mal» de «caducado» ayuda más a quien ataca que a quien depura.
+- **Los fallos no se detallan en el texto, pero sí en el tipo cuando importa.** Todo rechazo
+  devuelve el mismo mensaje, porque distinguirlos en pantalla ayuda más a quien ataca que a quien
+  depura. La excepción es la caducidad: `TokenCaducado` frente a `SinPermiso`. No se separa para
+  contarle algo distinto al usuario —lee lo mismo— sino para que el transporte devuelva 401 y el
+  panel sepa que ahí sí puede renovar y repetir la petición. Un token manipulado no se arregla
+  renovando, y tratarlo como una sesión caducada dejaría al usuario en un bucle de acceso.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from uuid import UUID
 import jwt
 
 from contratacion.aplicacion.puertos.seguridad import Claims, TipoToken
-from contratacion.dominio.errores import SinPermiso
+from contratacion.dominio.errores import SinPermiso, TokenCaducado
 
 registro = logging.getLogger(__name__)
 
@@ -97,6 +101,16 @@ class TokensJwt:
                 audience=self._audiencia,
                 options={"require": ["exp", "iat", "sub", "sid", "tip"]},
             )
+        except jwt.ExpiredSignatureError as exc:
+            # Primero la caducidad, y **antes** que `InvalidTokenError`: es su clase madre, así que
+            # en el otro orden este caso nunca se distinguiría.
+            #
+            # El mensaje es el mismo que el de un token manipulado —el usuario no tiene por qué
+            # saber qué es un token—, pero el tipo no: de aquí sale un 401 y el panel renueva sin
+            # molestar a nadie. Con un 403 no lo intentaba, porque un 403 significa «esto no se
+            # arregla volviendo a entrar» y ahí no hay nada que renovar.
+            registro.info("Token caducado")
+            raise TokenCaducado(MENSAJE_INVALIDO) from exc
         except jwt.InvalidTokenError as exc:
             registro.info("Token rechazado: %s", type(exc).__name__)
             raise SinPermiso(MENSAJE_INVALIDO) from exc

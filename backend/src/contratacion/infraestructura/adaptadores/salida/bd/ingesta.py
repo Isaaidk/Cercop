@@ -21,6 +21,12 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from contratacion.aplicacion.mapeo import MapeoCampo
+from contratacion.dominio.cpc import codigos_de, items_desde_crudos, texto_de_cpc
+from contratacion.dominio.plazos import instante_de_limite
+from contratacion.infraestructura.adaptadores.salida.bd.claves import (
+    clave_provincia,
+    clave_tipo_proceso,
+)
 
 ESTADO_OK = "ok"
 ESTADO_PARCIAL = "parcial"
@@ -487,12 +493,13 @@ class RepositorioIngesta:
                 text(
                     """
                     INSERT INTO registro (
-                        fuente_id, clave_natural, datos, crudo, texto_busqueda,
-                        hash_contenido, fecha_publicacion
+                        fuente_id, clave_natural, datos, crudo, texto_busqueda, hash_contenido,
+                        fecha_publicacion, provincia, tipo_proceso, plazo_proformas_en
                     )
                     VALUES (
                         :fuente, :clave, CAST(:datos AS jsonb), CAST(:crudo AS jsonb),
-                        :texto, :hash, CAST(:fecha AS timestamptz)
+                        :texto, :hash, CAST(:fecha AS timestamptz), :provincia, :tipo_proceso,
+                        CAST(:plazo AS timestamptz)
                     )
                     ON CONFLICT (fuente_id, clave_natural) DO UPDATE
                         SET datos = EXCLUDED.datos,
@@ -500,6 +507,9 @@ class RepositorioIngesta:
                             texto_busqueda = EXCLUDED.texto_busqueda,
                             hash_contenido = EXCLUDED.hash_contenido,
                             fecha_publicacion = EXCLUDED.fecha_publicacion,
+                            provincia = EXCLUDED.provincia,
+                            tipo_proceso = EXCLUDED.tipo_proceso,
+                            plazo_proformas_en = EXCLUDED.plazo_proformas_en,
                             ultima_vez_visto = now()
                     RETURNING id
                     """
@@ -512,6 +522,15 @@ class RepositorioIngesta:
                     "texto": texto_busqueda,
                     "hash": hash_contenido,
                     "fecha": fecha_publicacion,
+                    # Las claves de filtro se calculan aquí, al escribir, y no al consultar: son las
+                    # mismas que usa el filtro al leer la petición, porque salen de las mismas dos
+                    # funciones. El porqué, en `bd/claves.py`.
+                    "provincia": clave_provincia(datos.get("provincia")),
+                    "tipo_proceso": clave_tipo_proceso(datos.get("tipo_proceso")),
+                    # El plazo sale a columna por la misma razón que las claves de arriba: la purga
+                    # y el filtro «solo con plazo» necesitan un rango sobre un índice, no un `CAST`
+                    # del texto del JSON fila a fila.
+                    "plazo": instante_de_limite(datos.get("fecha_limite_proformas")),
                 },
             )
             return fila.scalar_one()
@@ -564,9 +583,15 @@ class RepositorioIngesta:
 
         La tanda se trocea en bloques, dentro de la **misma** transacción. No es por rendimiento
         —una sola sentencia de 1.700 filas va bien— sino porque PostgreSQL admite como mucho 65.535
-        parámetros por sentencia: con seis por fila, una fuente que devolviera veinte mil registros
+        parámetros por sentencia: con once por fila, una fuente que devolviera veinte mil registros
         reventaría con un error que no dice nada de la causa. El troceo deja el techo fuera de
         alcance sin cambiar el resultado, que sigue siendo todo o nada.
+
+        Los **ítems del producto** se escriben aquí, en la misma sentencia, cuando la fila los trae.
+        Van con una guarda que no es un detalle: una lista vacía **no borra** lo que ya hubiera. El
+        listado paginado de OCDS y la vigilancia del listado escriben las mismas filas sin desglose
+        —no lo publican—, y sin la guarda cada vuelta de esas borraría los ítems que la importación
+        mensual sí había guardado. Lo mismo con `cpc_busqueda`, `cpc_codigos` y la marca de leído.
         """
         if not filas:
             return {}
@@ -586,12 +611,38 @@ class RepositorioIngesta:
                     parametros[f"texto_{indice}"] = fila["texto"]
                     parametros[f"hash_{indice}"] = fila["hash"]
                     parametros[f"fecha_{indice}"] = fila["fecha"]
+                    # Las claves de filtro se calculan aquí, al escribir, y no al consultar. Son las
+                    # mismas que usa el filtro al leer la petición porque salen de las mismas dos
+                    # funciones (`bd/claves.py`), y eso es lo que permite que la consulta sea una
+                    # igualdad contra una columna en lugar de una expresión sobre el `jsonb`.
+                    parametros[f"provincia_{indice}"] = clave_provincia(
+                        fila["datos"].get("provincia")
+                    )
+                    parametros[f"tipo_{indice}"] = clave_tipo_proceso(
+                        fila["datos"].get("tipo_proceso")
+                    )
+                    parametros[f"plazo_{indice}"] = instante_de_limite(
+                        fila["datos"].get("fecha_limite_proformas")
+                    )
+                    parametros[f"items_{indice}"] = json.dumps(
+                        list(fila.get("items") or []), ensure_ascii=False, default=str
+                    )
+                    # El texto de búsqueda del CPC y sus códigos salen de los **mismos** ítems que
+                    # se guardan, y se calculan con las funciones del dominio que ya usa la lectura
+                    # de fichas: es lo que hace que el buscador por clasificación encuentre una
+                    # oferta exactamente igual que encuentra una ínfima.
+                    items = items_desde_crudos(fila.get("items") or ())
+                    parametros[f"cpc_{indice}"] = texto_de_cpc(items)
+                    parametros[f"codigos_{indice}"] = list(codigos_de(items))
                 # Los parámetros se nombran por posición (`:clave_0`, `:clave_1`…) porque cuántas
                 # filas trae una tanda lo decide la fuente en cada ciclo, y `text()` no admite un
                 # número variable de parámetros.
                 valores = ", ".join(
                     f"(:fuente, :clave_{i}, CAST(:datos_{i} AS jsonb), CAST(:crudo_{i} AS jsonb), "
-                    f":texto_{i}, :hash_{i}, CAST(:fecha_{i} AS timestamptz))"
+                    f":texto_{i}, :hash_{i}, CAST(:fecha_{i} AS timestamptz), "
+                    f":provincia_{i}, :tipo_{i}, CAST(:plazo_{i} AS timestamptz), "
+                    f"CAST(:items_{i} AS jsonb), :cpc_{i}, CAST(:codigos_{i} AS text[]), "
+                    f"CASE WHEN jsonb_array_length(CAST(:items_{i} AS jsonb)) > 0 THEN now() END)"
                     for i in range(len(tanda))
                 )
                 filas_escritas = await conexion.execute(
@@ -599,7 +650,9 @@ class RepositorioIngesta:
                         f"""
                         INSERT INTO registro (
                             fuente_id, clave_natural, datos, crudo, texto_busqueda,
-                            hash_contenido, fecha_publicacion
+                            hash_contenido, fecha_publicacion, provincia, tipo_proceso,
+                            plazo_proformas_en, items, cpc_busqueda, cpc_codigos,
+                            items_recogidos_en
                         )
                         VALUES {valores}
                         ON CONFLICT (fuente_id, clave_natural) DO UPDATE
@@ -608,6 +661,26 @@ class RepositorioIngesta:
                                 texto_busqueda = EXCLUDED.texto_busqueda,
                                 hash_contenido = EXCLUDED.hash_contenido,
                                 fecha_publicacion = EXCLUDED.fecha_publicacion,
+                                provincia = EXCLUDED.provincia,
+                                tipo_proceso = EXCLUDED.tipo_proceso,
+                                plazo_proformas_en = EXCLUDED.plazo_proformas_en,
+                                items = CASE
+                                    WHEN jsonb_array_length(EXCLUDED.items) > 0
+                                    THEN EXCLUDED.items
+                                    ELSE registro.items
+                                END,
+                                cpc_busqueda = CASE
+                                    WHEN EXCLUDED.cpc_busqueda <> '' THEN EXCLUDED.cpc_busqueda
+                                    ELSE registro.cpc_busqueda
+                                END,
+                                cpc_codigos = CASE
+                                    WHEN coalesce(array_length(EXCLUDED.cpc_codigos, 1), 0) > 0
+                                    THEN EXCLUDED.cpc_codigos
+                                    ELSE registro.cpc_codigos
+                                END,
+                                items_recogidos_en = coalesce(
+                                    EXCLUDED.items_recogidos_en, registro.items_recogidos_en
+                                ),
                                 es_vigente = true,
                                 ultima_vez_visto = now()
                         RETURNING clave_natural, id

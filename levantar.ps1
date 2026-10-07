@@ -79,6 +79,27 @@ function PuertoEnUso([int] $Puerto) {
     return [bool](Get-NetTCPConnection -LocalPort $Puerto -State Listen -ErrorAction SilentlyContinue)
 }
 
+# Identificador del proceso que escucha en un puerto, para poder apuntarlo en la ficha cuando el
+# servicio ya estaba arrancado. Sin esto, un API anterior no entra en `servicios.json`, `-Detener`
+# no lo ve y quedan dos APIs escuchando contra la misma base.
+function Dueno-Del-Puerto([int] $Puerto) {
+    $conexion = Get-NetTCPConnection -LocalPort $Puerto -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($conexion) { return [int] $conexion.OwningProcess }
+    return 0
+}
+
+# Procesos cuya línea de comandos contiene un fragmento. Los tres servicios son el mismo
+# `python.exe`, así que lo único que los distingue es lo que se les pidió ejecutar: la línea de
+# comandos es también lo único que permite encontrar un worker al que la ficha ya no apunta.
+function Procesos-PorLinea([string] $Fragmento) {
+    return @(
+        Get-CimInstance Win32_Process -Filter "Name like '%python%'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($Fragmento) } |
+            Select-Object -ExpandProperty ProcessId
+    )
+}
+
 # --- Detener ---------------------------------------------------------------- #
 # Se mata el árbol de procesos (`/T`) y no solo el proceso padre: uvicorn con `--reload` y el panel
 # se lanzan a través de un proceso intermedio, y matar solo al padre deja al hijo escuchando. El
@@ -110,6 +131,26 @@ function Detener-Servicios {
         & taskkill.exe /PID $identificador /T /F *> $null
         $sigue = Get-Process -Id $identificador -ErrorAction SilentlyContinue
         if ($sigue) { Mal "$($propiedad.Name): no se pudo detener" } else { Bien "$($propiedad.Name) detenido" }
+    }
+
+    # Barrido de restos. La ficha solo recuerda lo que apuntó el **último** arranque: un worker de un
+    # arranque anterior no está en ella, así que seguiría vivo —con su conjunto de conexiones contra
+    # la base— y no habría forma de detenerlo con este script. Se busca por línea de comandos, que es
+    # lo único que distingue a un worker de otro.
+    #
+    # Esto no es una precaución teórica: el 2026-10-06 había tres workers de tres arranques, cada uno
+    # con sus conexiones, y el agrupador de Supabase —quince clientes— se quedó sin ninguna libre. El
+    # API no era la víctima: era quien respondía 500 a todo.
+    foreach ($fragmento in @('contratacion.tareas.worker', 'uvicorn contratacion.asgi:app')) {
+        foreach ($identificador in Procesos-PorLinea $fragmento) {
+            if (-not (Get-Process -Id $identificador -ErrorAction SilentlyContinue)) { continue }
+            & taskkill.exe /PID $identificador /T /F *> $null
+            if (Get-Process -Id $identificador -ErrorAction SilentlyContinue) {
+                Mal "$fragmento (pid $identificador): no se pudo detener"
+            } else {
+                Bien "$fragmento (pid $identificador) detenido (no estaba apuntado en la ficha)"
+            }
+        }
     }
 
     Remove-Item $Ficha -Force -ErrorAction SilentlyContinue
@@ -260,7 +301,9 @@ $arrancados = [ordered]@{}
 # 1 · API. Se arranca con recarga y con `--reload-dir src` a propósito: sin acotar el directorio,
 # vigila también `pruebas/` y `scripts/`, y cada `pytest` reinicia el servidor.
 if (PuertoEnUso $PuertoApi) {
-    Aviso "El puerto $PuertoApi ya está escuchando: no se arranca otra API."
+    $duenioApi = Dueno-Del-Puerto $PuertoApi
+    if ($duenioApi -gt 0) { $arrancados['api'] = $duenioApi }
+    Aviso "El puerto $PuertoApi ya está escuchando (pid $duenioApi): no se arranca otra API."
 } else {
     $arrancados['api'] = Iniciar-Servicio -Nombre 'api' -Archivo $Python `
         -Argumentos @('-m', 'uvicorn', 'contratacion.asgi:app', '--host', '127.0.0.1',
@@ -270,13 +313,26 @@ if (PuertoEnUso $PuertoApi) {
 }
 
 # 2 · Worker. Es el que trae los datos; sin él el panel muestra lo último que hubiera en la base.
-$arrancados['worker'] = Iniciar-Servicio -Nombre 'worker' -Archivo $Python `
-    -Argumentos @('-m', 'contratacion.tareas.worker') -Directorio $Backend
-Bien "Worker de ingesta lanzado (pid $($arrancados['worker']))"
+#
+# Solo puede haber **uno**. Cada worker abre su propio conjunto de conexiones contra la base, y la
+# base remota admite quince clientes en total: arrancar un segundo por descuido no da «más ingesta»,
+# da un worker que falla en cada ciclo y un API que responde 500 porque no le quedan conexiones. Y
+# como la ficha solo apunta lo que arranca el último arranque, el worker repetido se quedaba para
+# siempre.
+$workersVivos = Procesos-PorLinea 'contratacion.tareas.worker'
+if ($workersVivos.Count -gt 0) {
+    Aviso "Ya hay un worker de ingesta en marcha (pid $($workersVivos -join ', ')): no se arranca otro."
+} else {
+    $arrancados['worker'] = Iniciar-Servicio -Nombre 'worker' -Archivo $Python `
+        -Argumentos @('-m', 'contratacion.tareas.worker') -Directorio $Backend
+    Bien "Worker de ingesta lanzado (pid $($arrancados['worker']))"
+}
 
 # 3 · Panel. Se arranca a través de `cmd` porque npm es un `.cmd` y `Start-Process` no lo resolvería.
 if (PuertoEnUso $PuertoPanel) {
-    Aviso "El puerto $PuertoPanel ya está escuchando: no se arranca otro panel."
+    $duenioPanel = Dueno-Del-Puerto $PuertoPanel
+    if ($duenioPanel -gt 0) { $arrancados['panel'] = $duenioPanel }
+    Aviso "El puerto $PuertoPanel ya está escuchando (pid $duenioPanel): no se arranca otro panel."
 } else {
     $arrancados['panel'] = Iniciar-Servicio -Nombre 'panel' -Archivo "$env:ComSpec" `
         -Argumentos @('/c', 'npm run dev') -Directorio $Frontend

@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 from contratacion.aplicacion.casos_uso.presencia import (
     cerrar_por_ventana,
     cuadro_serializado,
+    exigir_ver_el_cuadro,
     latir,
 )
 from contratacion.dominio.presencia import SEGUNDOS_ENTRE_INSTANTANEAS, EstadoPresencia
@@ -142,7 +143,12 @@ async def consultar_presencia(
     presencia: PresenciaDep,
     negocio: Annotated[
         UUID | None,
-        Query(description="Solo para un administrador: negocio sobre el que se consulta."),
+        Query(
+            description=(
+                "Negocio sobre el que se consulta. Solo el superadministrador de la plataforma "
+                "puede pedir uno distinto del suyo."
+            )
+        ),
     ] = None,
 ) -> dict[str, Any]:
     """Cuadro completo, con el color y el motivo de cada persona.
@@ -150,7 +156,11 @@ async def consultar_presencia(
     Es el mismo cálculo que alimenta la relectura periódica del flujo. Tener un solo camino —y no
     uno distinto para la carga inicial— evita que las dos formas de obtener el mismo dato se
     separen con el tiempo y acaben dando respuestas distintas.
+
+    Lo ve el dueño de la plataforma y nadie más: no es un dato de contratación, es información
+    sobre las personas y sobre cuánta gente está trabajando ahora mismo.
     """
+    exigir_ver_el_cuadro(actor)
     return cuerpo_json(
         await cuadro_serializado(
             actor,
@@ -199,7 +209,12 @@ async def eventos(
     La instantánea periódica hace además de latido del propio enlace. Sin ningún mensaje durante un
     rato, nginx y Cloudflare cortan la conexión por inactividad y el panel se queda congelado sin
     que nadie se entere; con ella, siempre hay tráfico y no hace falta un latido aparte.
+
+    El permiso se comprueba aquí, antes de devolver la respuesta. Comprobarlo solo dentro del
+    generador daría un 200 con el flujo abierto y un error dentro, y el navegador no tendría forma
+    de distinguir esa respuesta de una correcta que terminó.
     """
+    exigir_ver_el_cuadro(actor)
 
     async def transmitir() -> AsyncIterator[str]:
         cache = obtener_cache()

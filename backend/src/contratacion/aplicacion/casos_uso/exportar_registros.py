@@ -49,6 +49,7 @@ from contratacion.dominio.busqueda import (
 )
 from contratacion.dominio.cpc import items_desde_crudos, resumen_cpc
 from contratacion.dominio.errores import DatoInvalido
+from contratacion.dominio.exportacion import revisar_ventana
 from contratacion.dominio.palabras import normalizar
 from contratacion.dominio.plazos import (
     NIVEL_AMARILLO,
@@ -315,12 +316,21 @@ async def exportar(
     `columnas` es la selección guardada por la empresa, ya validada. `None` o vacía significa
     «todas», que es como se ha exportado siempre; quien llama es quien decide qué hacer si la fila
     de la selección no se puede leer, y por eso se recibe hecha y no se consulta aquí.
+
+    La **ventana** de la descarga se comprueba antes de consultar nada: cubre como mucho los últimos
+    tres meses y una petición que se remonte más atrás se rechaza con el motivo (ver
+    `dominio/exportacion.py`). Es la única operación del sistema que lee el histórico entero sin
+    paginar, y con 110.000 registros eso son minutos de base ocupada por un archivo que casi nunca
+    se necesita completo.
     """
     instante = momento or datetime.now(UTC)
     # Se valida también aquí, y no solo en la búsqueda: la exportación es el camino por el que los
     # datos salen de la plataforma, y el único que no pasa por `buscar`. Dos criterios que se
     # contradicen tienen que dar una explicación, no un archivo vacío.
     filtros = filtros.validado()
+    # El rechazo va **antes** de tocar la base: sin esto, una petición fuera de ventana seguiría
+    # lanzando la consulta cara y solo después se quejaría.
+    revisar_ventana(filtros.desde, momento=instante)
     filas = await repositorio.todos(filtros, limite + 1)
 
     if len(filas) > limite:

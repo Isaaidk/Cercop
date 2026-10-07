@@ -12,12 +12,14 @@ desde la API, desde el worker o desde una tarea programada.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from contratacion.aplicacion.casos_uso.administrar_negocios import (
+    eliminar_cuenta_de_empresa,
+    eliminar_empresa,
     listar_empresas,
     reactivar_empresa,
     suspender_empresa,
@@ -28,8 +30,10 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
     AuditoriaDep,
     CacheDep,
+    CierreSesionesDep,
     ConsultasDep,
     NegociosDep,
+    UsuariosDep,
 )
 
 router = APIRouter(prefix="/v1/plataforma", tags=["Plataforma"])
@@ -99,7 +103,6 @@ async def ordenar_ciclo(
     return cuerpo_json({"solicitud": peticion.como_diccionario()})
 
 
-
 @router.post(
     "/empresas/{negocio_id}/suspension",
     status_code=status.HTTP_201_CREATED,
@@ -142,5 +145,85 @@ async def reactivar(
         negocio_id=negocio_id,
         repositorio=negocios,
         auditoria=auditoria,
+    )
+    return cuerpo_json(resultado.como_diccionario())
+
+
+@router.delete("/empresas/{negocio_id}", summary="Eliminar una empresa y sus cuentas")
+async def eliminar(
+    negocio_id: UUID,
+    actor: ActorDep,
+    confirmacion: Annotated[
+        str,
+        Query(
+            min_length=3,
+            description=(
+                "Nombre de la empresa, escrito a mano. Es la única forma de que un borrado "
+                "irreversible no ocurra por un clic de más."
+            ),
+        ),
+    ],
+    negocios: NegociosDep,
+    usuarios: UsuariosDep,
+    sesiones: CierreSesionesDep,
+    auditoria: AuditoriaDep,
+) -> dict[str, Any]:
+    """Retira la empresa con sus cuentas, sus accesos y su plantilla. **No se deshace.**
+
+    Va como `DELETE` y no como un `POST` con la palabra «borrar» dentro por la misma razón por la
+    que el nombre se pide en la dirección y no en el cuerpo: aquí no hay un recurso que se crea. Lo
+    que ocurre es que deja de existir, y eso no se parece a nada más de este enrutador.
+
+    Lo que **no** se lleva: el histórico de contratación —es de la plataforma, no de la empresa,
+    y borrar un cliente no puede restar datos a los demás— ni la auditoría, que sobrevive para
+    poder decir quién lo hizo. Y no se puede pedir sobre la empresa propia: quien lo hace se queda
+    fuera del sistema sin forma de volver.
+    """
+    resultado = await eliminar_empresa(
+        actor,
+        negocio_id=negocio_id,
+        repositorio=negocios,
+        usuarios=usuarios,
+        sesiones=sesiones,
+        auditoria=auditoria,
+        confirmacion=confirmacion,
+    )
+    return cuerpo_json(resultado.como_diccionario())
+
+
+@router.delete(
+    "/empresas/{negocio_id}/usuarios/{usuario_id}",
+    summary="Eliminar una cuenta de una empresa",
+)
+async def eliminar_usuario(
+    negocio_id: UUID,
+    usuario_id: UUID,
+    actor: ActorDep,
+    confirmacion: Annotated[
+        str,
+        Query(
+            min_length=3,
+            description="Correo de la cuenta, escrito a mano.",
+        ),
+    ],
+    usuarios: UsuariosDep,
+    sesiones: CierreSesionesDep,
+    auditoria: AuditoriaDep,
+) -> dict[str, Any]:
+    """Retira una cuenta concreta de cualquier empresa. **No se deshace.**
+
+    Es el mismo borrado que puede hacer un administrador con su propia gente, ejercido desde la
+    plataforma sobre una empresa ajena. Se conserva la regla de que una empresa no puede quedarse
+    sin administradores: sin ninguno no podría volver a gestionar sus cuentas desde dentro, y para
+    retirarla entera está el borrado de la empresa.
+    """
+    resultado = await eliminar_cuenta_de_empresa(
+        actor,
+        negocio_id=negocio_id,
+        usuario_id=usuario_id,
+        usuarios=usuarios,
+        sesiones=sesiones,
+        auditoria=auditoria,
+        confirmacion=confirmacion,
     )
     return cuerpo_json(resultado.como_diccionario())

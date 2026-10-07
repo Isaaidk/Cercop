@@ -19,7 +19,31 @@ por eso el frontend tiene un único módulo para esto y aquí hay otro.
 
 from __future__ import annotations
 
+import calendar
+import re
 from datetime import UTC, datetime
+
+
+def sumar_meses(momento: datetime, meses: int) -> datetime:
+    """Suma meses de **calendario**, ajustando el día al último del mes de destino.
+
+    Admite meses negativos, y esa mitad es la que se usa para saber desde cuándo se puede exportar:
+    «tres meses atrás» es la misma cuenta al revés. `sumar_meses(momento, -3)`.
+
+    El ajuste del día no es un detalle: sin él, tres meses desde el 31 de enero acabarían en marzo
+    en lugar de terminar el 30 de abril, y «tres meses atrás» desde el 31 de mayo pediría un 31 de
+    febrero que no existe. Se recorta al último día del mes cuando el día no cabe.
+
+    Vive aquí, y no en cada sitio que la necesita, porque la usan los plazos de las vistas y la
+    ventana de la exportación: dos copias de una cuenta de fechas se separan el día que alguien
+    arregle una y no la otra, y el síntoma sería un límite que no coincide con lo que se enseña.
+    """
+    indice = momento.month - 1 + meses
+    anio = momento.year + indice // 12
+    mes = indice % 12 + 1
+    dia = min(momento.day, calendar.monthrange(anio, mes)[1])
+    return momento.replace(year=anio, month=mes, day=dia)
+
 
 # Umbrales, en días. Se comparan con `>=`, así que 7 es verde y 3 es amarillo.
 DIAS_VERDE = 7
@@ -78,6 +102,32 @@ def texto_de_plazo(dias: int | None) -> str:
     if dias == 0:
         return "Vence hoy"
     return f"{dias} {'día' if dias == 1 else 'días'}"
+
+
+# Los primeros diez caracteres de una fecha ISO (`2026-09-30`). El mismo patrón está **literal**
+# en el SQL de la migración `0021` y en el de la purga: la guarda existe porque el valor vive como
+# texto dentro del JSON y una fuente que cambie de formato dejaría cualquier cosa, y el `CAST`
+# reventaría la consulta entera en lugar de descartar esa fila.
+PATRON_FECHA_ISO = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}"
+
+
+def instante_de_limite(valor: str | datetime | None) -> datetime | None:
+    """La fecha límite de proformas como instante, o `None` si el dato no sirve.
+
+    Es lo que se guarda en `registro.plazo_proformas_en`. Esa columna es la que decide dos cosas que
+    antes se resolvían mirando el texto del JSON en cada consulta: qué ínfimas ya vencieron —el
+    filtro «solo con plazo»— y cuáles llevan vencidas lo suficiente para retirarlas.
+
+    La guarda del patrón no es adorno: sin ella un texto cualquiera que no fuera una fecha se
+    guardaría en una columna `timestamptz` de la que dependen un borrado y un filtro. Un registro
+    con la fecha ilegible tiene que salir **sin** plazo, no romper la escritura de la tanda entera.
+    """
+    if valor is None:
+        return None
+    texto = valor.isoformat() if isinstance(valor, datetime) else str(valor).strip()
+    if not re.match(PATRON_FECHA_ISO, texto):
+        return None
+    return _a_fecha(valor)
 
 
 def _a_fecha(valor: str | datetime | None) -> datetime | None:

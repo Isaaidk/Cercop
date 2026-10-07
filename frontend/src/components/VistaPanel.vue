@@ -148,7 +148,7 @@ const PESTANAS = computed(() => {
   if (!sesion.esAdministrativo.value) {
     // El dueño del sistema ve además el censo de empresas, que es la única pantalla que mira a
     // todas a la vez. Un administrador de negocio no la ve porque no hay nada suyo ahí.
-    return sesion.estado.rol === 'super_admin' ? [...PESTANAS_BASE, deEmpresas] : PESTANAS_BASE
+    return sesion.esDePlataforma.value ? [...PESTANAS_BASE, deEmpresas] : PESTANAS_BASE
   }
   return [
     PESTANAS_BASE[0],
@@ -393,6 +393,7 @@ const ultimaActualizacion = computed(() =>
       :nombre="sesion.estado.nombre"
       :email="sesion.estado.email"
       :admin="sesion.esAdministrativo.value"
+      :presencia="sesion.esDePlataforma.value"
       :conectados="presencia.conectados.value"
       :total="presencia.total.value"
       :personas="presencia.personas.value"
@@ -584,8 +585,8 @@ const ultimaActualizacion = computed(() =>
                 <div>
                   <p class="tarjeta__titulo">Mapa de provincias</p>
                   <p class="tarjeta__pista">
-                    Pulsa una provincia para ver solo sus contrataciones, o haz doble clic en varias
-                    para compararlas. Aplica los filtros para que la tabla y las gráficas las sigan.
+                    Pulsa una provincia para sumarla al filtro y vuelve a pulsarla para quitarla.
+                    Aplica los filtros para que la tabla y las gráficas la sigan.
                   </p>
                 </div>
               </header>
@@ -616,7 +617,14 @@ const ultimaActualizacion = computed(() =>
           </TablaRegistros>
         </section>
 
-        <section v-show="pestana === 'empresas'">
+        <!--
+          El panel de empresas se pide solo al dueño de la plataforma, y se pide de verdad (`v-if`, no
+          solo `v-show`): la pestaña no existe para los demás, así que con `v-show` el componente se
+          montaba igual y disparaba en cada carga un petición que el servidor rechazaba con 403. El
+          error no se veía —va dentro de una sección oculta—, pero era una petición inútil y un fallo
+          en el registro del navegador que parecía un defecto del panel.
+        -->
+        <section v-if="sesion.esDePlataforma.value" v-show="pestana === 'empresas'">
           <PanelEmpresas />
         </section>
 
@@ -687,8 +695,8 @@ const ultimaActualizacion = computed(() =>
 
 .panel__cuerpo {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: var(--e-5);
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: var(--e-4);
   align-items: start;
   padding: var(--e-5);
   max-width: 1600px;
@@ -696,12 +704,28 @@ const ultimaActualizacion = computed(() =>
   width: 100%;
 }
 
+/*
+ * La columna de filtros. Tres decisiones que se ven juntas:
+ *
+ * - **340 px y no 300.** Los tres campos de texto —palabras clave, CPC y descripción— llevan su
+ *   explicación al lado, y en 300 px cada ayuda ocupaba cinco líneas y el botón de aplicar quedaba a
+ *   dos pantallas de la fecha que se acababa de escribir. Con 40 px más, la mitad de las ayudas
+ *   caben en una línea menos.
+ * - **Relleno de un paso menos.** `--e-5` (24 px) por cada lado se comía 48 de los 300: el contenido
+ *   real eran 252 px. Con `--e-4` y la columna más ancha, el texto dispone de 308.
+ * - **`overflow-x: hidden`, y no es cosmético.** Con `overflow-y: auto` el navegador convierte el otro
+ *   eje en `auto` por su cuenta, así que **cualquier** contenido un píxel más ancho que la columna
+ *   hacía aparecer una barra horizontal. Pasaba con los dos botones de alta del CPC, que no cabían.
+ *   Se arregla en su sitio —que envuelvan—, y esto lo deja cerrado para el siguiente control ancho
+ *   que se añada: lo que no quepa se recorta en el borde, en lugar de arrastrar la columna.
+ */
 .panel__lateral {
   position: sticky;
   top: calc(var(--altura-cabecera) + var(--e-4));
-  padding: var(--e-5);
+  padding: var(--e-4);
   max-height: calc(100vh - var(--altura-cabecera) - var(--e-6));
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .panel__lateral-cabecera {

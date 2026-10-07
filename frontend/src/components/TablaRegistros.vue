@@ -18,6 +18,13 @@ import { itemsDe, resumenCpc } from '@/utils/cpc'
 import { diasParaProforma, nivelDePlazo, textoDePlazo } from '@/utils/plazo'
 import { separarProvincia, codigoDeProvincia } from '@/utils/provincias'
 import { guardarArchivo } from '@/utils/descargas'
+import { diaDeHoy } from '@/utils/fecha'
+import {
+  MESES_EXPORTABLES,
+  descargaEnVentana,
+  inicioExportable,
+  limiteLegible,
+} from '@/utils/exportacion'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
@@ -149,6 +156,41 @@ async function exportar(opcion) {
   } finally {
     exportando.value = null
   }
+}
+
+/**
+ * La fecha inicial **en vigor**, que es la que viaja en la descarga.
+ *
+ * Se lee de los parámetros y no del borrador a propósito: la descarga usa los criterios aplicados,
+ * así que mirar el borrador diría que la descarga cabe cuando todavía no se ha pulsado «Aplicar».
+ */
+const desdeAplicado = computed(() => filtros.parametros.value.desde || '')
+
+/**
+ * ¿La descarga se sale de la ventana de tres meses?
+ *
+ * El servidor lo comprueba igual y rechaza la petición con el motivo; aquí se evita ofrecer un botón
+ * condenado a un rechazo, que es lo que se lee como que el panel está roto.
+ */
+const descargaFueraDeVentana = computed(() => !descargaEnVentana(desdeAplicado.value))
+
+const limiteDeLaVentana = computed(() => limiteLegible(inicioExportable()))
+
+/**
+ * Pone el periodo descargable y descarga, en un solo gesto.
+ *
+ * Es la excepción deliberada a la regla de que la descarga lleva **exactamente** los filtros de la
+ * pantalla: aquí el botón no se limita a descargar, también fija el rango. Y se fija en los dos
+ * sentidos —desde el límite hasta hoy— porque dejar el `hasta` anterior podría dejarlo por debajo
+ * del nuevo `desde`, y entonces la petición se rechazaría por dos fechas que se contradicen.
+ *
+ * Después de aplicar, la tabla muestra el mismo periodo que el archivo: la descarga sigue siendo
+ * fiel a la vista, que es la propiedad que no se puede perder.
+ */
+async function descargarElPeriodoExportable() {
+  filtros.actualizar({ desde: inicioExportable(), hasta: diaDeHoy() })
+  filtros.aplicar()
+  await exportar(OPCIONES_EXPORTACION.value[0])
 }
 
 /**
@@ -294,7 +336,20 @@ function filtrarPorProvincia(valorCrudo) {
              directos de la barra de acciones, que es la que reparte el espacio. Con `v-for` y `v-if`
              en el mismo botón, Vue evalúa antes el `v-if` y avisa de que la variable del recorrido
              todavía no existe. -->
-        <template v-if="puedeExportar">
+        <template v-if="puedeExportar && descargaFueraDeVentana">
+          <button
+            type="button"
+            class="boton boton--principal boton--pequeno"
+            :disabled="Boolean(exportando) || !hayResultados"
+            :title="`Pone el periodo del ${limiteDeLaVentana} a hoy y descarga lo que cumpla los demás filtros`"
+            @click="descargarElPeriodoExportable"
+          >
+            <span v-if="exportando" class="girador" aria-hidden="true" />
+            {{ exportando ? 'Generando…' : `Descargar los últimos ${MESES_EXPORTABLES} meses` }}
+          </button>
+        </template>
+
+        <template v-else-if="puedeExportar">
           <button
             v-for="opcion in OPCIONES_EXPORTACION"
             :key="opcion.clave"
@@ -313,6 +368,18 @@ function filtrarPorProvincia(valorCrudo) {
         </template>
       </div>
     </header>
+
+    <!--
+      Por qué la descarga no lleva el histórico entero, dicho donde se pulsa y no solo cuando
+      falla: es una limitación del sistema y el usuario merece saberla antes de intentarlo. La
+      consulta en pantalla no tiene ese tope —se pagina— así que se dice también eso.
+    -->
+    <p v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="tabla__pista-descarga">
+      La descarga a Excel cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar
+      el servidor con el histórico entero. El botón pone ese periodo en los filtros y lo descarga;
+      para el histórico anterior, acota por palabra clave, CPC o provincia, o consúltalo aquí, que
+      la tabla sí llega a todo.
+    </p>
 
     <p v-if="errorExportacion" class="tabla__error" role="alert">{{ errorExportacion }}</p>
     <p v-else-if="avisoExportacion" class="tabla__exportacion" role="status">
@@ -556,6 +623,19 @@ function filtrarPorProvincia(valorCrudo) {
   background: var(--ok-suave);
   color: var(--ok);
   font-size: var(--t-xs);
+}
+
+/*
+ * La pista de la ventana de descarga: informa de un límite, no de un error, así que va en tono
+ * neutro y no en el color de aviso. Con el color del error parecería que algo ha fallado.
+ */
+.tabla__pista-descarga {
+  padding: var(--e-2) var(--e-3);
+  border-radius: var(--r-1);
+  background: var(--superficie-2);
+  color: var(--texto-tenue);
+  font-size: var(--t-xs);
+  line-height: 1.5;
 }
 
 /*

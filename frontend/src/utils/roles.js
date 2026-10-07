@@ -21,6 +21,22 @@ export function esAdministrativo(rol) {
 }
 
 /**
+ * ¿Este rol es el dueño del sistema?
+ *
+ * Espeja `es_de_plataforma` de `dominio/roles.py`. Es **menos** que `esAdministrativo`, y la
+diferencia importa: un administrador de empresa gestiona su propia gente, y el dueño de la
+plataforma administra empresas ajenas, ve quién está conectado y puede eliminarlas. Si se usara
+`esAdministrativo` para decidir esto, cualquier cliente vería la presencia de sus usuarios —y el
+botón de borrar su empresa—, que es justo lo que no debe pasar.
+ *
+ * Solo decide qué se **enseña**. Quien manda es el servidor, que comprueba lo mismo en cada caso de
+ * uso: negar aquí un botón no es proteger nada, es no ofrecer algo que va a ser rechazado.
+ */
+export function esDePlataforma(rol) {
+  return rol === 'super_admin'
+}
+
+/**
  * ¿Puede este rol descargar el histórico?
  *
  * Espeja `ROLES_EXPORTADORES` del servidor, y sirve solo para no ofrecer un botón que va a ser
