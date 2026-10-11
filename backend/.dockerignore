@@ -5,11 +5,17 @@
 # virtual y 1,3 MB de pruebas que la imagen no usa para nada. Sin este archivo, cada despliegue
 # transfiere esas trescientas megas antes de empezar a compilar.
 #
-# El `Dockerfile` copia rutas concretas (`pyproject.toml`, `src`, `alembic`, `alembic.ini`), así que
-# nada de lo que hay aquí iba a acabar dentro de la imagen. Pero eso es una propiedad del
-# `Dockerfile` de hoy: el día que alguien añada un `COPY . .` —una forma cómoda y frecuente de
-# añadir una carpeta nueva— lo que hoy solo sería lento pasaría a ser **un entorno virtual y un
-# fichero `.env` dentro de una imagen**, y eso ya no es lentitud.
+# El `Dockerfile` copia rutas concretas (`pyproject.toml`, `src`, `alembic`, `alembic.ini`,
+# `scripts`, `start.sh`), así que nada de lo que hay aquí iba a acabar dentro de la imagen. Pero eso
+# es una propiedad del `Dockerfile` de hoy: el día que alguien añada un `COPY . .` —una forma cómoda
+# y frecuente de añadir una carpeta nueva— lo que hoy solo sería lento pasaría a ser **un entorno
+# virtual y un fichero `.env` dentro de una imagen**, y eso ya no es lentitud.
+#
+# Aviso: **esta lista tiene que ser coherente con los `COPY` del `Dockerfile`**. Si se excluye aquí
+# algo que el `Dockerfile` copia, la construcción no compila: BuildKit falla al calcular la clave de
+# caché con `"/ruta": not found` **antes** de empezar, sin que el mensaje señale el `COPY`. Pasó con
+# `scripts/`, que se excluía mientras el `Dockerfile` lo copiaba para poder ejecutar las
+# herramientas de operación desde la consola del contenedor.
 #
 # Por eso se excluye también el `.env`: un fichero de secretos que entra en una capa de una imagen
 # es un secreto que sobrevive a borrar el fichero.
@@ -31,8 +37,11 @@ mypy.ini
 
 # --- Lo que no forma parte del artefacto ------------------------------------
 pruebas/
-scripts/
 docs/
+
+# `scripts/` **no** se excluye: el `Dockerfile` lo copia a propósito para poder ejecutar las
+# herramientas de operación (crear el superadministrador, medir la base, verificar el despliegue)
+# desde la consola del propio contenedor, donde la base se llama por su nombre interno.
 
 # --- Secretos y entorno local -----------------------------------------------
 .env
