@@ -128,7 +128,11 @@ class FuenteNco:
         """
         token = token_de_enlace(enlace)
         if not token:
-            return ()
+            # `None` y no la tupla vacía: sin token no se pudo leer la ficha, no es «leída y sin
+            # detalle». Devolver `()` marcaría el registro como leído sin ítems y esa necesidad no
+            # volvería a pedirse nunca —y el enlace rota en cada listado, así que el que hoy no
+            # trae token puede traerlo en la vuelta siguiente—. Es el contrato del puerto.
+            return None
         if not presupuesto.consumir():
             return None
 

@@ -144,17 +144,37 @@ class LimitadorTasa:
                     )
                     await asyncio.sleep(espera)
                 except Exception as exc:  # noqa: BLE001 - un fallo de red no debe tumbar la ingesta
-                    # Con el tipo además del texto: hay fallos de red que llegan con el mensaje
-                    # vacío —`ReadError`, `ConnectTimeout` sin detalle— y un renglón que solo dice
-                    # «Error consultando la fuente (NCO listado): » no dice nada. Se vio en
-                    # operación, en una vuelta de vigilancia que quedó en «parcial · 0 iguales».
-                    registro.error(
-                        "Error consultando la fuente (%s): %s: %s",
-                        etiqueta,
+                    # Un fallo de red **se reintenta**, igual que un 429 o un 5xx: es lo que dice el
+                    # control de tasa de arriba y lo que espera quien lo lee. Antes se devolvía
+                    # `None` al primer intento, así que el presupuesto de reintentos solo servía
+                    # para las respuestas con un código reintentable y una conexión que se caía
+                    # —lo normal cuando la salida va por un túnel— gastaba el turno de una ficha
+                    # entera. La tanda de fichas es justo quien más lo sufre: son cientos de
+                    # peticiones seguidas, y cada una que se pierde deja una necesidad sin CPC
+                    # hasta la vuelta siguiente.
+                    if not isinstance(exc, httpx.HTTPError) or intento == self._reintentos:
+                        # Con el tipo además del texto: hay fallos de red que llegan con el mensaje
+                        # vacío —`ReadError`, `ConnectTimeout` sin detalle— y un renglón que solo
+                        # dice «Error consultando la fuente (NCO listado): » no dice nada. Se vio en
+                        # operación, en una vuelta de vigilancia que quedó en «parcial · 0 iguales».
+                        registro.error(
+                            "Error consultando la fuente (%s): %s: %s",
+                            etiqueta,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        return None
+                    espera = min(self._espera_base * (2.0 ** (intento - 1)), MAX_ESPERA)
+                    registro.warning(
+                        "Error de red en %s; reintento en %.1fs (%s/%s): %s: %s",
+                        etiqueta or url,
+                        espera,
+                        intento,
+                        self._reintentos,
                         type(exc).__name__,
                         exc,
                     )
-                    return None
+                    await asyncio.sleep(espera)
         return None
 
     async def solicitar_json(

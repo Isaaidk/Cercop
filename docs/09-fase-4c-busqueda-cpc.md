@@ -76,7 +76,11 @@ solo lo menciona de pasada.
    tabla de detalle. Sin la marca explícita, esas se reintentarían en cada tanda para siempre: una
    petición perdida por ciclo y por necesidad contra una fuente que responde 429 con facilidad.
    Por el mismo motivo, un fallo de red **no** marca nada: el registro se reintenta y conserva los
-   ítems que ya tuviera.
+   ítems que ya tuviera. Y lo mismo un enlace del que no se pueda sacar el token: eso es «no se
+   pudo», no «leída y sin detalle», y el token rota en cada listado, así que puede llegar después.
+   Antes de rendirse con una ficha, el fallo de red se **reintenta** en el momento —con la espera
+   creciente y el presupuesto de reintentos del propio control de tasa—: perderla al primer intento
+   gastaba el turno de una necesidad entera y la dejaba sin CPC hasta la vuelta siguiente.
 
 4. **El relleno va después de las fuentes y con el mismo adaptador.** El listado es el dato y la
    ficha es el enriquecimiento; si algo queda a medias, que sea lo segundo. Reutilizar el adaptador

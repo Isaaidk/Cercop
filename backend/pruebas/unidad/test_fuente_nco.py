@@ -36,10 +36,12 @@ class LimitadorDeMentira(LimitadorTasa):
     único que se sustituye es la petición.
     """
 
-    def __init__(self, payload: dict[str, Any] | None) -> None:
+    def __init__(self, payload: dict[str, Any] | None, html: str | None = None) -> None:
         super().__init__()
         self._payload = payload
+        self._html = html
         self.pedidas: list[dict[str, Any] | None] = []
+        self.pedidas_texto: list[dict[str, Any] | None] = []
 
     async def solicitar_json(
         self,
@@ -53,9 +55,24 @@ class LimitadorDeMentira(LimitadorTasa):
         self.pedidas.append(params)
         return self._payload
 
+    async def solicitar_texto(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        etiqueta: str = "",
+        tiempo_limite: float = 60.0,
+    ) -> str | None:
+        """Anota la ficha pedida en lugar de bajarla, para poder comprobar que no se pide de más."""
+        del url, etiqueta, tiempo_limite
+        self.pedidas_texto.append(params)
+        return self._html
 
-def _fuente(payload: dict[str, Any] | None) -> tuple[FuenteNco, LimitadorDeMentira]:
-    limitador = LimitadorDeMentira(payload)
+
+def _fuente(
+    payload: dict[str, Any] | None, html: str | None = None
+) -> tuple[FuenteNco, LimitadorDeMentira]:
+    limitador = LimitadorDeMentira(payload, html)
     return FuenteNco(limitador=limitador), limitador
 
 
@@ -134,3 +151,55 @@ async def test_sin_presupuesto_no_se_toca_la_red() -> None:
     assert limitador.pedidas == []
     assert resultado.agoto_presupuesto is True
     assert resultado.parcial is True
+
+
+HTML_FICHA = """
+<table>
+  <tr><th>Nro.</th><th>CPC</th><th>Nombre del CPC</th>
+      <th>Descripción del producto</th><th>Unidad</th><th>Cantidad</th></tr>
+  <tr><td>1</td><td>871410032</td><td>LAVADO Y ENGRASADO DE AUTOMOTORES</td>
+      <td>Lavado y engrasado de la volqueta</td><td>Unidad</td><td>6.00</td></tr>
+</table>
+"""
+
+
+async def test_con_token_se_lee_la_ficha_y_llegan_los_items() -> None:
+    """El camino que hace que el CPC exista: el token sale del enlace y la ficha se analiza."""
+    fuente, limitador = _fuente(_listado("1"), HTML_FICHA)
+
+    items = await fuente.items(
+        "../NCO/NCORegistroDetalle.cpe?&id=kgFtZf7MCICk,&op=0", Presupuesto(limite=10)
+    )
+
+    assert items is not None
+    assert [item.codigo for item in items] == ["871410032"]
+    assert limitador.pedidas_texto == [{"id": "kgFtZf7MCICk", "op": 0}]
+
+
+async def test_un_enlace_sin_token_no_se_da_por_leido() -> None:
+    """Un enlace del que no sale el token es «no se pudo», no «leída y sin detalle».
+
+    Es la diferencia que separa reintentar de perder, y no es un caso teórico: el token del enlace
+    **rota en cada listado**, así que el que hoy no se puede sacar puede llegar en la vuelta
+    siguiente. Devolver la tupla vacía marcaría la necesidad como leída sin ítems y esa necesidad no
+    volvería a pedirse nunca, sin ningún error que lo delatara.
+    """
+    fuente, limitador = _fuente(_listado("1"))
+
+    sin_token = await fuente.items(
+        "https://portal/NCO/NCORegistroDetalle.cpe", Presupuesto(limite=10)
+    )
+    assert sin_token is None
+    assert await fuente.items(None, Presupuesto(limite=10)) is None
+    # Y sin token no se gasta ninguna petición: el enlace no da con qué pedir la ficha.
+    assert limitador.pedidas_texto == []
+
+
+async def test_sin_presupuesto_la_ficha_queda_pendiente_y_no_se_pide() -> None:
+    """El tope de peticiones se respeta antes de tocar la red, y no marca la ficha como leída."""
+    fuente, limitador = _fuente(_listado("1"), HTML_FICHA)
+
+    items = await fuente.items("../NCO/NCORegistroDetalle.cpe?&id=abc,&op=0", Presupuesto(limite=0))
+
+    assert items is None
+    assert limitador.pedidas_texto == []
