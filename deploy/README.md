@@ -5,6 +5,11 @@ Es la opción barata y, en este proyecto, también la rápida: lo que limita al 
 capacidad de la base de datos, sino los ~280 ms que cuesta cada consulta cuando la base está al otro
 lado de la red. Aquí la base está al lado.
 
+> **¿Sin administrar ninguna máquina?** La misma arquitectura desplegada como servicios de
+> **Railway** —sin `compose`, sin Caddy y sin Docker en tu máquina— está en
+> [`railway/README.md`](railway/README.md). Es más rápido de arrancar y más caro al mes; el resto
+> —procesos, variables y aritmética de conexiones— es idéntico.
+
 | Componente | Dónde vive | Coste |
 |---|---|---|
 | Frontend (Vue estático) | CDN, apuntando `VITE_API_BASE` a este host | ~0 |

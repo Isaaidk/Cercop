@@ -54,6 +54,19 @@ la migración.
 
 **Sistema operativo:** Ubuntu 24.04 LTS. Es lo que asumen los comandos de abajo.
 
+### La vía rápida, si prefieres no administrar nada: Railway
+
+Si no quieres ocuparte de un servidor —y **sobre todo si no tienes Docker en tu máquina**, que es el
+caso hoy—, la misma arquitectura se despliega como servicios de Railway: cada pieza un servicio, el
+TLS y el dominio los pone la plataforma, y las imágenes se construyen en la nube. Está desarrollado
+en [`deploy/railway/README.md`](../deploy/railway/README.md), con las variables servicio por
+servicio.
+
+Lo que cambia: el coste (20-40 $/mes por uso frente a 4-6 € de un VPS equivalente) y que no hay
+`compose` ni `verificar_despliegue.py` (ese lee el `compose`; en Railway las tres comprobaciones
+equivalentes se hacen a mano). Lo que **no** cambia: los procesos, el `Dockerfile`, las variables y
+la aritmética de conexiones.
+
 ### Lo que no hay que hacer
 
 - **No desplegar solo con Supabase y Vercel.** Es lo que hay hoy en desarrollo y tiene dos techos

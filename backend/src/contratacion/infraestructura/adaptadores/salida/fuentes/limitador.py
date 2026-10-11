@@ -43,6 +43,10 @@ class LimitadorTasa:
         reintentos: int = 4,
         tiempo_limite: float = TIEMPO_LIMITE,
         cabeceras: dict[str, str] | None = None,
+        # Salida por un proxy intermedio. Existe para las fuentes cuyo servidor descarta las
+        # conexiones que llegan de centros de datos, y lo decide **quien crea el limitador**, no
+        # este módulo: aquí no se sabe —ni se quiere saber— de qué fuente se trata.
+        proxy_url: str | None = None,
     ) -> None:
         self._semaforo = asyncio.Semaphore(max_concurrencia)
         self._cerrojo = asyncio.Lock()
@@ -52,6 +56,7 @@ class LimitadorTasa:
         self._espera_base = espera_base
         self._reintentos = reintentos
         self._cabeceras = cabeceras or {}
+        self._proxy_url = proxy_url
         self._cliente: httpx.AsyncClient | None = None
         self.codigos_recibidos: list[int] = []
 
@@ -61,6 +66,7 @@ class LimitadorTasa:
                 timeout=tiempo_limite,
                 headers=self._cabeceras,
                 follow_redirects=True,
+                proxy=self._proxy_url,
             )
         return self._cliente
 

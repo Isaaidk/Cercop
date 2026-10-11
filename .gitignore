@@ -16,7 +16,9 @@ coverage.xml
 htmlcov/
 
 # Variables de entorno — NUNCA versionar credenciales
-
+.env
+.env.*
+!.env.example
 
 # Bases de datos locales
 *.db

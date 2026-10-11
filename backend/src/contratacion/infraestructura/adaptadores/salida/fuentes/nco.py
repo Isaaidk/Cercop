@@ -13,6 +13,7 @@ Lo que no se capture, se pierde para siempre.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -60,7 +61,18 @@ class FuenteNco:
     codigo = CODIGO
 
     def __init__(self, limitador: LimitadorTasa | None = None) -> None:
-        self._limitador = limitador or LimitadorTasa(cabeceras=CABECERAS)
+        # El servidor de necesidades descarta en silencio las conexiones que llegan de centros de
+        # datos: se ve como `ConnectTimeout` tras dos minutos de espera, sin que llegue a ver la
+        # petición. Los datos abiertos (OCDS) no lo hacen, así que **solo esta fuente** sale por el
+        # proxy, y únicamente si `NCO_PROXY_URL` está definida. Sin ella —o vacía— no hay proxy y
+        # todo se comporta como antes.
+        #
+        # La decisión se toma aquí, en la fuente, y no dentro del limitador: aquel módulo se ocupa
+        # del transporte y no tiene por qué saber qué fuente lo está usando.
+        self._limitador = limitador or LimitadorTasa(
+            cabeceras=CABECERAS,
+            proxy_url=os.getenv("NCO_PROXY_URL") or None,
+        )
 
     async def extraer(self, desde: datetime, presupuesto: Presupuesto) -> ResultadoExtraccion:
         """Trae el listado completo. `desde` no se usa: la fuente no filtra por fecha."""
