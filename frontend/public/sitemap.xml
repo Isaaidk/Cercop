@@ -1,18 +1,5 @@
+
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Cercop — https://cercoapp.com
-
-  Una sola entrada, y no por dejadez: el panel es una aplicación de una sola página. Todo el
-  contenido público se sirve en la raíz y las pantallas internas —acceso, registro, panel— no son
-  direcciones distintas, sino estados que decide el servidor. Inventar aquí rutas como `/login` o
-  `/panel` mandaría a Google a direcciones que no existen.
-
-  Tampoco se incluye nada de `up.railway.app`: los dominios antiguos del despliegue no deben
-  aparecer como canónicos ni generar contenido duplicado.
-
-  `lastmod` es la fecha de esta publicación. Si algún día cambia el contenido de la portada, se
-  actualiza a mano.
--->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://cercoapp.com/</loc>
