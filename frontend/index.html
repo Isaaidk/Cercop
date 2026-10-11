@@ -56,13 +56,26 @@
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "Cercop",
-        "url": "https://cercoapp.com/",
-        "applicationCategory": "BusinessApplication",
-        "operatingSystem": "Web",
-        "inLanguage": "es-EC",
-        "description": "Panel de seguimiento de la contratación pública del Ecuador: reúne las necesidades de contratación y los procesos publicados por el SERCOP en los datos abiertos, con tabla filtrable, gráficas interactivas y mapa de las 24 provincias."
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://cercoapp.com/#sitio",
+            "url": "https://cercoapp.com/",
+            "name": "Cercop",
+            "inLanguage": "es-EC",
+            "description": "Panel de seguimiento de la contratación pública del Ecuador."
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "Cercop",
+            "url": "https://cercoapp.com/",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "inLanguage": "es-EC",
+            "isPartOf": { "@id": "https://cercoapp.com/#sitio" },
+            "description": "Panel de seguimiento de la contratación pública del Ecuador: reúne las necesidades de contratación y los procesos publicados por el SERCOP en los datos abiertos, con tabla filtrable, gráficas interactivas y mapa de las 24 provincias."
+          }
+        ]
       }
     </script>
 
@@ -110,6 +123,17 @@
           se exporta a Excel.
         </p>
         <p>El panel necesita JavaScript para dibujar las gráficas y el mapa. Actívalo para continuar.</p>
+        <!--
+          Los enlaces van también aquí dentro, con el JavaScript desactivado. Son la única forma de
+          que una página que no ejecuta scripts —la que ve un rastreador que no los ejecuta— tenga
+          por dónde seguir: sin ellos, este texto sería un callejón sin salida.
+        -->
+        <p>
+          <a href="/">Portada</a> ·
+          <a href="/contratacion-publica-ecuador">Contratación pública en Ecuador</a> ·
+          <a href="/login">Ingresar</a> ·
+          <a href="/registro">Crear cuenta</a>
+        </p>
       </div>
     </noscript>
     <script type="module" src="/src/main.js"></script>

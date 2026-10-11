@@ -1,7 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Solo las direcciones públicas que pueden indexarse.
+
+  No están ni `/login` ni `/registro`: son pantallas de paso y las dos llevan `noindex`. Tampoco está
+  el panel, porque detrás hay datos de una empresa y una sesión abierta. Una dirección en un sitemap
+  es una petición de que se rastree, así que poner aquí algo que no debe salir en un buscador sería
+  pedir justo lo contrario de lo que se quiere.
+-->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://cercoapp.com/</loc>
+    <lastmod>2026-10-11</lastmod>
+  </url>
+  <url>
+    <loc>https://cercoapp.com/contratacion-publica-ecuador</loc>
     <lastmod>2026-10-11</lastmod>
   </url>
 </urlset>
