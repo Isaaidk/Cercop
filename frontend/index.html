@@ -4,11 +4,67 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+
+    <!--
+      Metadatos para buscadores y para cuando alguien comparte el enlace.
+
+      El título y las descripciones salen de lo que el propio proyecto declara que hace —`README.md`
+      y `frontend/README.md`—, no de una promesa comercial: aquí no hay ninguna cifra, cliente ni
+      testimonio que no esté ya escrito en el repositorio.
+    -->
+    <title>Cercop · Panel de contratación pública del Ecuador</title>
     <meta
       name="description"
-      content="Panel de contratación pública: busca por palabras clave, explora por provincia y sigue las contrataciones que te interesan."
+      content="Panel de seguimiento de la contratación pública del Ecuador: busca por palabra clave y sigue las necesidades y procesos del SERCOP en tabla, gráficas y mapa."
     />
-    <title>Contratación pública — Panel</title>
+    <!--
+      Explícito, y no por ser el valor por defecto: deja escrito que indexar es lo que se quiere. Un
+      `noindex` que apareciera aquí sería un error, no una decisión, y así se nota a la primera.
+    -->
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://cercoapp.com/" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!--
+      Open Graph: lo que se ve al compartir el enlace. Sin `og:image` porque no hay ninguna imagen
+      de previsualización en el repositorio y no se inventa una: añadir una de 1200×630 es lo que
+      falta para que el enlace salga con imagen al compartirlo.
+    -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Cercop" />
+    <meta property="og:locale" content="es_EC" />
+    <meta property="og:url" content="https://cercoapp.com/" />
+    <meta property="og:title" content="Cercop · Panel de contratación pública del Ecuador" />
+    <meta
+      property="og:description"
+      content="Busca por palabra clave y sigue las necesidades y procesos publicados por el SERCOP en tabla, gráficas y mapa."
+    />
+
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Cercop · Panel de contratación pública del Ecuador" />
+    <meta
+      name="twitter:description"
+      content="Busca por palabra clave y sigue las necesidades y procesos publicados por el SERCOP en tabla, gráficas y mapa."
+    />
+
+    <!--
+      Datos estructurados. Se declara lo que el repositorio permite afirmar —nombre, qué es y a qué
+      se dedica— y nada más: no hay aquí precio, valoración media ni autor, porque no hay ningún dato
+      real que los respalde y un dato estructurado falso es peor que su ausencia.
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Cercop",
+        "url": "https://cercoapp.com/",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "es-EC",
+        "description": "Panel de seguimiento de la contratación pública del Ecuador: reúne las necesidades de contratación y los procesos publicados por el SERCOP en los datos abiertos, con tabla filtrable, gráficas interactivas y mapa de las 24 provincias."
+      }
+    </script>
 
     <!--
       El tema se aplica antes de que se pinte nada. Si se hiciera desde el código de la aplicación,
@@ -28,9 +84,33 @@
   <body>
     <div id="app"></div>
     <noscript>
-      <p style="padding: 2rem; font-family: system-ui">
-        Este panel necesita JavaScript para mostrar las gráficas y el mapa. Actívalo para continuar.
-      </p>
+      <!--
+        Con JavaScript desactivado la aplicación no puede dibujar nada, y hasta ahora lo único que
+        se veía era un aviso. Este texto describe lo que hace Cercop para que el HTML servido tenga
+        contenido comprensible —también para quien no ejecuta JavaScript al rastrear—, y sale de lo
+        que declara el propio proyecto.
+      -->
+      <div
+        style="
+          max-width: 42rem;
+          margin: 0 auto;
+          padding: 2rem;
+          font-family: system-ui, sans-serif;
+          line-height: 1.6;
+        "
+      >
+        <h1>Cercop — Panel de contratación pública del Ecuador</h1>
+        <p>
+          Cercop reúne las <strong>necesidades de contratación</strong> y los
+          <strong>procesos publicados</strong> por el SERCOP en los datos abiertos, y los muestra en
+          una tabla filtrable, gráficas interactivas y un mapa de las 24 provincias.
+        </p>
+        <p>
+          Con él se busca por palabra clave, se filtra por provincia, estado y fechas, y el resultado
+          se exporta a Excel.
+        </p>
+        <p>El panel necesita JavaScript para dibujar las gráficas y el mapa. Actívalo para continuar.</p>
+      </div>
     </noscript>
     <script type="module" src="/src/main.js"></script>
   </body>

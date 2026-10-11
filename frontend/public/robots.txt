@@ -1,0 +1,16 @@
+# Cercop — https://cercoapp.com
+#
+# Se permite el rastreo completo a propósito. El panel es una aplicación de una sola página: todo el
+# contenido vive en la raíz, no hay secciones ni rutas con URL propia, y **nada de lo que se sirve
+# aquí es privado**. Lo que exige sesión no está detrás de una ruta que se pueda nombrar —lo decide
+# el servidor al responder— así que no hay nada que ocultar en este archivo.
+#
+# Y conviene recordar lo obvio: `robots.txt` no es un mecanismo de autenticación. Un archivo que no
+# debe verse tampoco debe servirse.
+#
+# Los datos de la API viven en otro dominio y no se ven afectados por este archivo.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://cercoapp.com/sitemap.xml

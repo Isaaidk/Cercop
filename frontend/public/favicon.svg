@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Cercop">
+  <!--
+    Las iniciales del panel, sobre el azul de marca (--acento de main.css). No se usa una imagen
+    de mapa de bits a propósito: un SVG pesa menos de un kilobyte, se ve nítido en cualquier
+    tamaño y no hay que generar versiones para cada densidad de pantalla.
+  -->
+  <rect width="64" height="64" rx="14" fill="#2563eb"/>
+  <text
+    x="32"
+    y="44"
+    text-anchor="middle"
+    font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+    font-size="30"
+    font-weight="700"
+    fill="#ffffff"
+  >CP</text>
+</svg>

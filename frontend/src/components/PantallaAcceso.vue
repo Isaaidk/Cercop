@@ -56,7 +56,13 @@ async function entrar() {
     <header class="acceso__cabecera">
       <div class="marca">
         <span class="marca__icono" aria-hidden="true">CP</span>
-        <span class="marca__texto">Contratación pública</span>
+        <!--
+          El nombre del producto. Antes decía «Contratación pública», que describe la categoría pero
+          no identifica el sitio: el nombre aparecía en el título de la pestaña y en ningún otro
+          sitio de la página. Las iniciales del icono coinciden con Cercop, así que no se pierde la
+          lectura anterior.
+        -->
+        <span class="marca__texto">Cercop</span>
       </div>
       <button
         type="button"
@@ -70,15 +76,17 @@ async function entrar() {
 
     <main class="acceso__cuerpo">
       <section class="acceso__presentacion aparece">
-        <h1>Sigue las contrataciones que te importan</h1>
+        <h1>La contratación pública del Ecuador, en un solo panel</h1>
         <p>
-          Configura tus palabras clave y el panel reúne las publicaciones de las fuentes oficiales,
-          las ordena por provincia y te avisa cuando aparece algo nuevo.
+          Cercop reúne las <strong>necesidades de contratación</strong> y los
+          <strong>procesos publicados</strong> por el SERCOP en los datos abiertos, y los muestra en
+          una tabla filtrable, gráficas y un mapa de las 24 provincias.
         </p>
         <ul class="acceso__lista">
           <li><span aria-hidden="true">◆</span> Búsqueda por varias palabras clave a la vez</li>
           <li><span aria-hidden="true">◆</span> Mapa del Ecuador con las 24 provincias</li>
           <li><span aria-hidden="true">◆</span> Gráficas que filtran al pulsarlas</li>
+          <li><span aria-hidden="true">◆</span> El resultado se exporta a Excel</li>
         </ul>
       </section>
 
