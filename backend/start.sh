@@ -67,16 +67,31 @@ _tunel() {
         sleep 0.5
     done
 
-    echo "Conectando al tailnet y fijando la salida por ${TAILSCALE_EXIT_NODE_IP}…"
+    echo "Conectando al tailnet…"
     # `--accept-dns=false` no es opcional aquí: por defecto Tailscale intenta reescribir
     # `/etc/resolv.conf`, y el contenedor corre sin privilegios. El portal es un nombre público y se
     # resuelve por el DNS normal, así que no se pierde nada.
+    #
+    # Aquí **no** se pasa `--exit-node`: se fija más abajo. Ver la nota de `tailscale set`.
     if ! tailscale --socket="$SOCKET" up \
         --authkey="${TAILSCALE_AUTHKEY}" \
-        --exit-node="${TAILSCALE_EXIT_NODE_IP}" \
         --hostname="${TAILSCALE_HOSTNAME:-railway-worker}" \
         --accept-dns=false; then
         echo "No se pudo conectar al tailnet: se arranca SIN túnel." >&2
+        return 0
+    fi
+
+    # El nodo de salida se fija **después** de autenticar y en un comando aparte.
+    #
+    # No es cuestión de gusto: `tailscale up --exit-node=…` resuelve el nodo **mientras arranca**, y
+    # en ese instante el netmap todavía no ha llegado. Con un nombre falla directamente —
+    # «cannot resolve exit node by hostname while Tailscale is starting up»— y con una IP puede
+    # quedarse sin surtir efecto. `tailscale set` va contra un tailnet ya sincronizado, así que no
+    # tiene ese problema; de ahí la espera entre los dos comandos: la IP necesita que la
+    # sincronización haya terminado.
+    sleep 3
+    if ! tailscale --socket="$SOCKET" set --exit-node="${TAILSCALE_EXIT_NODE_IP}"; then
+        echo "No se pudo fijar el nodo de salida: se arranca SIN túnel." >&2
         return 0
     fi
 
