@@ -95,8 +95,11 @@ class RepositorioUsuariosBd:
             fila = (
                 (
                     await conexion.execute(
-                        text(f"SELECT {CAMPOS_FICHA} FROM usuario WHERE id = :usuario_id"),
-                        {"usuario_id": usuario_id},
+                        text(
+                            f"SELECT {CAMPOS_FICHA} FROM usuario"
+                            " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                        ),
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id},
                     )
                 )
                 .mappings()
@@ -175,10 +178,11 @@ class RepositorioUsuariosBd:
                     """
                     UPDATE usuario
                     SET hash_password = :huella, intentos_fallidos = 0, bloqueado_hasta = NULL
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
-                {"usuario_id": usuario_id, "huella": huella},
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "huella": huella},
             )
 
     async def actualizar_identidad(
@@ -200,10 +204,12 @@ class RepositorioUsuariosBd:
                     SET nombre = :nombre, rol = :rol,
                         hash_password = COALESCE(:huella, hash_password),
                         intentos_fallidos = 0, bloqueado_hasta = NULL
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
                 {
+                    "negocio_id": negocio_id,
                     "usuario_id": usuario_id,
                     "nombre": nombre,
                     "rol": str(rol),
@@ -216,8 +222,11 @@ class RepositorioUsuariosBd:
     ) -> None:
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             await conexion.execute(
-                text("UPDATE usuario SET estado = :estado WHERE id = :usuario_id"),
-                {"usuario_id": usuario_id, "estado": estado},
+                text(
+                    "UPDATE usuario SET estado = :estado"
+                    " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                ),
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "estado": estado},
             )
 
     async def eliminar(self, *, negocio_id: UUID, usuario_id: UUID) -> None:

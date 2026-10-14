@@ -142,8 +142,11 @@ class RepositorioCuentasBd:
             fila = (
                 (
                     await conexion.execute(
-                        text(f"SELECT {CAMPOS_CUENTA} FROM usuario WHERE id = :usuario_id"),
-                        {"usuario_id": usuario_id},
+                        text(
+                            f"SELECT {CAMPOS_CUENTA} FROM usuario"
+                            " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                        ),
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id},
                     )
                 )
                 .mappings()
@@ -160,10 +163,11 @@ class RepositorioCuentasBd:
                     """
                     UPDATE usuario
                     SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = :momento
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
-                {"usuario_id": usuario_id, "momento": momento},
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "momento": momento},
             )
 
     async def registrar_fallo(
@@ -180,10 +184,12 @@ class RepositorioCuentasBd:
                     """
                     UPDATE usuario
                     SET intentos_fallidos = :intentos, bloqueado_hasta = :bloqueado_hasta
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
                 {
+                    "negocio_id": negocio_id,
                     "usuario_id": usuario_id,
                     "intentos": intentos,
                     "bloqueado_hasta": bloqueado_hasta,
@@ -193,8 +199,11 @@ class RepositorioCuentasBd:
     async def actualizar_huella(self, *, negocio_id: UUID, usuario_id: UUID, huella: str) -> None:
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             await conexion.execute(
-                text("UPDATE usuario SET hash_password = :huella WHERE id = :usuario_id"),
-                {"usuario_id": usuario_id, "huella": huella},
+                text(
+                    "UPDATE usuario SET hash_password = :huella"
+                    " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                ),
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "huella": huella},
             )
 
     async def cambiar_estado(
@@ -202,8 +211,11 @@ class RepositorioCuentasBd:
     ) -> None:
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             await conexion.execute(
-                text("UPDATE usuario SET estado = :estado WHERE id = :usuario_id"),
-                {"usuario_id": usuario_id, "estado": estado},
+                text(
+                    "UPDATE usuario SET estado = :estado"
+                    " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                ),
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "estado": estado},
             )
         await self.auditar(
             accion="cambio_estado_usuario",
@@ -226,11 +238,11 @@ class RepositorioCuentasBd:
                             f"""
                             SELECT id AS usuario_id, email, nombre, rol, estado, ultimo_acceso,
                                    bloqueado_hasta, debe_aceptar_politica_version
-                            FROM usuario {filtro}
+                            FROM usuario WHERE negocio_id = :negocio_id {filtro}
                             ORDER BY nombre, email
                             """
                         ),
-                        {"estado": estado} if estado else {},
+                        {"negocio_id": negocio_id, **({"estado": estado} if estado else {})},
                     )
                 )
                 .mappings()
@@ -294,13 +306,14 @@ class RepositorioSesionesBd:
                             f"""
                             SELECT {CAMPOS_SESION}
                             FROM sesion
-                            WHERE usuario_id = :usuario_id
+                            WHERE negocio_id = :negocio_id
+                              AND usuario_id = :usuario_id
                               AND estado = 'activa'
                               AND expira_en > :momento
                             ORDER BY ultimo_uso_en
                             """
                         ),
-                        {"usuario_id": usuario_id, "momento": momento},
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id, "momento": momento},
                     )
                 )
                 .mappings()
@@ -354,10 +367,11 @@ class RepositorioSesionesBd:
                             f"""
                             SELECT {CAMPOS_SESION}, refresh_hash,
                                    refresh_hash_anterior, refresh_anterior_desde
-                            FROM sesion WHERE id = :sesion_id
+                            FROM sesion WHERE negocio_id = :negocio_id
+                              AND id = :sesion_id
                             """
                         ),
-                        {"sesion_id": sesion_id},
+                        {"negocio_id": negocio_id, "sesion_id": sesion_id},
                     )
                 )
                 .mappings()
@@ -403,10 +417,12 @@ class RepositorioSesionesBd:
                         refresh_anterior_desde = :ultimo_uso_en,
                         refresh_hash = :refresh_hash,
                         ultimo_uso_en = :ultimo_uso_en
-                    WHERE id = :sesion_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :sesion_id
                     """
                 ),
                 {
+                    "negocio_id": negocio_id,
                     "sesion_id": sesion_id,
                     "refresh_hash": refresh_hash,
                     "ultimo_uso_en": ultimo_uso_en,
@@ -441,10 +457,12 @@ class RepositorioSesionesBd:
                     """
                     UPDATE sesion
                     SET estado = 'revocada', revocada_motivo = :motivo, ultimo_uso_en = :momento
-                    WHERE id = ANY(:sesion_ids) AND estado = 'activa'
+                    WHERE negocio_id = :negocio_id
+                      AND id = ANY(:sesion_ids) AND estado = 'activa'
                     """
                 ),
                 {
+                    "negocio_id": negocio_id,
                     "sesion_ids": list(sesion_ids),
                     "motivo": str(motivo),
                     "momento": momento,
@@ -461,10 +479,16 @@ class RepositorioSesionesBd:
                     """
                     UPDATE sesion
                     SET estado = 'revocada', revocada_motivo = :motivo, ultimo_uso_en = :momento
-                    WHERE usuario_id = :usuario_id AND estado = 'activa'
+                    WHERE negocio_id = :negocio_id
+                      AND usuario_id = :usuario_id AND estado = 'activa'
                     """
                 ),
-                {"usuario_id": usuario_id, "motivo": str(motivo), "momento": momento},
+                {
+                    "negocio_id": negocio_id,
+                    "usuario_id": usuario_id,
+                    "motivo": str(motivo),
+                    "momento": momento,
+                },
             )
         return int(resultado.rowcount or 0)
 
@@ -493,12 +517,14 @@ class RepositorioSesionesBd:
                     """
                     UPDATE sesion
                     SET estado = 'revocada', revocada_motivo = :motivo, ultimo_uso_en = :momento
-                    WHERE usuario_id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND usuario_id = :usuario_id
                       AND estado = 'activa'
                       AND (CAST(:excepto AS uuid) IS NULL OR id <> CAST(:excepto AS uuid))
                     """
                 ),
                 {
+                    "negocio_id": negocio_id,
                     "usuario_id": usuario_id,
                     "excepto": excepto,
                     "motivo": str(motivo),
@@ -523,11 +549,12 @@ class RepositorioSesionesBd:
                             f"""
                             SELECT {CAMPOS_SESION}
                             FROM sesion
-                            WHERE estado = 'activa' AND expira_en > :momento
+                            WHERE negocio_id = :negocio_id
+                              AND estado = 'activa' AND expira_en > :momento
                             ORDER BY ultimo_uso_en DESC
                             """
                         ),
-                        {"momento": momento},
+                        {"negocio_id": negocio_id, "momento": momento},
                     )
                 )
                 .mappings()
@@ -552,12 +579,13 @@ class RepositorioSesionesBd:
                             f"""
                             SELECT {CAMPOS_SESION}
                             FROM sesion
-                            WHERE estado <> 'activa'
+                            WHERE negocio_id = :negocio_id
+                              AND estado <> 'activa'
                             ORDER BY ultimo_uso_en DESC
                             LIMIT :limite
                             """
                         ),
-                        {"limite": limite},
+                        {"negocio_id": negocio_id, "limite": limite},
                     )
                 )
                 .mappings()

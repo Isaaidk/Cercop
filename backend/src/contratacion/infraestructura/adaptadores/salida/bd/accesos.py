@@ -1,9 +1,10 @@
 """Adaptador de salida: concesiones de acceso a vistas.
 
-Todas las operaciones se ejecutan dentro del contexto del negocio, así que las políticas de RLS son
-las que deciden qué filas existen. Es la razón por la que este adaptador no filtra por `negocio_id`
-en las lecturas «para asegurarse»: el filtro está en la base y repetirlo daría la falsa impresión de
-que el aislamiento depende del código de aquí.
+Todas las operaciones se ejecutan dentro del contexto del negocio **y además** filtran por
+`negocio_id` en la propia consulta. No es redundancia: el rol de la aplicación en el despliegue se
+salta las políticas de RLS (`rolbypassrls`), y una lectura sin filtro devolvía las filas de todas
+las empresas —el panel de una empresa listaba las cuentas de las demás—. RLS sigue como segunda
+barrera; la primera tiene que estar escrita en la consulta.
 
 Las filas se traducen a objetos del dominio en el borde. Si un código de vista o de plazo no
 correspondiera a ningún valor conocido —algo que la restricción `CHECK` impide—, la fila se descarta
@@ -139,11 +140,12 @@ class RepositorioAccesosBd:
                             f"""
                             SELECT {CAMPOS_ACCESO}
                             FROM acceso_vista
-                            WHERE usuario_id = :usuario_id
+                            WHERE negocio_id = :negocio_id
+                              AND usuario_id = :usuario_id
                             ORDER BY otorgado_en DESC
                             """
                         ),
-                        {"usuario_id": usuario_id},
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id},
                     )
                 )
                 .mappings()
@@ -168,12 +170,13 @@ class RepositorioAccesosBd:
                             f"""
                             SELECT {CAMPOS_ACCESO}
                             FROM acceso_vista
-                            WHERE usuario_id = :usuario_id
+                            WHERE negocio_id = :negocio_id
+                              AND usuario_id = :usuario_id
                             ORDER BY otorgado_en DESC
                             LIMIT :limite
                             """
                         ),
-                        {"usuario_id": usuario_id, "limite": limite},
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id, "limite": limite},
                     )
                 )
                 .mappings()
@@ -191,11 +194,12 @@ class RepositorioAccesosBd:
                             """
                             SELECT id AS usuario_id, email, nombre, rol, estado, ultimo_acceso
                             FROM usuario
+                            WHERE negocio_id = :negocio_id
                             ORDER BY nombre, email
                             LIMIT :limite
                             """
                         ),
-                        {"limite": limite},
+                        {"negocio_id": negocio_id, "limite": limite},
                     )
                 )
                 .mappings()
@@ -211,10 +215,11 @@ class RepositorioAccesosBd:
                         text(
                             """
                             SELECT id AS usuario_id, email, nombre, rol, estado
-                            FROM usuario WHERE id = :usuario_id
+                            FROM usuario WHERE negocio_id = :negocio_id
+                              AND id = :usuario_id
                             """
                         ),
-                        {"usuario_id": usuario_id},
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id},
                     )
                 )
                 .mappings()

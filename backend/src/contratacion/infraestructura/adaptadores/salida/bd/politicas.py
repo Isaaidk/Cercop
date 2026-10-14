@@ -270,11 +270,12 @@ class RepositorioConsentimientosBd:
                             f"""
                             SELECT {CAMPOS_CONSENTIMIENTO}
                             FROM consentimiento
-                            WHERE usuario_id = :usuario_id
+                            WHERE negocio_id = :negocio_id
+                              AND usuario_id = :usuario_id
                             ORDER BY aceptado_en DESC, tipo
                             """
                         ),
-                        {"usuario_id": usuario_id},
+                        {"negocio_id": negocio_id, "usuario_id": usuario_id},
                     )
                 )
                 .mappings()
@@ -296,12 +297,18 @@ class RepositorioConsentimientosBd:
                     """
                     UPDATE consentimiento
                     SET revocado_en = :momento
-                    WHERE usuario_id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND usuario_id = :usuario_id
                       AND tipo = :tipo
                       AND revocado_en IS NULL
                     """
                 ),
-                {"usuario_id": usuario_id, "tipo": str(tipo), "momento": momento},
+                {
+                    "negocio_id": negocio_id,
+                    "usuario_id": usuario_id,
+                    "tipo": str(tipo),
+                    "momento": momento,
+                },
             )
         return int(resultado.rowcount or 0)
 
@@ -312,10 +319,11 @@ class RepositorioConsentimientosBd:
                     text(
                         """
                         SELECT debe_aceptar_politica_version
-                        FROM usuario WHERE id = :usuario_id
+                        FROM usuario WHERE negocio_id = :negocio_id
+                          AND id = :usuario_id
                         """
                     ),
-                    {"usuario_id": usuario_id},
+                    {"negocio_id": negocio_id, "usuario_id": usuario_id},
                 )
             ).one_or_none()
         if fila is None:
@@ -333,10 +341,11 @@ class RepositorioConsentimientosBd:
                 text(
                     """
                     UPDATE usuario SET debe_aceptar_politica_version = :version
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
-                {"usuario_id": usuario_id, "version": version},
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "version": version},
             )
 
     async def limpiar_pendiente(self, *, negocio_id: UUID, usuario_id: UUID) -> None:
@@ -345,8 +354,9 @@ class RepositorioConsentimientosBd:
                 text(
                     """
                     UPDATE usuario SET debe_aceptar_politica_version = NULL
-                    WHERE id = :usuario_id
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
                     """
                 ),
-                {"usuario_id": usuario_id},
+                {"negocio_id": negocio_id, "usuario_id": usuario_id},
             )
