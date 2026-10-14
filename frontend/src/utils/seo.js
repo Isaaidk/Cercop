@@ -40,7 +40,7 @@ const SITIO = 'https://cercoapp.com'
  */
 const FICHAS = {
   inicio: {
-    titulo: 'Cercop · Contratación pública del Ecuador en un solo panel',
+    titulo: 'CercoApp · Contratación pública del Ecuador en un solo panel',
     descripcion:
       'Busca por palabra clave y sigue las necesidades de contratación y los procesos que publica el SERCOP en Ecuador: tabla filtrable, gráficas interactivas, mapa de las 24 provincias y exportación a Excel.',
     ruta: '/',
@@ -54,41 +54,41 @@ const FICHAS = {
     indexar: true,
   },
   login: {
-    titulo: 'Entrar · Cercop',
+    titulo: 'Entrar · CercoApp',
     descripcion:
-      'Accede con tu cuenta de Cercop para consultar las necesidades de contratación y los procesos publicados por el SERCOP.',
+      'Accede con tu cuenta de CercoApp para consultar las necesidades de contratación y los procesos publicados por el SERCOP.',
     ruta: '/login',
     // No se indexa: es una pantalla de paso, y en un resultado de búsqueda no aporta nada a nadie.
     indexar: false,
   },
   registro: {
-    titulo: 'Crear la cuenta de tu empresa · Cercop',
+    titulo: 'Crear la cuenta de tu empresa · CercoApp',
     descripcion:
-      'Crea la cuenta de tu empresa en Cercop y empieza a seguir la contratación pública del Ecuador.',
+      'Crea la cuenta de tu empresa en CercoApp y empieza a seguir la contratación pública del Ecuador.',
     ruta: '/registro',
     // No se indexa: una página de alta en un buscador solo trae registros que nadie ha pedido.
     indexar: false,
   },
   'no-encontrada': {
-    titulo: 'Esta dirección no existe · Cercop',
-    descripcion: 'La dirección que has escrito no corresponde a ninguna página de Cercop.',
+    titulo: 'Esta dirección no existe · CercoApp',
+    descripcion: 'La dirección que has escrito no corresponde a ninguna página de CercoApp.',
     indexar: false,
   },
 
   // Las que no son direcciones. Nunca se indexan y no declaran canónica.
   panel: {
-    titulo: 'Cercop',
+    titulo: 'CercoApp',
     descripcion: 'Panel de contratación pública del Ecuador.',
     indexar: false,
   },
   terminos: {
-    titulo: 'Términos y condiciones · Cercop',
-    descripcion: 'Aceptación de los términos y condiciones de uso de Cercop.',
+    titulo: 'Términos y condiciones · CercoApp',
+    descripcion: 'Aceptación de los términos y condiciones de uso de CercoApp.',
     indexar: false,
   },
   suspendido: {
-    titulo: 'Acceso suspendido · Cercop',
-    descripcion: 'El acceso de esta empresa a Cercop está suspendido.',
+    titulo: 'Acceso suspendido · CercoApp',
+    descripcion: 'El acceso de esta empresa a CercoApp está suspendido.',
     indexar: false,
   },
 }

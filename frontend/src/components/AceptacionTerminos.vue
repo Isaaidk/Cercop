@@ -153,8 +153,8 @@ async function aceptar() {
   <div class="terminos">
     <header class="terminos__cabecera aparece">
       <div class="marca">
-        <span class="marca__icono" aria-hidden="true">CP</span>
-        <span class="marca__texto">Contratación pública</span>
+        <span class="marca__icono" aria-hidden="true">CA</span>
+        <span class="marca__texto">CercoApp</span>
       </div>
       <button
         type="button"

@@ -1,4 +1,4 @@
-# Cercop — https://cercoapp.com
+# CercoApp — https://cercoapp.com
 #
 # Se permite el rastreo completo a propósito. El panel es una aplicación de una sola página: todo el
 # contenido vive en la raíz, no hay secciones ni rutas con URL propia, y **nada de lo que se sirve

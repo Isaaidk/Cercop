@@ -36,7 +36,7 @@ const emit = defineEmits(['alternar-tema'])
               Encuentra oportunidades de contratación pública en Ecuador
             </h1>
             <p class="portada__entrada">
-              Cercop reúne lo que el SERCOP publica en abierto —las
+              CercoApp reúne lo que el SERCOP publica en abierto —las
               <strong>necesidades de contratación</strong> y los
               <strong>procesos publicados</strong>— y lo pone en una tabla filtrable, con gráficas
               interactivas y un mapa de las 24 provincias. Escribe una palabra clave y mira qué se
@@ -91,7 +91,7 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">Cómo funciona</h2>
           <p class="seccion__entrada">
-            Cercop no inventa datos ni los completa a mano: lee los que la fuente oficial publica y
+            CercoApp no inventa datos ni los completa a mano: lee los que la fuente oficial publica y
             los deja consultables.
           </p>
 
@@ -100,7 +100,7 @@ const emit = defineEmits(['alternar-tema'])
               <span class="pasos__numero" aria-hidden="true">1</span>
               <h3 class="pasos__titulo">Se leen las fuentes oficiales</h3>
               <p>
-                Cercop consulta de forma automática los datos abiertos del SERCOP: el catálogo de
+                CercoApp consulta de forma automática los datos abiertos del SERCOP: el catálogo de
                 procesos publicados en formato OCDS y el listado de necesidades de contratación.
               </p>
             </li>
@@ -135,7 +135,7 @@ const emit = defineEmits(['alternar-tema'])
             <article class="tarjeta pieza">
               <h3 class="pieza__titulo">Búsqueda por varias palabras clave</h3>
               <p class="pieza__texto">
-                Escribe varias palabras a la vez y Cercop encuentra los registros que las contienen,
+                Escribe varias palabras a la vez y CercoApp encuentra los registros que las contienen,
                 en lugar de obligarte a buscarlas de una en una.
               </p>
             </article>
@@ -221,7 +221,7 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">De dónde salen los datos</h2>
           <p class="seccion__entrada">
-            De dos fuentes públicas del Servicio Nacional de Contratación Pública. Cercop no corrige
+            De dos fuentes públicas del Servicio Nacional de Contratación Pública. CercoApp no corrige
             ni completa lo que ellas publican.
           </p>
 
@@ -260,7 +260,7 @@ const emit = defineEmits(['alternar-tema'])
           </ul>
 
           <p class="aviso-fuente">
-            Cercop es una herramienta de consulta y no una página oficial. Para consultar el detalle
+            CercoApp es una herramienta de consulta y no una página oficial. Para consultar el detalle
             de un procedimiento, presentar una oferta o hacer cualquier trámite, el sitio que vale es
             el del SERCOP.
           </p>
@@ -278,9 +278,9 @@ const emit = defineEmits(['alternar-tema'])
           <h2 class="seccion__titulo">Preguntas frecuentes</h2>
 
           <details class="pregunta">
-            <summary>¿Cercop es una página oficial del SERCOP?</summary>
+            <summary>¿CercoApp es una página oficial del SERCOP?</summary>
             <p>
-              No. Cercop es una herramienta independiente de consulta. Lee los datos que el SERCOP
+              No. CercoApp es una herramienta independiente de consulta. Lee los datos que el SERCOP
               publica en abierto y los muestra ordenados, pero no es un sitio del Estado ni lo
               representa.
             </p>
@@ -290,7 +290,7 @@ const emit = defineEmits(['alternar-tema'])
             <summary>¿De dónde salen exactamente los datos?</summary>
             <p>
               De dos sitios públicos del SERCOP: su catálogo de datos abiertos en formato OCDS y su
-              listado de necesidades de contratación. Cercop no añade datos propios ni modifica los
+              listado de necesidades de contratación. CercoApp no añade datos propios ni modifica los
               que la fuente publica.
             </p>
           </details>
@@ -323,7 +323,7 @@ const emit = defineEmits(['alternar-tema'])
           <details class="pregunta">
             <summary>¿Sirve para presentar una oferta o para hacer un trámite?</summary>
             <p>
-              No. Cercop sirve para consultar y seguir. Cualquier trámite se hace en el portal del
+              No. CercoApp sirve para consultar y seguir. Cualquier trámite se hace en el portal del
               SERCOP, que es la fuente oficial.
             </p>
           </details>

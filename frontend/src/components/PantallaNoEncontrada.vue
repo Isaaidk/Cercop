@@ -25,7 +25,7 @@ const emit = defineEmits(['alternar-tema'])
       <p class="no-encontrada__codigo" aria-hidden="true">404</p>
       <h1>Esta dirección no existe</h1>
       <p class="no-encontrada__texto">
-        La dirección que has escrito no corresponde a ninguna página de Cercop. Puede que se haya
+        La dirección que has escrito no corresponde a ninguna página de CercoApp. Puede que se haya
         colado un carácter de más, o que el enlace que te trajo aquí esté mal escrito.
       </p>
 

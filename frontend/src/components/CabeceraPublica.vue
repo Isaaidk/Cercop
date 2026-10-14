@@ -25,9 +25,9 @@ const emit = defineEmits(['alternar-tema'])
 
 <template>
   <header class="cabecera">
-    <a class="marca" href="/" aria-label="Cercop: ir a la portada">
-      <span class="marca__icono" aria-hidden="true">CP</span>
-      <span class="marca__texto">Cercop</span>
+    <a class="marca" href="/" aria-label="CercoApp: ir a la portada">
+      <span class="marca__icono" aria-hidden="true">CA</span>
+      <span class="marca__texto">CercoApp</span>
     </a>
 
     <nav v-if="conAcciones" class="cabecera__acciones" aria-label="Acceso a la cuenta">

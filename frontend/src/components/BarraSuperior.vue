@@ -77,9 +77,9 @@ const iniciales = computed(() => {
     </button>
 
     <div class="marca">
-      <span class="marca__icono" aria-hidden="true">CP</span>
+      <span class="marca__icono" aria-hidden="true">CA</span>
       <span class="marca__texto">
-        Contratación pública
+        CercoApp
         <small>Panel de seguimiento</small>
       </span>
     </div>

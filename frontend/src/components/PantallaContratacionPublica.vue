@@ -248,9 +248,9 @@ const emit = defineEmits(['alternar-tema'])
 
       <section class="seccion">
         <div class="envoltura">
-          <h2 class="seccion__titulo">Cómo lo resuelve Cercop</h2>
+          <h2 class="seccion__titulo">Cómo lo resuelve CercoApp</h2>
           <p class="seccion__entrada">
-            Cercop hace el trabajo de ordenar todo eso y lo deja en una pantalla.
+            CercoApp hace el trabajo de ordenar todo eso y lo deja en una pantalla.
           </p>
 
           <ul class="lista-ventajas">
@@ -326,7 +326,7 @@ const emit = defineEmits(['alternar-tema'])
           </ul>
 
           <p class="aviso-fuente">
-            Cercop no es una página oficial ni sustituye a ninguna de las dos. Es una herramienta de
+            CercoApp no es una página oficial ni sustituye a ninguna de las dos. Es una herramienta de
             consulta que lee esos datos públicos y los muestra ordenados.
           </p>
         </div>

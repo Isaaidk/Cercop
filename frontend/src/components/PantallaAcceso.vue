@@ -55,14 +55,14 @@ async function entrar() {
   <div class="acceso">
     <header class="acceso__cabecera">
       <div class="marca">
-        <span class="marca__icono" aria-hidden="true">CP</span>
+        <span class="marca__icono" aria-hidden="true">CA</span>
         <!--
           El nombre del producto. Antes decía «Contratación pública», que describe la categoría pero
           no identifica el sitio: el nombre aparecía en el título de la pestaña y en ningún otro
-          sitio de la página. Las iniciales del icono coinciden con Cercop, así que no se pierde la
+          sitio de la página. Las iniciales del icono coinciden con CercoApp, así que no se pierde la
           lectura anterior.
         -->
-        <span class="marca__texto">Cercop</span>
+        <span class="marca__texto">CercoApp</span>
       </div>
       <button
         type="button"
@@ -78,7 +78,7 @@ async function entrar() {
       <section class="acceso__presentacion aparece">
         <h1>La contratación pública del Ecuador, en un solo panel</h1>
         <p>
-          Cercop reúne las <strong>necesidades de contratación</strong> y los
+          CercoApp reúne las <strong>necesidades de contratación</strong> y los
           <strong>procesos publicados</strong> por el SERCOP en los datos abiertos, y los muestra en
           una tabla filtrable, gráficas y un mapa de las 24 provincias.
         </p>
@@ -147,7 +147,7 @@ async function entrar() {
           Crear la cuenta de mi empresa
         </button>
         <p class="acceso__registro-nota">
-          El registro da acceso al panel durante 30 días, con todas las vistas y sin coste.
+          El registro da acceso al panel durante 7 días, con todas las vistas y sin coste.
         </p>
 
         <p

@@ -15,8 +15,8 @@
     <div class="pie__envoltura">
       <div class="pie__identidad">
         <p class="pie__nombre">
-          <span class="pie__icono" aria-hidden="true">CP</span>
-          Cercop
+          <span class="pie__icono" aria-hidden="true">CA</span>
+          CercoApp
         </p>
         <p class="pie__descripcion">
           Panel de seguimiento de la contratación pública del Ecuador.
@@ -33,7 +33,7 @@
 
     <div class="pie__envoltura">
       <p class="pie__aviso">
-        Cercop no es una página oficial del SERCOP. Es una herramienta de consulta que lee los datos
+        CercoApp no es una página oficial del SERCOP. Es una herramienta de consulta que lee los datos
         que el Servicio Nacional de Contratación Pública publica en abierto. Para cualquier trámite,
         la fuente que vale es siempre la oficial. Al crear una cuenta se aceptan las condiciones de
         uso del servicio.

@@ -10,10 +10,11 @@
  * datos. Con los dos bloques a la vista, quien lo rellena ve de un vistazo qué le falta y puede
  * corregir cualquier cosa antes de enviar.
  *
- * **Solo el nombre de la empresa, el correo y la contraseña son obligatorios.** El RUC, el teléfono y
- * la dirección se pueden dejar en blanco y rellenar después desde el panel. Exigirlos todos convertiría
- * el registro en un trámite, y quien no tenga el RUC a mano no podría entrar a ver si el producto le
- * sirve.
+ * **Todos los campos se anuncian como obligatorios.** El RUC, la ciudad, el teléfono, el correo de
+ * contacto, la dirección y el nombre de la persona llevaban la etiqueta «opcional» y se retiró: son
+ * datos que hacen falta para operar la cuenta. El formulario sigue habilitando el envío con el nombre
+ * de la empresa, el correo y la contraseña —los tres que se pueden validar aquí sin preguntar al
+ * servidor—, y el resto los admite el servidor como nulos y se completan desde el panel.
  *
  * **La política de contraseñas se pide al servidor y se muestra como una lista que se completa.** Es
  * la única forma de que el formulario no diga una cosa y el servidor exija otra. Y se ve lo que falta
@@ -99,8 +100,8 @@ async function registrar() {
   <div class="registro">
     <header class="registro__cabecera">
       <div class="marca">
-        <span class="marca__icono" aria-hidden="true">CP</span>
-        <span class="marca__texto">Contratación pública</span>
+        <span class="marca__icono" aria-hidden="true">CA</span>
+        <span class="marca__texto">CercoApp</span>
       </div>
       <div class="registro__cabecera-acciones">
         <button type="button" class="boton boton--fantasma boton--pequeno" @click="emit('ir-a-acceso')">
@@ -125,7 +126,7 @@ async function registrar() {
           cuentas de su equipo, asignarles la contraseña y darlas de baja cuando haga falta.
         </p>
         <p class="registro__aviso-prueba">
-          Tu empresa empieza con <strong>30 días de acceso a todas las vistas</strong>, para que puedas
+          Tu empresa empieza con <strong>7 días de acceso a todas las vistas</strong>, para que puedas
           comprobar si el producto te sirve antes de decidir nada.
         </p>
       </div>
@@ -157,31 +158,31 @@ async function registrar() {
 
           <div class="rejilla-dos">
             <label class="campo">
-              <span class="campo__etiqueta">RUC <span class="campo__opcional">opcional</span></span>
+              <span class="campo__etiqueta">RUC <span class="campo__obligatorio">obligatorio</span></span>
               <input v-model="empresa.ruc" class="entrada" type="text" maxlength="20" placeholder="1790012344001" />
               <span class="campo__ayuda">Se comprueba el dígito verificador.</span>
             </label>
 
             <label class="campo">
-              <span class="campo__etiqueta">Ciudad <span class="campo__opcional">opcional</span></span>
+              <span class="campo__etiqueta">Ciudad <span class="campo__obligatorio">obligatorio</span></span>
               <input v-model="empresa.ciudad" class="entrada" type="text" maxlength="80" placeholder="Quito" />
             </label>
           </div>
 
           <div class="rejilla-dos">
             <label class="campo">
-              <span class="campo__etiqueta">Teléfono <span class="campo__opcional">opcional</span></span>
+              <span class="campo__etiqueta">Teléfono <span class="campo__obligatorio">obligatorio</span></span>
               <input v-model="empresa.telefono" class="entrada" type="tel" maxlength="20" placeholder="+593 99 123 4567" />
             </label>
 
             <label class="campo">
-              <span class="campo__etiqueta">Correo de contacto <span class="campo__opcional">opcional</span></span>
+              <span class="campo__etiqueta">Correo de contacto <span class="campo__obligatorio">obligatorio</span></span>
               <input v-model="empresa.email_contacto" class="entrada" type="email" maxlength="254" placeholder="contacto@empresa.ec" />
             </label>
           </div>
 
           <label class="campo">
-            <span class="campo__etiqueta">Dirección <span class="campo__opcional">opcional</span></span>
+            <span class="campo__etiqueta">Dirección <span class="campo__obligatorio">obligatorio</span></span>
             <input v-model="empresa.direccion" class="entrada" type="text" maxlength="200" placeholder="Av. Amazonas 1234 y Colón" />
           </label>
         </fieldset>
@@ -198,7 +199,7 @@ async function registrar() {
           </p>
 
           <label class="campo">
-            <span class="campo__etiqueta">Tu nombre <span class="campo__opcional">opcional</span></span>
+            <span class="campo__etiqueta">Tu nombre <span class="campo__obligatorio">obligatorio</span></span>
             <input v-model="admin.nombre" class="entrada" type="text" maxlength="120" placeholder="Ana Pérez" />
           </label>
 
@@ -296,6 +297,32 @@ async function registrar() {
   padding: var(--e-4) var(--e-5);
 }
 
+/* Mismo dibujo de marca que en la aceptación de términos: es la cabecera del mismo tipo de
+   pantalla —una sola tarea, sin panel alrededor—, así que el icono se ve igual en las dos. */
+.marca {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+}
+
+.marca__icono {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-2);
+  background: var(--acento);
+  color: #fff;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.marca__texto {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
 .registro__cabecera-acciones {
   display: flex;
   align-items: center;
@@ -389,20 +416,12 @@ async function registrar() {
   gap: var(--e-3);
 }
 
-.campo__obligatorio,
-.campo__opcional {
+.campo__obligatorio {
   font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-}
-
-.campo__obligatorio {
   color: var(--acento);
-}
-
-.campo__opcional {
-  color: var(--texto-tenue);
 }
 
 .campo__error {

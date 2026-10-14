@@ -1,4 +1,4 @@
-# Cercop
+# CercoApp
 
 Panel de seguimiento de la contratación pública del Ecuador (SERCOP).
 

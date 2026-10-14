@@ -64,10 +64,10 @@ from contratacion.dominio.roles import Rol
 
 registro = logging.getLogger(__name__)
 
-# Plazo de la prueba inicial. Es un plazo de los que existen —treinta días— y no un número inventado
+# Plazo de la prueba inicial. Es un plazo de los que existen —siete días— y no un número inventado
 # para esta operación: así la concesión aparece en el mismo tablero que las demás y se puede renovar
 # con el mismo botón, sin un caso especial que mantener.
-PLAZO_PRUEBA = Plazo.D30
+PLAZO_PRUEBA = Plazo.D7
 
 # Todas las vistas del catálogo. Se concede la lista entera a propósito: una prueba a medias
 # hace que la persona no pueda saber si el producto le sirve, que es lo único que una prueba
@@ -131,7 +131,7 @@ def requisitos() -> dict[str, Any]:
         },
         "vistas_prueba": [str(vista) for vista in VISTAS_DE_PRUEBA],
         "plazo_prueba": str(PLAZO_PRUEBA),
-        "dias_prueba": 30,
+        "dias_prueba": 7,
     }
 
 
