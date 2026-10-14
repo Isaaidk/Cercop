@@ -161,8 +161,15 @@ def pendientes(
     por_tipo = {politica.tipo: politica for politica in publicadas}
     aceptadas_por_tipo: dict[TipoPolitica, Consentimiento] = {}
     for consentimiento in aceptadas:
-        if consentimiento.vigente:
-            # Si hay varias, la última marca el estado. Las anteriores son historial.
+        if not consentimiento.vigente:
+            continue
+        # Si hay varias, la más reciente marca el estado y las anteriores son historial. Se decide
+        # por la fecha y no por el orden de llegada: el repositorio entrega el historial del más
+        # reciente al más antiguo, y quedarse con «la última de la lista» elegía la más antigua.
+        # Quien había aceptado la versión 1 y aceptaba la 2 seguía figurando con la 1, y la
+        # pantalla de aceptación volvía a aparecer sin fin.
+        anterior = aceptadas_por_tipo.get(consentimiento.tipo)
+        if anterior is None or consentimiento.aceptado_en > anterior.aceptado_en:
             aceptadas_por_tipo[consentimiento.tipo] = consentimiento
 
     faltantes: list[Politica] = []
