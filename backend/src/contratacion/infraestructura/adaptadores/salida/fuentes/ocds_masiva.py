@@ -39,6 +39,7 @@ poniendo las dos filas del mismo `ocid` una al lado de la otra
 | `year`, `month` | los dos primeros trozos de `date` |
 | `method` | `tender.procurementMethod` |
 | `budget` | `planning.budget.amount` |
+| `status` | `tender.status` de la publicación más reciente, traducido (ver `ESTADOS_PROCESO`) |
 
 LO QUE **NO** ES IGUAL, Y POR QUÉ. `id` en el listado es un número interno (3286295) que el fichero
 no publica; se usa `tender.id`, que es el código del proceso y significa lo mismo que la etiqueta
@@ -85,6 +86,30 @@ DECIMALES = 6
 # Los campos que son dinero. Van aparte porque un cero en ellos significa «todavía no hay», y eso
 # importa al combinar publicaciones de meses distintos: ver `combinar`.
 CAMPOS_MONETARIOS = ("amount", "budget")
+
+# El estado del proceso, `tender.status`, traducido. El estándar OCDS define estos siete códigos; en
+# los diez meses de 2026 el SERCOP solo publica dos —`complete` (83.091 publicaciones) y `active`
+# (14.221)—. **No publica ningún estado de suspensión, cancelación ni desierto**, ni en este campo
+# ni en ningún otro del fichero: con estos datos no se puede saber qué procesos están suspendidos.
+# Se traducen los siete para que, si el SERCOP
+# empieza a usar los demás, se lean bien sin tocar nada; un código desconocido pasa tal cual.
+ESTADOS_PROCESO = {
+    "planning": "En planificación",
+    "planned": "Planificado",
+    "active": "En curso",
+    "complete": "Finalizado",
+    "cancelled": "Cancelado",
+    "unsuccessful": "Desierto",
+    "withdrawn": "Retirado",
+}
+
+
+def _estado_del_proceso(codigo: Any) -> str | None:
+    """`tender.status` en español, o `None` si la publicación no lo trae."""
+    if not codigo:
+        return None
+    texto = str(codigo).strip()
+    return ESTADOS_PROCESO.get(texto.lower(), texto) or None
 
 
 def nombre_del_mes(mes: int) -> str:
@@ -234,6 +259,7 @@ def traducir_publicacion(publicacion: Mapping[str, Any]) -> dict[str, Any]:
     ]
     direccion = _direccion_del_comprador(publicacion)
     presupuesto = (planificacion.get("budget") or {}).get("amount")
+    estado = _estado_del_proceso(contrato.get("status"))
 
     return {
         "ocid": publicacion.get("ocid"),
@@ -257,6 +283,11 @@ def traducir_publicacion(publicacion: Mapping[str, Any]) -> dict[str, Any]:
         "month": int(fecha[5:7]) if len(fecha) >= 7 and fecha[5:7].isdigit() else None,
         "method": contrato.get("procurementMethod"),
         "budget": _importe(presupuesto),
+        "status": estado,
+        # La fecha de la publicación que trae el estado. Es una marca interna —el guion bajo hace
+        # que el mapeo la ignore— y solo sirve para que `combinar` se quede con el estado **más
+        # reciente**, no con el primero que encuentre.
+        "_fecha_estado": fecha if estado else None,
         # El desglose del producto viaja con un guion bajo delante porque **no es un campo
         # canónico**: no hay una columna del `datos` que lo reciba, se guarda en su propia columna
         # de la tabla. El guion es la convención que ya usa este adaptador para sus marcas internas,
@@ -303,6 +334,10 @@ def combinar(filas: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     El `date` se queda con el **más antiguo**, que es la fecha de publicación del proceso: es el
     valor con el que se publica en el listado y con el que filtra el panel por fecha.
+
+    El `status` es la excepción contraria: se queda con el de la publicación **más reciente**. El
+    estado cambia con el tiempo —un proceso «En curso» en el anuncio pasa a «Finalizado» con el
+    contrato—, y quedarse con el primero dejaría todos los procesos en el estado de su anuncio.
     """
     combinadas: dict[str, dict[str, Any]] = {}
     for fila in filas:
@@ -323,6 +358,14 @@ def combinar(filas: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 continue
             if campo == "date":
                 actual[campo] = min(str(actual.get(campo) or valor), str(valor))
+                continue
+            if campo == "_fecha_estado":
+                continue
+            if campo == "status":
+                fecha_nueva = str(fila.get("_fecha_estado") or "")
+                if fecha_nueva >= str(actual.get("_fecha_estado") or ""):
+                    actual["status"] = valor
+                    actual["_fecha_estado"] = fecha_nueva
                 continue
             anterior = actual.get(campo)
             if anterior in (None, "") or (campo in CAMPOS_MONETARIOS and _es_cero(anterior)):

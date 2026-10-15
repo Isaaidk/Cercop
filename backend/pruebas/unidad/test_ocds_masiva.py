@@ -147,9 +147,10 @@ def test_la_traduccion_entrega_exactamente_las_claves_que_espera_el_mapeo() -> N
     desglose del producto no tiene columna en el `jsonb` de datos —se guarda en la suya—, así que no
     es un campo canónico. Si algún día se renombrara sin guion, el mapeo lo anotaría como «clave sin
     mapear» en cada ciclo y el contador de campos nuevos del panel diría que la fuente ha cambiado.
+    `_fecha_estado` es la otra marca interna: solo la usa `combinar` para elegir el estado.
     """
     esperadas = {mapeo["clave_cruda"] for mapeo in ocds_mapeos.MAPEOS_POR_DEFECTO}
-    assert set(traducir_publicacion(PUBLICACION)) == esperadas | {"_items"}
+    assert set(traducir_publicacion(PUBLICACION)) == esperadas | {"_items", "_fecha_estado"}
 
 
 @pytest.mark.parametrize("clave", sorted(LISTADO))
@@ -397,6 +398,51 @@ def test_se_combinan_las_publicaciones_del_mismo_proceso() -> None:
     assert fila["amount"] == "12430.420000"
     # La fecha es la del anuncio: es la de publicación del proceso, que es la que filtra el panel.
     assert fila["date"] == PUBLICACION["date"]
+
+
+@pytest.mark.parametrize(
+    ("codigo", "esperado"),
+    [("active", "En curso"), ("complete", "Finalizado"), ("cancelled", "Cancelado"), (None, None)],
+)
+def test_el_estado_del_proceso_se_guarda_traducido(
+    codigo: str | None, esperado: str | None
+) -> None:
+    publicacion = {**PUBLICACION, "tender": {**PUBLICACION["tender"], "status": codigo}}
+    assert traducir_publicacion(publicacion)["status"] == esperado
+
+
+def test_un_estado_desconocido_pasa_tal_cual() -> None:
+    """Si el SERCOP estrena un código, se ve en lugar de perderse."""
+    publicacion = {**PUBLICACION, "tender": {**PUBLICACION["tender"], "status": "suspended"}}
+    assert traducir_publicacion(publicacion)["status"] == "suspended"
+
+
+@pytest.mark.parametrize("invertir", [False, True])
+def test_al_combinar_gana_el_estado_mas_reciente(invertir: bool) -> None:
+    """Al revés que la fecha: gana el estado más reciente, sin importar el orden de lectura."""
+    anuncio = {**PUBLICACION, "tender": {**PUBLICACION["tender"], "status": "active"}}
+    contrato = {
+        **PUBLICACION,
+        "date": "2026-11-15T09:00:00-05:00",
+        "tender": {**PUBLICACION["tender"], "status": "complete"},
+    }
+    filas = [traducir_publicacion(anuncio), traducir_publicacion(contrato)]
+    if invertir:
+        filas.reverse()
+
+    fila = combinar(filas)[0]
+
+    assert fila["status"] == "Finalizado"
+    assert fila["date"] == PUBLICACION["date"]
+
+
+def test_una_publicacion_sin_estado_no_borra_el_que_habia() -> None:
+    anuncio = {**PUBLICACION, "tender": {**PUBLICACION["tender"], "status": "active"}}
+    adjudicacion = {**PUBLICACION, "date": "2026-11-15T09:00:00-05:00", "tender": {}}
+
+    fila = combinar([traducir_publicacion(anuncio), traducir_publicacion(adjudicacion)])[0]
+
+    assert fila["status"] == "En curso"
 
 
 def test_una_publicacion_sin_ocid_se_descarta() -> None:

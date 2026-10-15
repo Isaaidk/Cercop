@@ -128,4 +128,15 @@ MAPEOS_POR_DEFECTO: tuple[dict[str, Any], ...] = (
         "orden": 150,
         "ancho_excel": 16,
     },
+    {
+        # Solo lo trae la descarga masiva (`tender.status`, ya traducido allí); el listado paginado
+        # no lo publica. Va al mismo campo canónico que el estado de las ínfimas para que el filtro
+        # y el cajón de detalle lo lean sin distinguir de qué fuente viene.
+        "clave_cruda": "status",
+        "campo_canonico": "estado",
+        "etiqueta": "Estado del proceso",
+        "tipo_dato": "texto",
+        "orden": 160,
+        "ancho_excel": 18,
+    },
 )

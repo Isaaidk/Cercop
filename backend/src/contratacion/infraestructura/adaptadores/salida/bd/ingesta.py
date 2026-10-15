@@ -37,6 +37,21 @@ ESTADO_ERROR = "error"
 # por debajo para que el número no haya que recalcularlo cada vez que una fila gane una columna.
 FILAS_POR_LOTE = 500
 
+# Los `datos` nuevos al actualizar un registro, **conservando el estado** si la fila nueva no trae.
+#
+# Las ofertas entran por dos caminos: la descarga masiva, que trae el estado del proceso, y el
+# listado paginado que lee el worker, que no lo publica. Sin esto, cada vez que el listado volviera
+# a ver un proceso ya importado reescribiría `datos` entero y el estado desaparecería. Solo se
+# conserva cuando la fila nueva no trae estado: si trae uno, manda el nuevo, que es el más actual.
+DATOS_CONSERVANDO_ESTADO = """
+    CASE
+        WHEN coalesce(EXCLUDED.datos ->> 'estado', '') = ''
+             AND coalesce(registro.datos ->> 'estado', '') <> ''
+        THEN EXCLUDED.datos || jsonb_build_object('estado', registro.datos -> 'estado')
+        ELSE EXCLUDED.datos
+    END
+"""
+
 
 class RepositorioIngesta:
     """Operaciones de escritura y lectura de la ingesta."""
@@ -491,7 +506,7 @@ class RepositorioIngesta:
         async with self._motor.begin() as conexion:
             fila = await conexion.execute(
                 text(
-                    """
+                    f"""
                     INSERT INTO registro (
                         fuente_id, clave_natural, datos, crudo, texto_busqueda, hash_contenido,
                         fecha_publicacion, provincia, tipo_proceso, plazo_proformas_en
@@ -502,7 +517,7 @@ class RepositorioIngesta:
                         CAST(:plazo AS timestamptz)
                     )
                     ON CONFLICT (fuente_id, clave_natural) DO UPDATE
-                        SET datos = EXCLUDED.datos,
+                        SET datos = {DATOS_CONSERVANDO_ESTADO},
                             crudo = EXCLUDED.crudo,
                             texto_busqueda = EXCLUDED.texto_busqueda,
                             hash_contenido = EXCLUDED.hash_contenido,
@@ -656,7 +671,7 @@ class RepositorioIngesta:
                         )
                         VALUES {valores}
                         ON CONFLICT (fuente_id, clave_natural) DO UPDATE
-                            SET datos = EXCLUDED.datos,
+                            SET datos = {DATOS_CONSERVANDO_ESTADO},
                                 crudo = EXCLUDED.crudo,
                                 texto_busqueda = EXCLUDED.texto_busqueda,
                                 hash_contenido = EXCLUDED.hash_contenido,

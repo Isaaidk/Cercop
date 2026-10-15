@@ -57,6 +57,8 @@ CLAVES_OCDS = {
     "title",
     "description",
     "budget",
+    # No viene en `search_ocds`: lo añade la descarga masiva desde `tender.status`.
+    "status",
 }
 
 # El identificador del registro lo pone la base de datos. Si un mapeo lo reclamara, la API

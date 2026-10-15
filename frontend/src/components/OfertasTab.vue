@@ -51,14 +51,24 @@ const FILAS_POR_PAGINA = 25
 const FUENTE_PREDETERMINADA = 'OCDS'
 
 /**
- * La fuente que **no** publica el estado de la contratación.
+ * Los estados que puede tener un proceso de los datos abiertos, ya traducidos.
  *
- * Los datos abiertos de los procesos no traen estado —se comprobó: en las 104.316 filas de OCDS la
- * columna está vacía y el filtro devuelve cero—, mientras que la fuente de las ínfimas cuantías sí
- * lo publica. Con esta constante se apaga el control en lugar de ofrecer un filtro que vacía la
- * tabla, que es la peor forma de «tener» una función.
+ * El listado paginado no publica el estado; lo trae la descarga masiva (`tender.status`) y se
+ * traduce al guardarlo (`ESTADOS_PROCESO` en `ocds_masiva.py`). El catálogo de estados mezcla los de
+ * todas las fuentes, así que con la fuente OCDS se ofrecen solo estos: un estado de las ínfimas
+ * devolvería cero procesos. En 2026 el SERCOP solo publica «En curso» y «Finalizado»; los demás
+ * están por si empieza a usarlos, y solo aparecen si de verdad hay procesos con ese estado.
  */
-const FUENTE_SIN_ESTADO = 'OCDS'
+const FUENTE_OCDS = 'OCDS'
+const ESTADOS_OCDS = [
+  'En planificación',
+  'Planificado',
+  'En curso',
+  'Finalizado',
+  'Cancelado',
+  'Desierto',
+  'Retirado',
+]
 
 /**
  * Cómo se combinan varias palabras clave en esta pestaña.
@@ -127,8 +137,15 @@ const catalogo = computed(() => datos.estado.catalogos)
 
 const fuentes = computed(() => catalogo.value.fuente || [])
 
-/** Los estados que existen de verdad en los datos, no una lista inventada. */
-const estados = computed(() => catalogo.value.estado || [])
+/**
+ * Los estados que existen de verdad en los datos, no una lista inventada. Con la fuente OCDS, solo
+ * los de los procesos; con las demás, los del catálogo tal cual.
+ */
+const estados = computed(() => {
+  const todos = catalogo.value.estado || []
+  if (criterios.fuente !== FUENTE_OCDS) return todos
+  return todos.filter((valor) => ESTADOS_OCDS.includes(valor))
+})
 
 /**
  * Las palabras que se pueden buscar en un texto, ya separadas y sin repetir.
@@ -182,11 +199,7 @@ function parametros() {
   if (aplicados.value.provincias.length) {
     salida.provincia = aplicados.value.provincias.map(nombreParaApi)
   }
-  // El estado se envía solo si la fuente lo publica. Si se colara con los datos abiertos, la lista
-  // saldría vacía y parecería que la búsqueda está rota cuando lo que falta es el dato.
-  if (aplicados.value.estado && aplicados.value.fuente !== FUENTE_SIN_ESTADO) {
-    salida.estado = aplicados.value.estado
-  }
+  if (aplicados.value.estado) salida.estado = aplicados.value.estado
   return salida
 }
 
@@ -326,6 +339,14 @@ function presupuesto(fila) {
   const valor = fila.presupuesto ?? fila.monto
   if (valor === null || valor === undefined || valor === '') return '—'
   return `$ ${decimal(valor)}`
+}
+
+/** El color de la etiqueta del estado: en curso destaca, lo cerrado va apagado o en aviso. */
+function claseDeEstado(estado) {
+  if (estado === 'En curso') return 'etiqueta--ok'
+  if (['Cancelado', 'Desierto', 'Retirado'].includes(estado)) return 'etiqueta--aviso'
+  if (['En planificación', 'Planificado'].includes(estado)) return 'etiqueta--info'
+  return ''
 }
 
 function lugar(fila) {
@@ -485,24 +506,13 @@ onMounted(() => {
 
       <div class="campo">
         <label class="campo__etiqueta" for="of-estado">Estado de la contratación</label>
-        <select
-          id="of-estado"
-          v-model="criterios.estado"
-          class="entrada"
-          :disabled="criterios.fuente === FUENTE_SIN_ESTADO"
-        >
+        <select id="of-estado" v-model="criterios.estado" class="entrada">
           <option value="">Todos los estados</option>
           <option v-for="valor in estados" :key="valor" :value="valor">{{ valor }}</option>
         </select>
-        <!--
-          Desactivado y explicado, en lugar de disponible y siempre vacío. Se midió antes de
-          decidirlo: con la fuente de datos abiertos, elegir un estado devuelve **cero** filas,
-          porque esas 104.316 filas no traen el campo. Un control que vacía la tabla sin decir por
-          qué se lee como que la búsqueda está rota.
-        -->
-        <p v-if="criterios.fuente === FUENTE_SIN_ESTADO" class="ofertas__ayuda">
-          Los procesos de datos abiertos no publican el estado, así que aquí no se puede filtrar por
-          él. Cambia la fuente a NCO para usarlo.
+        <p v-if="criterios.fuente === FUENTE_OCDS" class="ofertas__ayuda">
+          Los datos abiertos solo publican si el proceso está en curso o finalizado; no indican si
+          está suspendido, cancelado o desierto.
         </p>
       </div>
 
@@ -541,8 +551,9 @@ onMounted(() => {
     <p class="ofertas__nota">
       Los datos vienen de los datos abiertos del SERCOP. El buscador del portal no se puede consultar
       desde aquí —su servicio pide un captcha—, así que el listado se arma con esa misma información.
-      El <strong>estado del proceso</strong> no se muestra porque los datos abiertos no lo publican:
-      una columna con «—» en todas las filas parece un fallo del sistema y no lo es.
+      El <strong>estado del proceso</strong> es el que publican los datos abiertos: solo distinguen
+      «En curso» y «Finalizado», sin suspensiones ni cancelaciones. Los procesos recién publicados
+      pueden salir con «—» hasta la siguiente importación de los ficheros mensuales.
     </p>
 
     <div v-if="filas.length" class="ofertas__barra">
@@ -600,6 +611,7 @@ onMounted(() => {
             <th scope="col">Provincia / Cantón</th>
             <th scope="col" class="ofertas__numero">Presupuesto referencial total (sin iva)</th>
             <th scope="col">Fecha de publicación</th>
+            <th scope="col">Estado</th>
             <th scope="col">Opciones</th>
           </tr>
         </thead>
@@ -633,6 +645,12 @@ onMounted(() => {
               <td>{{ lugar(fila) }}</td>
               <td class="ofertas__numero numeros">{{ presupuesto(fila) }}</td>
               <td class="numeros">{{ fechaCorta(fila.fecha_publicacion) }}</td>
+              <td>
+                <span v-if="fila.estado" class="etiqueta" :class="claseDeEstado(fila.estado)">
+                  {{ fila.estado }}
+                </span>
+                <span v-else class="ofertas__sin-dato" title="Aún sin estado: llega con la importación mensual">—</span>
+              </td>
               <td>
                 <button
                   type="button"
@@ -776,6 +794,10 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--e-2);
+}
+
+.ofertas__sin-dato {
+  color: var(--texto-tenue);
 }
 
 .ofertas__descargar {
