@@ -20,15 +20,19 @@ from datetime import date
 import pytest
 
 from contratacion.dominio.busqueda import (
+    Categoria,
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
     PaginaResultados,
     clave_generacion,
     clave_resultados,
+    codigo_cercoapp,
     coincide,
     es_codigo_cpc,
+    es_identificador,
     expresion_busqueda,
+    expresion_de_termino,
     huella_filtros,
     limitar_elementos,
     normalizar_provincias,
@@ -98,6 +102,137 @@ def test_expresion_combina_con_o_en_modo_cualquiera() -> None:
 
 def test_expresion_es_nula_sin_terminos() -> None:
     assert expresion_busqueda([], ModoBusqueda.TODAS) is None
+
+
+def test_expresion_de_un_termino_es_la_pieza_suelta() -> None:
+    """La pieza de un término tiene que ser exactamente la que arma la expresión completa.
+
+    Es lo que impide que las dos versiones se separen: la búsqueda que trata los términos uno a uno
+    —la de los códigos de proceso— compone con esta función, y la de siempre une las mismas piezas.
+    """
+    assert expresion_de_termino("obras viales") == "(obras:* & viales:*)"
+    assert expresion_de_termino("###") is None
+    assert expresion_busqueda(["obras viales", "puentes"], ModoBusqueda.TODAS) == (
+        "(obras:* & viales:*) & (puentes:*)"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Códigos de proceso
+#
+# Un término con esta forma se busca también contra el campo del código, porque el analizador de
+# PostgreSQL guarda el guion dentro del número (`-0038`) y la búsqueda por prefijos no alcanza ese
+# token. Reconocerlo es lo que hace que pegar un código encuentre la fila.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "termino",
+    [
+        "SIE-UTA-2026-0038-3205",
+        "SIE-UTA-2026-0038",
+        "NIC-1768120280001-2022-00003",
+        "sie-uta-2026-0038-3205",
+    ],
+)
+def test_un_codigo_de_proceso_se_reconoce(termino: str) -> None:
+    assert es_identificador(termino)
+
+
+@pytest.mark.parametrize(
+    "termino",
+    [
+        "medicamentos",
+        "obra-2026",
+        "SIE-UTA",
+        "2026-0038",
+        "",
+    ],
+)
+def test_una_palabra_o_un_termino_corto_no_es_un_codigo(termino: str) -> None:
+    """El reconocimiento se pide estrecho a propósito: solo **añade** una vía de coincidencia."""
+    assert not es_identificador(termino)
+
+
+# --------------------------------------------------------------------------- #
+# El código sin el prefijo del portal y sin el consecutivo interno
+#
+# Es lo que se muestra como «Código CercoApp» y lo que se copia para volver a buscar el proceso. Lo
+# que se protege es que la limpieza no toque lo que no debe: 81.688 códigos de oferta son texto con
+# un solo guion («Orden de compra CE-20260003118811»), 101.799 filas ya vienen sin prefijo, y en las
+# ínfimas el último grupo es el secuencial de la contratación y no un sobrante.
+# --------------------------------------------------------------------------- #
+
+
+def test_en_las_ofertas_quita_el_consecutivo_del_portal() -> None:
+    """El caso que se pidió: el portal añade un grupo detrás y el buscador no lo necesita."""
+    assert codigo_cercoapp("SIE-UNESUM-2026-0025-136003", categoria=Categoria.OFERTAS) == (
+        "SIE-UNESUM-2026-0025"
+    )
+
+
+def test_quita_el_prefijo_y_el_consecutivo_a_la_vez() -> None:
+    assert codigo_cercoapp(
+        "ocds-5wno2w-LICO-EPMMOP-2026-036-741823", categoria=Categoria.OFERTAS
+    ) == ("LICO-EPMMOP-2026-036")
+
+
+def test_en_las_infimas_el_nic_se_queda_entero() -> None:
+    """El NIC no lleva consecutivo sobrante: su último grupo es el secuencial de la contratación.
+
+    Recortarlo daría `NIC-0660821210001-2026`, que no identifica una contratación sino todas las de
+    esa entidad ese año.
+    """
+    nic = "NIC-0660821210001-2026-00062"
+
+    assert codigo_cercoapp(nic, categoria=Categoria.INFIMAS) == nic
+
+
+def test_un_codigo_con_texto_no_se_toca() -> None:
+    """En la columna hay valores que no son códigos, y recortarlos sería inventar el dato."""
+    texto = "Orden de compra CE-20260003118811"
+
+    assert codigo_cercoapp(texto, categoria=Categoria.OFERTAS) == texto
+
+
+def test_un_grupo_con_letras_no_se_recorta() -> None:
+    """Solo se quita el último grupo si es numérico: `ABC` forma parte del código."""
+    assert codigo_cercoapp("SIE-UTA-2026-ABC", categoria=Categoria.OFERTAS) == "SIE-UTA-2026-ABC"
+
+
+def test_un_codigo_de_tres_grupos_no_se_recorta() -> None:
+    """Solo se recorta cuando el código tiene un grupo **de más**.
+
+    `RE-PUHAIAM2026-002` son tres grupos —`RE`, `PUHAIAM2026` y el secuencial— y quitarle el último
+    daría `RE-PUHAIAM2026`, que ya no dice qué contratación es.
+    """
+    assert codigo_cercoapp("RE-PUHAIAM2026-002", categoria=Categoria.OFERTAS) == (
+        "RE-PUHAIAM2026-002"
+    )
+
+
+def test_sin_categoria_solo_quita_el_prefijo() -> None:
+    """La categoría es la que autoriza el recorte; sin ella, el código se respeta."""
+    assert codigo_cercoapp("SIE-UTA-2026-0038-3205") == "SIE-UTA-2026-0038-3205"
+    assert codigo_cercoapp("ocds-5wno2w-SIE-UTA-2026-0038-3205") == "SIE-UTA-2026-0038-3205"
+
+
+@pytest.mark.parametrize("valor", [None, "", "   "])
+def test_sin_codigo_no_hay_codigo(valor: str | None) -> None:
+    assert codigo_cercoapp(valor, categoria=Categoria.OFERTAS) is None
+
+
+def test_un_ocds_sin_el_tercer_grupo_no_se_recorta() -> None:
+    """El prefijo son dos grupos; `ocds-a` a secas es el código entero y no se le quita nada."""
+    assert codigo_cercoapp("ocds-5wno2w") == "ocds-5wno2w"
+
+
+def test_lo_que_devuelve_es_buscable() -> None:
+    """El valor que se muestra tiene que ser el que se puede pegar, y las dos formas lo son."""
+    recortado = codigo_cercoapp("ocds-5wno2w-SIE-UTA-2026-0038-3205", categoria=Categoria.OFERTAS)
+
+    assert recortado == "SIE-UTA-2026-0038"
+    assert es_identificador(recortado or "")
 
 
 # --------------------------------------------------------------------------- #

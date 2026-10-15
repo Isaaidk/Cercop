@@ -27,6 +27,7 @@ Las pruebas se reparten en cuatro grupos:
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from datetime import date
 from pathlib import Path
@@ -45,6 +46,7 @@ from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     normalizar_ubicacion,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
+    ENTIDAD_NORMALIZADA,
     INDICE_OBJETO,
     ORDENES,
     _condiciones,
@@ -387,6 +389,96 @@ def test_los_comodines_del_codigo_van_escapados() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# La entidad contratante
+#
+# Se busca por **fragmento** contra la razón social normalizada, y su índice es el que la hace
+# rápida: un trigramas (migración 0023), que es lo único que resuelve un `LIKE '%…%'`. Sin él, cada
+# búsqueda leía y descomprimía el `jsonb` de las 108.000 filas: medido, 104 s.
+# --------------------------------------------------------------------------- #
+
+
+def test_la_entidad_se_busca_por_fragmento_contra_su_expresion() -> None:
+    """Fragmento, no texto completo: «municipio» tiene que encontrar «MUNICIPIO DE QUITO»."""
+    condiciones, parametros = _condiciones(Filtros(entidad="Municipio"))
+
+    unida = " AND ".join(condiciones)
+    assert "texto_busqueda" not in unida
+    assert "COALESCE(r.datos ->> 'entidad', '')" in unida
+    assert "LIKE :entidad" in unida
+    assert parametros["entidad"] == "%municipio%"
+
+
+def test_las_tildes_de_la_entidad_se_quitan_antes_de_buscar() -> None:
+    """El índice guarda la razón social sin tildes; con ellas, la consulta no encontraría nada."""
+    _, parametros = _condiciones(Filtros(entidad="Órgano de Control"))
+
+    assert parametros["entidad"] == "%organo de control%"
+
+
+def test_los_comodines_de_la_entidad_van_escapados() -> None:
+    """Un `%` escrito por el usuario no puede convertirse en «cualquier cosa»."""
+    _, parametros = _condiciones(Filtros(entidad="EPM%APS"))
+
+    assert parametros["entidad"] == "%epm\\%aps%"
+
+
+def test_el_indice_de_la_entidad_coincide_con_la_consulta() -> None:
+    """La expresión del índice (migración 0023) y la de la consulta tienen que ser la misma.
+
+    Separadas, PostgreSQL deja de usar el índice y la búsqueda vuelve a los cien segundos medidos,
+    sin que falle nada: ni un error, ni un aviso, solo lentitud. Se compara contra el índice **ya
+    resuelto** —la migración arma la expresión con una constante— y no contra el texto del archivo,
+    donde aparecería el nombre de la constante en lugar de las dos listas de tildes.
+    """
+    indice = _sin_huecos(_indice_de_la_migracion("0023_indices_filtros_ofertas.py"))
+
+    assert _sin_huecos(ENTIDAD_NORMALIZADA.replace("r.datos", "datos")) in indice
+    assert "gin_trgm_ops" in indice
+
+
+def test_un_codigo_de_proceso_se_busca_tambien_contra_su_campo() -> None:
+    """Pegar el código de un proceso tiene que encontrarlo, y el índice de texto no basta.
+
+    Medido sobre el histórico: `to_tsvector` guarda `-0038` —se queda el guion dentro del número— y
+    la consulta por prefijos (`0038:*`) no alcanza ese token, así que la búsqueda por palabras
+    clave devolvía cero filas para un código que existe. El término se busca **además** contra el
+    campo del código, que es una comparación de texto y no depende de cómo tokenice el motor.
+    """
+    condiciones, parametros = _condiciones(
+        Filtros(terminos=("SIE-UTA-2026-0038-3205",), modo=ModoBusqueda.CUALQUIERA)
+    )
+    unida = " AND ".join(condiciones)
+
+    assert "texto_busqueda" in unida
+    assert "datos ->> 'codigo'" in unida
+    assert parametros["expr_codigo0"] == "%SIE-UTA-2026-0038-3205%"
+
+
+def test_una_palabra_normal_no_se_busca_contra_el_codigo() -> None:
+    """La vía del código se abre solo con términos que tienen forma de código.
+
+    Es lo que garantiza que el arreglo no ensanche la búsqueda de siempre: «medicamentos» sigue
+    pasando únicamente por el índice de texto.
+    """
+    condiciones, parametros = _condiciones(Filtros(terminos=("medicamentos",)))
+
+    assert not any("codigo" in condicion for condicion in condiciones)
+    assert parametros["expr"] == "(medicamentos:*)"
+
+
+def test_con_dos_codigos_la_union_respeta_el_modo() -> None:
+    """«Todas» y «cualquiera» significan lo mismo con códigos que con cualquier otro término."""
+    codigos = ("SIE-UTA-2026-0001-111", "SIE-UTA-2026-0002-222")
+
+    todas, _ = _condiciones(Filtros(terminos=codigos, modo=ModoBusqueda.TODAS))
+    cualquiera, _ = _condiciones(Filtros(terminos=codigos, modo=ModoBusqueda.CUALQUIERA))
+
+    assert " AND " in todas[0]
+    assert " OR " in cualquiera[0]
+    assert todas[0].count("datos ->> 'codigo'") == 2
+
+
+# --------------------------------------------------------------------------- #
 # El filtro por descripción del producto
 #
 # Busca en el objeto de compra **y solo ahí**. Lo que se protege es dónde busca: si fuera contra
@@ -517,8 +609,32 @@ def test_el_indice_del_plazo_es_parcial_sobre_la_columna() -> None:
 
 def _migracion_de_la_retencion() -> str:
     """El texto de la migración que añade la columna del plazo."""
+    return _texto_de_migracion("0021_plazo_proformas.py")
+
+
+def _texto_de_migracion(nombre: str) -> str:
+    """El texto de una migración, por su nombre de archivo."""
     ruta = Path(__file__).resolve().parents[2] / "alembic" / "versions"
-    return (ruta / "0021_plazo_proformas.py").read_text(encoding="utf-8")
+    return (ruta / nombre).read_text(encoding="utf-8")
+
+
+def _indice_de_la_migracion(nombre: str, indice: str = "ix_registro_entidad") -> str:
+    """La expresión de un índice de una migración, **ya resuelta** con sus constantes interpoladas.
+
+    Se ejecuta el módulo de la migración —no se lee su texto— porque la expresión se arma con una
+    constante de las tildes: leído el archivo, se compara contra el nombre de la constante y no
+    contra las dos listas, que es justo lo que hay que comprobar.
+    """
+    ruta = Path(__file__).resolve().parents[2] / "alembic" / "versions" / nombre
+    especificacion = importlib.util.spec_from_file_location(f"migracion_{nombre}", ruta)
+    if especificacion is None or especificacion.loader is None:
+        raise AssertionError(f"No se pudo cargar la migración {nombre}")
+    modulo = importlib.util.module_from_spec(especificacion)
+    especificacion.loader.exec_module(modulo)
+    for declarado, expresion in modulo.INDICES:
+        if declarado == indice:
+            return str(expresion)
+    raise AssertionError(f"La migración {nombre} no declara el índice {indice}")
 
 
 def _sin_huecos(texto: str) -> str:

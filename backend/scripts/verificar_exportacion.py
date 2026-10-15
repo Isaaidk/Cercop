@@ -35,6 +35,7 @@ from openpyxl import load_workbook
 from sqlalchemy import text
 
 from contratacion.aplicacion.casos_uso.exportar_registros import (
+    COLUMNA_CODIGO_CERCOAPP,
     COLUMNA_PLAZO,
     NOMBRE_HOJA_CRITERIOS,
     TIPO_LIBRO,
@@ -237,6 +238,11 @@ async def main() -> None:
                 _marca(
                     COLUMNA_PLAZO[1] in cabecera,
                     f"la columna del semáforo está: {COLUMNA_PLAZO[1] in cabecera}",
+                )
+                etiqueta_buscable = COLUMNA_CODIGO_CERCOAPP[1]
+                _marca(
+                    etiqueta_buscable in cabecera,
+                    f"la columna del código buscable está: {etiqueta_buscable in cabecera}",
                 )
                 _marca(
                     hoja.auto_filter.ref is not None,

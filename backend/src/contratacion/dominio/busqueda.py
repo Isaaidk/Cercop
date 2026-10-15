@@ -142,6 +142,97 @@ def es_codigo_cpc(termino: str) -> bool:
     return bool(PATRON_CODIGO_CPC.match(termino.strip()))
 
 
+# Un **código de proceso**: grupos de letras o dígitos separados por guiones, con al menos dos
+# guiones y algún grupo de tres dígitos o más —`SIE-UTA-2026-0038-3205`, o el NIC
+# `NIC-1768120280001-2022-00003`—.
+#
+# Se pide un mínimo de dos guiones para no confundir con un término compuesto que alguien escribe a
+# mano —`obra-2026`— y no ensanchar la búsqueda sin motivo: el reconocimiento solo se usa para
+# **añadir** una vía de coincidencia, y conviene que sea estrecha.
+PATRON_IDENTIFICADOR = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)+$")
+GRUPO_NUMERICO = re.compile(r"^\d{3,}$")
+
+# Un grupo que es solo dígitos, del tamaño que sea. Es lo que distingue el consecutivo interno del
+# portal —`136003` en `SIE-UNESUM-2026-0025-136003`— de un grupo con letras, que forma parte del
+# código y no se recorta.
+SOLO_DIGITOS = re.compile(r"^\d+$")
+
+
+def es_identificador(termino: str) -> bool:
+    """¿El término parece el código de un proceso y no una palabra que se busca en el texto?
+
+    Existe por un defecto **medido** de la búsqueda de texto completo, y no por gusto de clasificar:
+
+        codigo = 'ocds-5wno2w-SIE-UTA-2026-0038-3205'
+        to_tsvector('simple', texto_busqueda)  ->  '-0038':7  '-3205':8  '2026':6  'sie':4  'uta':5
+
+    El analizador de PostgreSQL se queda el guion dentro del número: guarda `-0038`, no `0038`. Como
+    la consulta se hace por **prefijos** (`0038:*`), el token `-0038` no lo alcanza ningún prefijo y
+    el proceso se vuelve invisible para el índice. Comprobado contra el histórico real: pegar
+    `SIE-UTA-2026-0038-3205` —y también su forma corta— en el buscador de palabras clave devolvía
+    **cero filas**, mientras que la caja del código, que compara por fragmento contra el campo, lo
+    encontraba a la primera.
+
+    De ahí que estos términos se busquen **además** contra el campo del código, que es una
+    comparación de texto y no depende de cómo tokenice el motor. Lo que no se hace es adivinar qué
+    trozos sobraban del código pegado, que era la otra salida posible: recortar el último grupo
+    —`-3205`— habría encontrado el proceso, pero también cualquier otro que empezara igual, y el
+    acierto habría dependido de dónde se cortara.
+    """
+    limpio = termino.strip().lower()
+    if not PATRON_IDENTIFICADOR.match(limpio):
+        return False
+    partes = limpio.split("-")
+    if len(partes) < 3:
+        return False
+    return any(GRUPO_NUMERICO.match(parte) for parte in partes)
+
+
+# El prefijo que el portal antepone al código del proceso: `ocds-5wno2w-`. Son dos grupos —la
+# palabra del estándar y la clave del publicador— y detrás va el código que la entidad escribe y
+# que el portal muestra en su ficha. Medido el 2026-10-15 sobre el histórico entero: **un solo**
+# prefijo (6.521 filas) y 101.799 códigos que ya vienen sin él, así que quitarlo es una limpieza y
+# no una transformación que cambie el dato.
+PATRON_PREFIJO_OCID = re.compile(r"^ocds-[a-z0-9]+-", re.IGNORECASE)
+
+
+def codigo_cercoapp(codigo: str | None, *, categoria: Categoria | None = None) -> str | None:
+    """El código del proceso **tal y como se pega en el buscador**, listo para copiar de la celda.
+
+    Qué quita, y por qué
+    --------------------
+    Dos cosas, las dos medidas sobre el histórico entero (2026-10-15):
+
+    **El prefijo técnico del `ocid`** (`ocds-5wno2w-`), que identifica al publicador y no al
+    proceso: en el portal no aparece y quien copia la celda lo arrastra sin necesidad.
+
+    **El consecutivo interno del portal**, que es el último grupo de las ofertas: el proceso es
+    `SIE-UNESUM-2026-0025` y el portal le añade `-136003`. Se recorta **solo en las ofertas**, y por
+    eso la categoría entra como parámetro: en las ínfimas el último grupo de
+    `NIC-0660821210001-2026-00062` sí es el secuencial de la contratación —su estructura es
+    NIC, RUC, año y secuencial—, así que quitarlo dejaría `NIC-0660821210001-2026`, que no
+    identifica una contratación sino todas las de esa entidad ese año.
+
+    Lo que **no** hace: adivinar. Si el último grupo no es numérico, o si el código no tiene un
+    grupo de más —se exigen **cuatro** grupos como mínimo para recortar—, se devuelve tal cual.
+    Ahí están las 81.688 filas cuyo código es «Orden de compra CE-20260003118811», que no tienen
+    consecutivo, y los códigos de tres grupos como `RE-PUHAIAM2026-002`, donde el último es el
+    secuencial.
+
+    Esto es lo que se muestra y se exporta, no lo que se busca: el buscador acepta las dos formas.
+    """
+    if not codigo:
+        return None
+    limpio = PATRON_PREFIJO_OCID.sub("", str(codigo).strip())
+    if not limpio:
+        return None
+    if categoria is Categoria.OFERTAS:
+        partes = limpio.split("-")
+        if len(partes) >= 4 and SOLO_DIGITOS.match(partes[-1]):
+            limpio = "-".join(partes[:-1])
+    return limpio or None
+
+
 def palabras_de(termino: str) -> tuple[str, ...]:
     """Divide un término en las palabras que se pueden buscar con seguridad.
 
@@ -244,14 +335,27 @@ def expresion_busqueda(terminos: Sequence[str], modo: ModoBusqueda) -> str | Non
     """
     grupos: list[str] = []
     for termino in terminos:
-        palabras = palabras_de(termino)
-        if palabras:
-            prefijos = " & ".join(f"{palabra}:*" for palabra in palabras)
-            grupos.append(f"({prefijos})")
+        de_uno = expresion_de_termino(termino)
+        if de_uno is not None:
+            grupos.append(de_uno)
     if not grupos:
         return None
     union = " & " if modo is ModoBusqueda.TODAS else " | "
     return union.join(grupos)
+
+
+def expresion_de_termino(termino: str) -> str | None:
+    """La conjunción de prefijos de **un** término, o `None` si no deja ninguna palabra buscable.
+
+    Está separada de `expresion_busqueda` porque hay una búsqueda que necesita tratar los términos
+    uno a uno: la que reconoce un código de proceso (`es_identificador`) y lo busca además contra su
+    campo. Ahí la unión la decide el modo, así que la función que une no puede ser la misma que
+    compone cada pieza.
+    """
+    palabras = palabras_de(termino)
+    if not palabras:
+        return None
+    return "(" + " & ".join(f"{palabra}:*" for palabra in palabras) + ")"
 
 
 @dataclass(frozen=True, slots=True)

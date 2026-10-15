@@ -26,8 +26,12 @@ from contratacion.dominio.busqueda import (
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
+    categoria_de_fuente,
+    codigo_cercoapp,
     es_codigo_cpc,
+    es_identificador,
     expresion_busqueda,
+    expresion_de_termino,
 )
 from contratacion.dominio.cpc import items_desde_crudos
 from contratacion.dominio.enlaces import enlace_del_registro
@@ -111,6 +115,14 @@ INDICE_OBJETO = (
     "to_tsvector('simple', " + NORMALIZADO.format(columna="r.datos ->> 'objeto_compra'") + ")"
 )
 
+# La razón social de la entidad contratante, normalizada como las demás claves —minúsculas y sin
+# tildes—. Se nombra aquí y no se escribe dentro de la condición porque tiene que coincidir
+# **letra a letra** con la expresión del índice `ix_registro_entidad` (migración 0023): separadas,
+# PostgreSQL
+# deja de usar el índice y la búsqueda vuelve a recorrer las 108.000 filas leyendo su `jsonb`
+# —medido, 104 s—, sin que falle nada. Hay una prueba que compara las dos.
+ENTIDAD_NORMALIZADA = NORMALIZADO.format(columna="r.datos ->> 'entidad'")
+
 #
 # Las provincias y el tipo de proceso se comparan contra **columnas propias**, no contra el `jsonb`.
 #
@@ -144,6 +156,7 @@ def _filtro_texto(
     *,
     indice: str = INDICE_TEXTO,
     nombre_parametro: str = "expr",
+    permitir_identificador: bool = False,
 ) -> str | None:
     """Añade la condición de texto completo si hay algo que buscar.
 
@@ -153,12 +166,44 @@ def _filtro_texto(
     duplicar la definición de qué significa «todas» o «cualquiera», y las dos versiones acabarían
     separándose. Los nombres tienen que ser distintos porque los dos parámetros viajan en el mismo
     diccionario.
+
+    Con `permitir_identificador`, un término que **parece el código de un proceso** se busca además
+    contra el campo del código, y por eso entonces la condición se arma término a término: el motivo
+    está medido en `es_identificador` —el analizador guarda `-0038` y ningún prefijo alcanza ese
+    token—. La vía nueva se abre **solo cuando hay algún término con esa forma**: sin ella, la
+    condición se compone como siempre, con una sola expresión, para que el SQL de una búsqueda
+    normal no cambie ni una letra. Eso deja intactos tanto los índices que el planificador elige
+    como las pruebas que fijan esa forma.
     """
-    expresion = expresion_busqueda(terminos, modo)
-    if expresion is None:
+    if not permitir_identificador or not any(es_identificador(t) for t in terminos):
+        expresion = expresion_busqueda(terminos, modo)
+        if expresion is None:
+            return None
+        parametros[nombre_parametro] = expresion
+        return f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
+
+    condiciones: list[str] = []
+    for posicion, termino in enumerate(terminos):
+        de_uno = expresion_de_termino(termino)
+        if de_uno is None:
+            continue
+        nombre = f"{nombre_parametro}{posicion}"
+        parametros[nombre] = de_uno
+        condicion = f"{indice} @@ to_tsquery('simple', :{nombre})"
+        if es_identificador(termino):
+            nombre_codigo = f"{nombre_parametro}_codigo{posicion}"
+            parametros[nombre_codigo] = _patron(termino)
+            condicion = (
+                f"({condicion} OR COALESCE(r.datos ->> 'codigo', '') ILIKE :{nombre_codigo})"
+            )
+        condiciones.append(condicion)
+
+    if not condiciones:
         return None
-    parametros[nombre_parametro] = expresion
-    return f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
+    if len(condiciones) == 1:
+        return condiciones[0]
+    union = " AND " if modo is ModoBusqueda.TODAS else " OR "
+    return f"({union.join(condiciones)})"
 
 
 def _filtro_cpc(
@@ -210,7 +255,9 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     solo_cpc = filtros.solo_cpc and bool(filtros.cpc)
 
     if not solo_cpc:
-        principal = _filtro_texto(parametros, filtros.terminos, filtros.modo)
+        principal = _filtro_texto(
+            parametros, filtros.terminos, filtros.modo, permitir_identificador=True
+        )
         if principal:
             condiciones.append(principal)
 
@@ -239,7 +286,9 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
 
     # El texto libre se suma con «y»: es un filtro más, no una sustitución de los términos.
     if filtros.texto and not solo_cpc:
-        libre = _filtro_texto(parametros, [filtros.texto], ModoBusqueda.TODAS)
+        libre = _filtro_texto(
+            parametros, [filtros.texto], ModoBusqueda.TODAS, permitir_identificador=True
+        )
         if libre:
             condiciones.append(libre)
 
@@ -294,11 +343,17 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     # --- Filtros del listado de ofertas ---------------------------------------
     #
     # Ninguno usa `texto_busqueda`. Ese campo es el índice de palabras clave y está pensado para
-    # encontrar por significado; estos cuatro acotan un listado, y hacerlos pasar por el índice
-    # haría que buscar la entidad «TGP» devolviera todo lo que menciona esas siglas en el objeto.
+    # encontrar por significado; estos acotan un listado, y hacerlos pasar por el índice haría que
+    # buscar la entidad «TGP» devolviera todo lo que menciona esas siglas en el objeto.
+    #
+    # Los cuatro filtros de abajo tienen su índice, y **por eso son rápidos**: la entidad y el
+    # código usan un índice de trigramas (`ix_registro_entidad`, `ix_registro_codigo_trgm`), que es
+    # lo único que resuelve un `LIKE '%…%'` —sin él, cada búsqueda leía y descomprimía el `jsonb` de
+    # las 108.000 filas: medido, 104 s para «entidad»—; el tipo de compra y el estado usan un índice
+    # sobre la expresión, que convierte la igualdad en una búsqueda en vez de un recorrido
+    # —medido, 114 s y 4,2 s respectivamente—.
     if filtros.entidad:
-        columna = NORMALIZADO.format(columna="r.datos ->> 'entidad'")
-        condiciones.append(f"{columna} LIKE :entidad")
+        condiciones.append(f"{ENTIDAD_NORMALIZADA} LIKE :entidad")
         parametros["entidad"] = _patron(normalizar_ubicacion(filtros.entidad))
 
     if filtros.tipo_proceso:
@@ -376,6 +431,14 @@ def _fila_a_elemento(fila: Mapping[Any, Any]) -> Mapping[str, Any]:
         item.como_diccionario() for item in items_desde_crudos(fila.get("items") or ())
     ]
     elemento["cpc_codigos"] = list(fila.get("cpc_codigos") or ())
+    # El código sin el prefijo técnico del portal y sin el consecutivo interno, que es el que se
+    # copia para volver a buscar el proceso. Se calcula aquí, en el único sitio por el que pasan
+    # todas las filas, para que la tabla, el cajón de detalle y el archivo de Excel muestren el
+    # mismo valor. La categoría decide si se recorta el último grupo: en las ofertas es un
+    # consecutivo del portal y en las ínfimas es el secuencial de la contratación.
+    elemento["codigo_cercoapp"] = codigo_cercoapp(
+        elemento.get("codigo"), categoria=categoria_de_fuente(fila.get("fuente"))
+    )
     # El enlace se calcula aquí, en el único sitio por el que pasan todas las filas que salen de la
     # base, para que la tabla, el listado del mapa y el archivo de Excel ofrezcan exactamente la
     # misma dirección. Resolverlo en el panel obligaría a repetir la regla en cada pantalla, y la

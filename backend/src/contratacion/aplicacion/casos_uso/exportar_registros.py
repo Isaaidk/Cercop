@@ -70,8 +70,17 @@ ANCHO_PREDETERMINADO = 28
 # Columnas del cuadro, en el mismo orden que en pantalla y con el mismo nombre que en la cabecera.
 # El ancho es el de `ancho_excel` de los mapeos de la fuente, redondeado: la idea es que el archivo
 # se pueda leer sin arrastrar columnas.
+# El código sin el prefijo del `ocid` (`ocds-5wno2w-`), que es el que se copia de la celda para
+# volver a buscar el proceso en el buscador. Se declara aparte para que el comprobador de la
+# exportación pueda nombrarlo en lugar de repetir la cadena.
+COLUMNA_CODIGO_CERCOAPP: tuple[str, str, int] = ("codigo_cercoapp", "Código CercoApp", 32)
+
+# Columnas del cuadro, en el mismo orden que en pantalla y con el mismo nombre que en la cabecera.
+# El ancho es el de `ancho_excel` de los mapeos de la fuente, redondeado: la idea es que el archivo
+# se pueda leer sin arrastrar columnas.
 COLUMNAS: tuple[tuple[str, str, int], ...] = (
     ("codigo", "Código", 32),
+    COLUMNA_CODIGO_CERCOAPP,
     ("tipo_necesidad", "Tipo de compra", 20),
     ("entidad", "Razón social", 45),
     ("objeto_compra", "Objeto de compra", 70),

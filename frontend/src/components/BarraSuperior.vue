@@ -34,6 +34,14 @@ const props = defineProps({
   filtrosAbiertos: { type: Boolean, default: true },
   /** Si hay algún filtro puesto, para avisar en el propio botón cuando la columna está escondida. */
   filtrosActivos: { type: Boolean, default: false },
+  /**
+   * Si esta pantalla tiene columna de filtros que abrir.
+   *
+   * La pestaña de ofertas trae sus propios filtros dentro de la pestaña y no usa los del panel, así
+   * que ahí no hay nada que mostrar ni ocultar: el botón desaparece en lugar de quedar pulsable y
+   * sin efecto, que se lee como un fallo.
+   */
+  conFiltros: { type: Boolean, default: true },
 })
 
 const emit = defineEmits([
@@ -58,6 +66,7 @@ const iniciales = computed(() => {
 <template>
   <header class="barra">
     <button
+      v-if="conFiltros"
       type="button"
       class="barra__hamburguesa"
       :aria-label="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"

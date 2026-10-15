@@ -179,6 +179,20 @@ function abrirPestana(id) {
   if (id === 'infimas' || id === 'ofertas') filtros.elegirCategoria(id)
 }
 
+/**
+ * ¿Se pinta la columna de filtros del panel?
+ *
+ * Con la pestaña de **ofertas** abierta, no. Sus filtros son los de la pestaña —entidad, tipo,
+ * código, estado, fechas— y se aplican con su propio botón; la columna lateral es la de las ínfimas
+ * cuantías (el NIC, el estado de la contratación, la fuente) y dejarla a la vista con la pestaña de
+ * ofertas delante mezclaba dos juegos de filtros homónimos: se veían los dos «estado de la
+ * contratación» y el «código» a la vez, con valores distintos y sin que se supiera cuál manda.
+ *
+ * Se oculta solo la columna **de este panel**; el botón de la barra que la abre o la cierra también
+ * desaparece con ella, porque un botón que no hace nada se lee como un fallo.
+ */
+const sinFiltrosDelPanel = computed(() => pestana.value === 'ofertas')
+
 // Las etiquetas del selector de familia del mapa y del titular de la tabla salen de `utils/familias`:
 // el mismo nombre en los dos sitios y en la pista de cada gráfica.
 const TITULO_INFIMAS = 'Ínfimas cuantías'
@@ -402,6 +416,7 @@ const ultimaActualizacion = computed(() =>
       :panel-abierto="panelCuentaAbierto"
       :filtros-abiertos="esMovil ? filtrosAbiertos : filtrosVisibles"
       :filtros-activos="filtros.hayFiltros.value"
+      :con-filtros="!sinFiltrosDelPanel"
       @alternar-tema="emit('alternar-tema')"
       @cerrar-sesion="emit('cerrar-sesion')"
       @alternar-panel="panelCuentaAbierto = !panelCuentaAbierto"
@@ -441,9 +456,16 @@ const ultimaActualizacion = computed(() =>
 
     <p v-if="aviso" class="panel__aviso" role="alert">{{ aviso }}</p>
 
-    <div class="panel__cuerpo" :class="{ 'panel__cuerpo--sin-filtros': !esMovil && !filtrosVisibles }">
+    <div
+      class="panel__cuerpo"
+      :class="{
+        'panel__cuerpo--sin-filtros':
+          sinFiltrosDelPanel || (!esMovil && !filtrosVisibles),
+      }"
+    >
       <!-- Filtros: columna fija en escritorio, cajón deslizante en móvil. -->
       <aside
+        v-if="!sinFiltrosDelPanel"
         id="panel-filtros"
         class="panel__lateral superficie"
         :class="{ 'panel__lateral--abierto': filtrosAbiertos }"
@@ -464,7 +486,7 @@ const ultimaActualizacion = computed(() =>
 
       <!-- Velo que cierra el cajón al tocarlo. Solo se pinta cuando el cajón está abierto. -->
       <div
-        v-if="filtrosAbiertos"
+        v-if="filtrosAbiertos && !sinFiltrosDelPanel"
         class="panel__velo"
         aria-hidden="true"
         @click="filtrosAbiertos = false"

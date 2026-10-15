@@ -26,7 +26,7 @@
  * que con la fuente OCDS sale vacía. Se rellena sola si se cambia la fuente a NCO, que sí lo publica.
  * Se dice aquí y en pantalla en lugar de dejar una columna muda que parezca un fallo.
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import CajonDetalleOferta from '@/components/CajonDetalleOferta.vue'
 import CampoDeTerminos from '@/components/CampoDeTerminos.vue'
@@ -148,6 +148,18 @@ const estados = computed(() => {
 })
 
 /**
+ * Un estado elegido que ya no existe con la fuente nueva se retira.
+ *
+ * Sin esto queda un filtro envenenado: cambiar de NCO a ofertas dejaba seleccionado «En Curso» —el
+ * estado de las ínfimas—, el desplegable ya no lo ofrecía y el listado de procesos salía vacío sin
+ * decir por qué. Se limpia el borrador; el criterio aplicado cambia cuando se pulsa «Buscar
+ * procesos», igual que todos los demás.
+ */
+watch(estados, (disponibles) => {
+  if (criterios.estado && !disponibles.includes(criterios.estado)) criterios.estado = ''
+})
+
+/**
  * Las palabras que se pueden buscar en un texto, ya separadas y sin repetir.
  *
  * Se descartan las de tres letras o más cortas porque son las únicas que el servidor va a tener en
@@ -163,6 +175,33 @@ function terminosDe(texto) {
 
 /** Las palabras tecleadas, para el contador de la ayuda. */
 const palabras = computed(() => terminosDe(criterios.palabras))
+
+/**
+ * Cuántos criterios están **aplicados**, para que la pantalla diga de un vistazo si el listado está
+ * acotado o suelto.
+ *
+ * Se cuentan sobre `aplicados` y no sobre el borrador: lo que se está escribiendo sin pulsar
+ * «Buscar procesos» todavía no filtra nada, y contarlo prometería un resultado que no existe. La
+ * fuente cuenta aunque venga puesta por defecto —con OCDS el listado ya está acotado a los procesos
+ * publicados—, porque es un criterio que el servidor recibe.
+ */
+const criteriosAplicados = computed(() => {
+  const a = aplicados.value
+  return [
+    terminosDe(a.palabras).length > 0,
+    a.descripcion.length > 0,
+    a.cpc.length > 0,
+    a.provincias.length > 0,
+    a.entidad.trim().length > 0,
+    Boolean(a.tipo_proceso),
+    Boolean(a.tipo_necesidad),
+    a.codigo.trim().length > 0,
+    Boolean(a.estado),
+    Boolean(a.desde),
+    Boolean(a.hasta),
+    Boolean(a.fuente),
+  ].filter(Boolean).length
+})
 
 const hayCambios = computed(
   () =>
@@ -375,6 +414,8 @@ onMounted(() => {
     </header>
 
     <form class="ofertas__filtros" @submit.prevent="aplicar">
+      <p class="ofertas__grupo">Búsqueda por texto</p>
+
       <div class="campo campo--ancho">
         <label class="campo__etiqueta" for="of-palabras">Palabras clave</label>
         <input
@@ -455,6 +496,8 @@ onMounted(() => {
         />
       </div>
 
+      <p class="ofertas__grupo">Ubicación y entidad</p>
+
       <div class="campo campo--ancho">
         <SelectorProvincias
           :seleccionadas="criterios.provincias"
@@ -472,6 +515,8 @@ onMounted(() => {
           placeholder="Parte del nombre, sin importar mayúsculas ni tildes"
         />
       </div>
+
+      <p class="ofertas__grupo">Datos del proceso</p>
 
       <div class="campo">
         <label class="campo__etiqueta" for="of-tipo-proceso">Tipo de contratación</label>
@@ -506,15 +551,35 @@ onMounted(() => {
 
       <div class="campo">
         <label class="campo__etiqueta" for="of-estado">Estado de la contratación</label>
-        <select id="of-estado" v-model="criterios.estado" class="entrada">
-          <option value="">Todos los estados</option>
+        <select
+          id="of-estado"
+          v-model="criterios.estado"
+          class="entrada"
+          :disabled="estados.length === 0"
+        >
+          <option value="">
+            {{ estados.length ? 'Todos los estados' : 'Sin estados en los datos' }}
+          </option>
           <option v-for="valor in estados" :key="valor" :value="valor">{{ valor }}</option>
         </select>
-        <p v-if="criterios.fuente === FUENTE_OCDS" class="ofertas__ayuda">
+        <!--
+          Cuando no hay ningún estado que ofrecer se dice **por qué**, en lugar de dejar un
+          desplegable vacío que parece roto. No es un fallo de la pantalla: el estado del proceso lo
+          publica la descarga de los ficheros mensuales, y hasta que esa descarga no pase por el
+          histórico ningún proceso lo trae. El listado paginado que lee el worker no lo incluye.
+        -->
+        <p v-if="estados.length === 0" class="ofertas__ayuda">
+          Los datos abiertos de esta fuente todavía no traen el estado del proceso, así que no hay
+          ninguno que elegir. Aparecerán solos en cuanto la descarga de los ficheros mensuales los
+          guarde.
+        </p>
+        <p v-else-if="criterios.fuente === FUENTE_OCDS" class="ofertas__ayuda">
           Los datos abiertos solo publican si el proceso está en curso o finalizado; no indican si
           está suspendido, cancelado o desierto.
         </p>
       </div>
+
+      <p class="ofertas__grupo">Fechas y fuente</p>
 
       <div class="campo">
         <label class="campo__etiqueta" for="of-desde">Publicados desde</label>
@@ -540,6 +605,10 @@ onMounted(() => {
           {{ cargando ? 'Consultando…' : 'Buscar procesos' }}
         </button>
         <button type="button" class="boton boton--fantasma" @click="limpiar">Limpiar filtros</button>
+        <span v-if="criteriosAplicados" class="ofertas__contador">
+          {{ criteriosAplicados }}
+          {{ criteriosAplicados === 1 ? 'criterio aplicado' : 'criterios aplicados' }}
+        </span>
         <span v-if="hayCambios && !cargando" class="ofertas__pendiente">
           Hay criterios sin consultar. Pulsa «Buscar procesos» para verlos.
         </span>
@@ -727,20 +796,41 @@ onMounted(() => {
   color: var(--c-acento);
 }
 
-/* Rejilla de criterios. `auto-fit` con un mínimo razonable deja los campos en una columna en móvil
-   sin escribir ninguna consulta de medios. */
+/* Rejilla de criterios. Cada grupo es un bloque con su título, y dentro la rejilla se acomoda sola:
+   `auto-fit` con un mínimo razonable deja los campos en una columna en móvil sin escribir ninguna
+   consulta de medios. */
 .ofertas__filtros {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-  gap: var(--e-2);
-  padding: var(--e-3);
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--e-3);
+  padding: var(--e-4);
   border: 1px solid var(--c-borde);
   border-radius: var(--r-md);
   background: var(--c-superficie);
 }
 
+/* El título del grupo ocupa la fila entera y lleva una línea fina debajo: es lo que hace que la
+   rejilla se lea como cuatro bloques y no como una lista de quince campos iguales. */
+.ofertas__grupo {
+  grid-column: 1 / -1;
+  margin: var(--e-2) 0 calc(-1 * var(--e-1));
+  padding-bottom: var(--e-1);
+  border-bottom: 1px solid var(--c-borde);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-texto-suave);
+}
+
+.ofertas__grupo:first-child {
+  margin-top: 0;
+}
+
+/* Los campos que ocupan la fila entera: los de texto largo, donde partir el ancho en dos deja el
+   cuadro tan estrecho que no se lee lo que se escribe. */
 .campo--ancho {
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
 .campo {
@@ -755,12 +845,23 @@ onMounted(() => {
   color: var(--c-texto-suave);
 }
 
+/* La barra de acciones cierra el formulario y se separa del último grupo: es el gesto que aplica
+   todo lo de arriba, y sin esa separación quedaba pegada a los campos como si fuera un campo más. */
 .ofertas__acciones {
   grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--e-2);
+  gap: var(--e-3);
+  margin-top: var(--e-1);
+  padding-top: var(--e-3);
+  border-top: 1px solid var(--c-borde);
+}
+
+.ofertas__contador {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--c-texto-suave);
 }
 
 .ofertas__pendiente {
@@ -970,9 +1071,18 @@ onMounted(() => {
   text-align: center;
 }
 
+/* En móvil el formulario se aprieta y los botones pasan a ancho completo, como en las demás
+   pantallas del panel: son el gesto que aplica todo lo de arriba y con el dedo un botón estrecho se
+   falla. `column-reverse` deja la acción principal abajo, que es donde llega el pulgar después de
+   recorrer los campos. */
 @media (width <= 720px) {
-  .campo--ancho {
-    grid-column: 1 / -1;
+  .ofertas__filtros {
+    padding: var(--e-3);
+  }
+
+  .ofertas__acciones {
+    flex-direction: column-reverse;
+    align-items: stretch;
   }
 }
 </style>

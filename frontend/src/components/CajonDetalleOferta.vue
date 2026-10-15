@@ -84,6 +84,9 @@ const bloques = computed(() => {
       titulo: 'El proceso',
       campos: [
         campo('codigo', 'Código', fila.codigo),
+        // El mismo código sin el prefijo técnico del portal (`ocds-5wno2w-`): es el que se copia
+        // para buscar el proceso aquí o abrirlo en el portal, porque es el que el portal muestra.
+        campo('codigo_cercoapp', 'Código CercoApp', fila.codigo_cercoapp),
         campo('ocid', 'Identificador OCDS', fila.ocid),
         campo('id_proceso', 'Identificador en la fuente', fila.id_proceso),
         campo('fuente', 'Fuente', fila.fuente),
