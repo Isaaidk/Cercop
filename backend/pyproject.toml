@@ -64,6 +64,12 @@ addopts = "-q"
 line-length = 100
 target-version = "py312"
 src = ["src", "pruebas"]
+# Los ficheros de `tmp/` —sondas contra la fuente, análisis puntuales, reproducciones de un fallo— no
+# se revisan: son notas de investigación, no código del producto, y se quedan por su valor como
+# registro de cómo se llegó a varias decisiones. Sin esta línea, `ruff check .` —que es **lo que corre
+# la integración continua**— falla por ellos y deja la CI en rojo por ficheros que no forman parte de
+# la aplicación, que es justo lo que hizo que el rojo dejara de significar algo.
+extend-exclude = ["tmp"]
 
 [tool.ruff.lint]
 # BLE001 exige justificar con `noqa` cualquier `except Exception` amplio.
