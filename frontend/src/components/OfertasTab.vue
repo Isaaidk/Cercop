@@ -34,7 +34,16 @@ import Paginacion from '@/components/Paginacion.vue'
 import SelectorProvincias from '@/components/SelectorProvincias.vue'
 import { api } from '@/api/endpoints'
 import { datos } from '@/stores/datos'
-import { decimal, fechaCorta, recortar, sinEtiquetas } from '@/utils/formato'
+import { sesion } from '@/stores/sesion'
+import { guardarArchivo } from '@/utils/descargas'
+import {
+  MESES_EXPORTABLES,
+  descargaEnVentana,
+  inicioExportable,
+  limiteLegible,
+} from '@/utils/exportacion'
+import { diaDeHoy } from '@/utils/fecha'
+import { decimal, fechaCorta, numero, recortar, sinEtiquetas } from '@/utils/formato'
 import { nombreParaApi, separarProvincia } from '@/utils/provincias'
 import { LONGITUD_MINIMA_TERMINO } from '@/utils/terminos'
 
@@ -249,6 +258,61 @@ function quitarCpc(termino) {
 
 function cambiarProvincias(codigos) {
   criterios.provincias = codigos
+}
+
+/*
+ * Descarga a Excel, con la misma lógica que el botón de las ínfimas cuantías.
+ *
+ * El archivo lleva **los criterios aplicados**, los mismos que pide la tabla, sin la página ni su
+ * tamaño: lo que llega al disco es todo lo que cumple los filtros, no las veinticinco filas que se
+ * ven. Se usa el mismo `parametros()` que la consulta para que tabla y archivo no puedan discrepar.
+ * Lo que se está tecleando sin pulsar «Buscar procesos» no viaja, igual que no cambia la tabla.
+ *
+ * El servidor vuelve a comprobar el permiso de exportación y la ventana de tres meses; aquí solo se
+ * evita ofrecer un botón condenado a un rechazo.
+ */
+const exportando = ref(false)
+const errorExportacion = ref('')
+const avisoExportacion = ref('')
+
+const puedeExportar = computed(() => sesion.puedeExportar.value)
+const hayResultados = computed(() => total.value > 0)
+const descargaFueraDeVentana = computed(() => !descargaEnVentana(aplicados.value.desde))
+const limiteDeLaVentana = computed(() => limiteLegible(inicioExportable()))
+
+async function exportar() {
+  if (exportando.value) return
+
+  exportando.value = true
+  errorExportacion.value = ''
+  avisoExportacion.value = ''
+  try {
+    const criteriosDescarga = parametros()
+    delete criteriosDescarga.pagina
+    delete criteriosDescarga.tamano
+    const resultado = await api.exportarRegistros(criteriosDescarga)
+    guardarArchivo(resultado.contenido, resultado.nombre)
+    avisoExportacion.value = resultado.filas
+      ? `Se descargaron ${numero(resultado.filas)} procesos en ${resultado.nombre}.`
+      : 'El archivo salió vacío: no hay procesos con estos filtros.'
+  } catch (fallo) {
+    errorExportacion.value = fallo.message
+  } finally {
+    exportando.value = false
+  }
+}
+
+/**
+ * Pone el periodo descargable —del límite de la ventana a hoy— y descarga, en un solo gesto.
+ *
+ * Igual que en las ínfimas: se fijan las dos fechas para que un `hasta` anterior no quede por debajo
+ * del nuevo `desde`, y se aplica antes de descargar para que la tabla muestre lo mismo que el archivo.
+ */
+async function descargarElPeriodoExportable() {
+  criterios.desde = inicioExportable()
+  criterios.hasta = diaDeHoy()
+  await aplicar()
+  await exportar()
 }
 
 function irAPagina(destino) {
@@ -490,7 +554,41 @@ onMounted(() => {
         Pulsa <strong>Ver detalle</strong> en cualquier fila: el proceso se abre en un cajón, sin
         desordenar el ancho de la tabla.
       </p>
+
+      <!-- Misma regla que en las ínfimas: si el periodo se sale de la ventana descargable, el botón
+           pone ese periodo y descarga; si cabe, descarga lo que hay en pantalla. -->
+      <button
+        v-if="puedeExportar && descargaFueraDeVentana"
+        type="button"
+        class="boton boton--principal boton--pequeno ofertas__descargar"
+        :disabled="exportando || cargando || !hayResultados"
+        :title="`Pone el periodo del ${limiteDeLaVentana} a hoy y descarga lo que cumpla los demás filtros`"
+        @click="descargarElPeriodoExportable"
+      >
+        <span v-if="exportando" class="girador" aria-hidden="true" />
+        {{ exportando ? 'Generando…' : `Descargar los últimos ${MESES_EXPORTABLES} meses` }}
+      </button>
+      <button
+        v-else-if="puedeExportar"
+        type="button"
+        class="boton boton--principal boton--pequeno ofertas__descargar"
+        :disabled="exportando || cargando || !hayResultados"
+        title="Descarga las ofertas con los filtros de la pantalla"
+        @click="exportar"
+      >
+        <span v-if="exportando" class="girador" aria-hidden="true" />
+        {{ exportando ? 'Generando…' : 'Descargar' }}
+      </button>
     </div>
+
+    <p v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="ofertas__pista-descarga">
+      La descarga a Excel cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar
+      el servidor con el histórico entero. El botón pone ese periodo en los filtros y lo descarga.
+    </p>
+    <p v-if="errorExportacion" class="ofertas__error" role="alert">{{ errorExportacion }}</p>
+    <p v-else-if="avisoExportacion" class="ofertas__exportacion" role="status">
+      {{ avisoExportacion }}
+    </p>
 
     <div v-if="filas.length" class="ofertas__marco">
       <table class="ofertas__tabla">
@@ -674,9 +772,33 @@ onMounted(() => {
 
 .ofertas__barra {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--e-2);
+}
+
+.ofertas__descargar {
+  flex: none;
+}
+
+.ofertas__pista-descarga {
+  margin: 0;
+  padding: var(--e-2) var(--e-3);
+  border-radius: var(--r-1);
+  background: var(--superficie-2);
+  color: var(--texto-tenue);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+}
+
+.ofertas__exportacion {
+  margin: 0;
+  padding: var(--e-2) var(--e-3);
+  border-radius: var(--r-1);
+  background: var(--ok-suave);
+  color: var(--ok);
+  font-size: var(--t-xs);
 }
 
 .ofertas__resumen {
