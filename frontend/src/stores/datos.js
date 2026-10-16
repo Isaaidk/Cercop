@@ -80,6 +80,34 @@ function totalesDeCategoria(respuesta) {
   return totales
 }
 
+/**
+ * Claves del catálogo que el panel lee hoy, para partir de una forma completa y vacía.
+ *
+ * Es una lista de partida, no un filtro: lo que llega del servidor se guarda entero (ver
+ * `normalizarCatalogos`). Tenerla aquí evita que una pantalla lea una clave que todavía no existe y
+ * reciba `undefined` en lugar de una lista.
+ */
+const CLAVES_CATALOGO = ['fuente', 'provincia', 'estado', 'tipo_proceso', 'tipo_necesidad', 'entidad']
+
+function catalogosVacios() {
+  return Object.fromEntries(CLAVES_CATALOGO.map((clave) => [clave, []]))
+}
+
+/**
+ * La respuesta del servidor convertida en listas.
+ *
+ * Se acepta cualquier clave —no una lista fija— para que un catálogo nuevo llegue a la pantalla sin
+ * cambiar el almacén, y se fuerza a lista lo que no lo sea: un desplegable que reciba un objeto o un
+ * número falla al pintarse, y el fallo aparecería en la pantalla en lugar de quedarse en el dato.
+ */
+function normalizarCatalogos(respuesta) {
+  const catalogo = catalogosVacios()
+  for (const [clave, valor] of Object.entries(respuesta || {})) {
+    catalogo[clave] = Array.isArray(valor) ? valor : []
+  }
+  return catalogo
+}
+
 const estado = reactive({
   registros: [],
   total: 0,
@@ -98,7 +126,7 @@ const estado = reactive({
    * hacía que el número de las ínfimas se convirtiera en el de las ofertas al abrir esa pestaña.
    */
   totalesPorCategoria: totalesEnCero(),
-  catalogos: { fuente: [], provincia: [], estado: [] },
+  catalogos: catalogosVacios(),
   resumenProvincias: { total: 0, porProvincia: [], sinUbicar: [] },
 
   cargando: false,
@@ -222,14 +250,17 @@ export const datos = {
   async cargarCatalogos() {
     try {
       const respuesta = await api.catalogos()
-      estado.catalogos = {
-        fuente: respuesta.fuente || [],
-        provincia: respuesta.provincia || [],
-        estado: respuesta.estado || [],
-      }
+      // Se guarda **todo** lo que devuelve el servidor, sin una lista fija de claves.
+      //
+      // Antes se copiaban tres —fuente, provincia y estado— y el resto se perdía por el camino: los
+      // desplegables de «Tipo de contratación» y «Tipo de compra» salían **siempre vacíos**, con la
+      // única opción de «Todos los tipos», y eso se lee como que no hay datos en vez de como un
+      // fallo. Copiar la respuesta entera hace que un catálogo nuevo que el servidor empiece a
+      // publicar llegue a la pantalla sin tocar esto.
+      estado.catalogos = normalizarCatalogos(respuesta)
     } catch {
       // Los catálogos solo rellenan desplegables; sin ellos el panel sigue siendo utilizable.
-      estado.catalogos = { fuente: [], provincia: [], estado: [] }
+      estado.catalogos = catalogosVacios()
     }
   },
 
