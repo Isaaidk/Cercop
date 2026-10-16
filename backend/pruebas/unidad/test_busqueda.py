@@ -396,7 +396,7 @@ def test_la_huella_cambia_con_los_filtros_del_listado_de_ofertas() -> None:
     base = huella_filtros(Filtros(terminos=("obras",)))
     variantes = (
         Filtros(terminos=("obras",), entidad="Municipio"),
-        Filtros(terminos=("obras",), tipo_proceso="Subasta"),
+        Filtros(terminos=("obras",), tipos_proceso=("Subasta Inversa Electrónica",)),
         Filtros(terminos=("obras",), tipo_necesidad="Bien"),
         Filtros(terminos=("obras",), codigo="NIC-1768"),
     )

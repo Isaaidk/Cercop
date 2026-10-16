@@ -356,14 +356,18 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
         condiciones.append(f"{ENTIDAD_NORMALIZADA} LIKE :entidad")
         parametros["entidad"] = _patron(normalizar_ubicacion(filtros.entidad))
 
-    if filtros.tipo_proceso:
+    if filtros.tipos_proceso:
         # «Sin clasificar» es una clave de verdad y **encuentra sus filas**: el reparto la cuenta en
         # su barra y pulsar esa barra tiene que traer eso. Antes no traía nada, porque el reparto la
         # calculaba con `COALESCE` pero el filtro comparaba contra el texto crudo de `datos`, que en
         # esas diez mil filas está vacío. Un gráfico que dice «10.110 sin clasificar» y no puede
         # enseñarlas es peor que no ofrecerlas.
-        condiciones.append("r.tipo_proceso = :tipo_proceso")
-        parametros["tipo_proceso"] = clave_tipo_proceso(filtros.tipo_proceso)
+        #
+        # `ANY` con una lista y no una igualdad repetida: marcar tres tipos no alarga la consulta ni
+        # añade una rama de código, y el índice sobre la expresión se sigue usando porque la
+        # comparación es la misma contra cada valor.
+        condiciones.append("r.tipo_proceso = ANY(:tipos_proceso)")
+        parametros["tipos_proceso"] = [clave_tipo_proceso(tipo) for tipo in filtros.tipos_proceso]
 
     if filtros.tipo_necesidad:
         condiciones.append("r.datos ->> 'tipo_necesidad' = :tipo_necesidad")
@@ -658,9 +662,7 @@ class RepositorioConsultasBd:
         # 10.110 sin el campo —son las ínfimas, que no lo publican—. Con el tope en 40 el «las
         # otras suman X» es exacto hoy y seguirá siéndolo mientras el catálogo de la fuente no
         # triplique su vocabulario.
-        condiciones_sin_tipo, parametros_sin_tipo = _condiciones(
-            replace(filtros, tipo_proceso=None)
-        )
+        condiciones_sin_tipo, parametros_sin_tipo = _condiciones(replace(filtros, tipos_proceso=()))
         donde_sin_tipo = " AND ".join(condiciones_sin_tipo) if condiciones_sin_tipo else "TRUE"
 
         # La clave del reparto por provincia es la columna `r.provincia`: la escribió la ingesta con

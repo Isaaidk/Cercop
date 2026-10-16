@@ -35,7 +35,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from contratacion.dominio.busqueda import Filtros, ModoBusqueda, OrdenBusqueda
+from contratacion.dominio.busqueda import Filtros, ModoBusqueda, OrdenBusqueda, huella_filtros
 from contratacion.dominio.plazos import PATRON_FECHA_ISO
 from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     PROVINCIA_NORMALIZADA,
@@ -768,22 +768,56 @@ def test_la_barra_sin_clasificar_encuentra_sus_filas() -> None:
     pulsar y la tabla se quedaba vacía. Un gráfico que dice «10.110 sin clasificar» y no puede
     enseñarlas es peor que no ofrecerlas.
     """
-    _, parametros = _condiciones(Filtros(tipo_proceso="sin clasificar"))
+    _, parametros = _condiciones(Filtros(tipos_proceso=("sin clasificar",)))
 
-    assert parametros["tipo_proceso"] == SIN_CLASIFICAR
-    assert parametros["tipo_proceso"] == clave_tipo_proceso(None)
-    assert parametros["tipo_proceso"] == clave_tipo_proceso("   ")
+    assert parametros["tipos_proceso"] == [SIN_CLASIFICAR]
+    assert parametros["tipos_proceso"] == [clave_tipo_proceso(None)]
+    assert parametros["tipos_proceso"] == [clave_tipo_proceso("   ")]
 
 
 def test_la_barra_del_reparto_vuelve_al_filtro_y_encuentra_sus_filas() -> None:
     """La clave de un reparto, devuelta al filtro, tiene que encontrar esas mismas filas."""
     barra = "Subasta Inversa Electrónica"
-    _, parametros = _condiciones(Filtros(tipo_proceso=barra))
+    _, parametros = _condiciones(Filtros(tipos_proceso=(barra,)))
 
     # No se normalizan mayúsculas ni tildes a propósito: la barra y el filtro coinciden carácter a
     # carácter, que es lo que hace que pulsarla devuelva exactamente esa fila.
-    assert parametros["tipo_proceso"] == clave_tipo_proceso(barra)
-    assert parametros["tipo_proceso"] == barra
+    assert parametros["tipos_proceso"] == [clave_tipo_proceso(barra)]
+    assert parametros["tipos_proceso"] == [barra]
+
+
+def test_varios_tipos_de_contratacion_viajan_en_un_solo_parametro() -> None:
+    """Marcar varios tipos es una consulta, no una por tipo: se suman entre sí."""
+    tipos = ("Licitación", "Subasta Inversa Electrónica")
+
+    condiciones, parametros = _condiciones(Filtros(tipos_proceso=tipos))
+
+    assert any("r.tipo_proceso = ANY(:tipos_proceso)" in c for c in condiciones)
+    assert parametros["tipos_proceso"] == list(tipos)
+
+
+def test_varios_tipos_no_puede_devolver_menos_que_uno() -> None:
+    """Si la condición fuera una igualdad encadenada con «y», marcar dos no traería nada."""
+    un_tipo, _ = _condiciones(Filtros(tipos_proceso=("Licitación",)))
+    dos_tipos, _ = _condiciones(Filtros(tipos_proceso=("Licitación", "Concurso publico")))
+
+    assert len(dos_tipos) == len(un_tipo)
+    assert "ANY" in " ".join(dos_tipos)
+
+
+def test_sin_tipo_de_contratacion_no_se_anade_ninguna_condicion() -> None:
+    condiciones, parametros = _condiciones(Filtros())
+
+    assert "tipos_proceso" not in parametros
+    assert not any("r.tipo_proceso" in condicion for condicion in condiciones)
+
+
+def test_el_orden_de_los_tipos_no_cambia_la_consulta() -> None:
+    """La huella —y la caché— no puede depender del orden en que se marcan las casillas."""
+    uno = Filtros(tipos_proceso=("Licitación", "Subasta Inversa Electrónica"))
+    otro = Filtros(tipos_proceso=("Subasta Inversa Electrónica", "Licitación"))
+
+    assert huella_filtros(uno) == huella_filtros(otro)
 
 
 def test_un_valor_ausente_tiene_su_clave_y_no_deja_la_columna_vacia() -> None:

@@ -31,6 +31,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import CajonDetalleOferta from '@/components/CajonDetalleOferta.vue'
 import CampoDeTerminos from '@/components/CampoDeTerminos.vue'
 import Paginacion from '@/components/Paginacion.vue'
+import SelectorMultiple from '@/components/SelectorMultiple.vue'
 import SelectorProvincias from '@/components/SelectorProvincias.vue'
 import { api } from '@/api/endpoints'
 import { datos } from '@/stores/datos'
@@ -44,6 +45,7 @@ import {
 } from '@/utils/exportacion'
 import { diaDeHoy } from '@/utils/fecha'
 import { decimal, fechaCorta, numero, recortar, sinEtiquetas } from '@/utils/formato'
+import { copiarAlPortapapeles } from '@/utils/portapapeles'
 import { nombreParaApi, separarProvincia } from '@/utils/provincias'
 import { LONGITUD_MINIMA_TERMINO } from '@/utils/terminos'
 
@@ -87,7 +89,7 @@ const criterios = reactive({
   provincias: [],
   estado: '',
   entidad: '',
-  tipo_proceso: '',
+  tipos_proceso: [],
   tipo_necesidad: '',
   codigo: '',
   desde: '',
@@ -108,6 +110,7 @@ function copiarCriterios(origen) {
     descripcion: [...origen.descripcion],
     cpc: [...origen.cpc],
     provincias: [...origen.provincias],
+    tipos_proceso: [...origen.tipos_proceso],
   }
 }
 
@@ -193,7 +196,7 @@ const criteriosAplicados = computed(() => {
     a.cpc.length > 0,
     a.provincias.length > 0,
     a.entidad.trim().length > 0,
-    Boolean(a.tipo_proceso),
+    a.tipos_proceso.length > 0,
     Boolean(a.tipo_necesidad),
     a.codigo.trim().length > 0,
     Boolean(a.estado),
@@ -213,7 +216,7 @@ function parametros() {
   const salida = { tamano: FILAS_POR_PAGINA, pagina: pagina.value }
   if (aplicados.value.fuente) salida.fuente = aplicados.value.fuente
   if (aplicados.value.entidad.trim()) salida.entidad = aplicados.value.entidad.trim()
-  if (aplicados.value.tipo_proceso) salida.tipo_proceso = aplicados.value.tipo_proceso
+  if (aplicados.value.tipos_proceso.length) salida.tipo_proceso = aplicados.value.tipos_proceso
   if (aplicados.value.tipo_necesidad) salida.tipo_necesidad = aplicados.value.tipo_necesidad
   if (aplicados.value.codigo.trim()) salida.codigo = aplicados.value.codigo.trim()
   if (aplicados.value.desde) salida.desde = aplicados.value.desde
@@ -275,7 +278,7 @@ function limpiar() {
   criterios.provincias = []
   criterios.estado = ''
   criterios.entidad = ''
-  criterios.tipo_proceso = ''
+  criterios.tipos_proceso = []
   criterios.tipo_necesidad = ''
   criterios.codigo = ''
   criterios.desde = ''
@@ -310,6 +313,10 @@ function quitarCpc(termino) {
 
 function cambiarProvincias(codigos) {
   criterios.provincias = codigos
+}
+
+function cambiarTiposProceso(tipos) {
+  criterios.tipos_proceso = tipos
 }
 
 /*
@@ -380,12 +387,30 @@ function presupuesto(fila) {
   return `$ ${decimal(valor)}`
 }
 
-/** El color de la etiqueta del estado: en curso destaca, lo cerrado va apagado o en aviso. */
-function claseDeEstado(estado) {
-  if (estado === 'En curso') return 'etiqueta--ok'
-  if (['Cancelado', 'Desierto', 'Retirado'].includes(estado)) return 'etiqueta--aviso'
-  if (['En planificación', 'Planificado'].includes(estado)) return 'etiqueta--info'
-  return ''
+/** El código que se muestra y se copia: el de CercoApp y, si el servidor no lo mandó, el crudo. */
+function elCodigo(fila) {
+  return fila.codigo || '—'
+}
+
+/**
+ * Copia el código de la fila y avisa en el propio botón durante un momento.
+ *
+ * El aviso se borra solo: un botón que se queda en «Copiado» deja de decir qué hace, y en una tabla
+ * de veinticinco filas el siguiente clic sería sobre un botón que ya no se entiende.
+ */
+const copiado = ref(null)
+let temporizador = null
+
+async function copiarCodigo(fila) {
+  const texto = fila.codigo_cercoapp || fila.codigo
+  if (!texto) return
+  if (await copiarAlPortapapeles(texto)) {
+    copiado.value = fila.id
+    clearTimeout(temporizador)
+    temporizador = setTimeout(() => {
+      copiado.value = null
+    }, 1600)
+  }
 }
 
 function lugar(fila) {
@@ -518,14 +543,16 @@ onMounted(() => {
 
       <p class="ofertas__grupo">Datos del proceso</p>
 
-      <div class="campo">
-        <label class="campo__etiqueta" for="of-tipo-proceso">Tipo de contratación</label>
-        <select id="of-tipo-proceso" v-model="criterios.tipo_proceso" class="entrada">
-          <option value="">Todos los tipos</option>
-          <option v-for="valor in catalogo.tipo_proceso || []" :key="valor" :value="valor">
-            {{ valor }}
-          </option>
-        </select>
+      <div class="campo campo--ancho">
+        <SelectorMultiple
+          etiqueta="Tipo de contratación"
+          :opciones="catalogo.tipo_proceso || []"
+          :seleccionadas="criterios.tipos_proceso"
+          singular="tipo"
+          plural="tipos"
+          ayuda="Marca uno o varios: se suman entre sí, como al elegir varias provincias en el mapa."
+          @cambiar="cambiarTiposProceso"
+        />
       </div>
 
       <div class="campo">
@@ -620,9 +647,10 @@ onMounted(() => {
     <p class="ofertas__nota">
       Los datos vienen de los datos abiertos del SERCOP. El buscador del portal no se puede consultar
       desde aquí —su servicio pide un captcha—, así que el listado se arma con esa misma información.
-      El <strong>estado del proceso</strong> es el que publican los datos abiertos: solo distinguen
-      «En curso» y «Finalizado», sin suspensiones ni cancelaciones. Los procesos recién publicados
-      pueden salir con «—» hasta la siguiente importación de los ficheros mensuales.
+      El <strong>código CercoApp</strong> es el del proceso sin el prefijo técnico del portal ni el
+      consecutivo interno que este le añade: es el que se copia y se pega para volver a buscarlo, aquí
+      o en el portal. El <strong>estado</strong> se puede filtrar arriba; los datos abiertos solo
+      distinguen «En curso» y «Finalizado», sin suspensiones ni cancelaciones.
     </p>
 
     <div v-if="filas.length" class="ofertas__barra">
@@ -680,7 +708,7 @@ onMounted(() => {
             <th scope="col">Provincia / Cantón</th>
             <th scope="col" class="ofertas__numero">Presupuesto referencial total (sin iva)</th>
             <th scope="col">Fecha de publicación</th>
-            <th scope="col">Estado</th>
+            <th scope="col">Código CercoApp</th>
             <th scope="col">Opciones</th>
           </tr>
         </thead>
@@ -714,11 +742,27 @@ onMounted(() => {
               <td>{{ lugar(fila) }}</td>
               <td class="ofertas__numero numeros">{{ presupuesto(fila) }}</td>
               <td class="numeros">{{ fechaCorta(fila.fecha_publicacion) }}</td>
-              <td>
-                <span v-if="fila.estado" class="etiqueta" :class="claseDeEstado(fila.estado)">
-                  {{ fila.estado }}
+              <!--
+                El código con el que se busca el proceso, y el botón que lo copia. Sustituye a la
+                columna de estado: el estado se puede filtrar arriba, mientras que copiar el código
+                es el gesto que se repite —se copia para pegarlo en el portal o para volver a
+                buscarlo aquí— y tener que seleccionar el texto con el ratón celda a celda era el
+                paso que sobraba.
+              -->
+              <td class="ofertas__cercoapp">
+                <span class="ofertas__cercoapp-codigo numeros" :title="fila.codigo_cercoapp || elCodigo(fila)">
+                  {{ fila.codigo_cercoapp || elCodigo(fila) }}
                 </span>
-                <span v-else class="ofertas__sin-dato" title="Aún sin estado: llega con la importación mensual">—</span>
+                <button
+                  type="button"
+                  class="ofertas__copiar"
+                  :class="{ 'ofertas__copiar--hecho': copiado === fila.id }"
+                  :aria-label="`Copiar el código ${fila.codigo_cercoapp || elCodigo(fila)}`"
+                  :title="copiado === fila.id ? 'Copiado' : 'Copiar el código'"
+                  @click="copiarCodigo(fila)"
+                >
+                  <span aria-hidden="true">{{ copiado === fila.id ? '✓' : '⧉' }}</span>
+                </button>
               </td>
               <td>
                 <button
@@ -897,10 +941,6 @@ onMounted(() => {
   gap: var(--e-2);
 }
 
-.ofertas__sin-dato {
-  color: var(--texto-tenue);
-}
-
 .ofertas__descargar {
   flex: none;
 }
@@ -968,6 +1008,60 @@ onMounted(() => {
 .ofertas__codigo {
   font-weight: 600;
   white-space: nowrap;
+}
+
+/*
+ * La columna del código copiable: el código y su botón en la misma línea.
+ *
+ * El código no se parte —es un identificador y partirlo lo vuelve ilegible— y el botón se queda
+ * pegado a la derecha del texto, que es donde llega el cursor después de leerlo.
+ */
+.ofertas__cercoapp {
+  white-space: nowrap;
+}
+
+.ofertas__cercoapp-codigo {
+  font-weight: 600;
+}
+
+/* Mini botón de copiar: cuadrado, del tamaño del texto que acompaña y sin peso visual propio. Un
+   botón de ancho completo aquí competiría con el código, que es lo que hay que leer. */
+.ofertas__copiar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin-left: 0.35rem;
+  padding: 0;
+  border: 1px solid var(--c-borde);
+  border-radius: var(--r-1);
+  background: var(--c-superficie);
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--c-texto-suave);
+  cursor: pointer;
+  vertical-align: middle;
+  transition:
+    border-color var(--rapido) var(--curva),
+    color var(--rapido) var(--curva),
+    background-color var(--rapido) var(--curva);
+}
+
+.ofertas__copiar:hover {
+  border-color: var(--c-acento);
+  color: var(--c-acento);
+}
+
+.ofertas__copiar:focus-visible {
+  outline: 2px solid var(--c-acento);
+  outline-offset: 1px;
+}
+
+.ofertas__copiar--hecho {
+  border-color: var(--ok);
+  background: var(--ok-suave);
+  color: var(--ok);
 }
 
 .ofertas__objeto {

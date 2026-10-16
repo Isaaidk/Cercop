@@ -33,6 +33,7 @@ from contratacion.dominio.busqueda import (
     Filtros,
     ModoBusqueda,
     OrdenBusqueda,
+    normalizar_lista,
     normalizar_provincias,
     normalizar_terminos,
 )
@@ -112,7 +113,7 @@ def _filtros_compartidos(
     provincia: list[str] | None,
     estado: str | None,
     entidad: str | None,
-    tipo_proceso: str | None,
+    tipo_proceso: list[str] | None,
     tipo_necesidad: str | None,
     codigo: str | None,
     desde: date | None,
@@ -159,7 +160,7 @@ def _filtros_compartidos(
         provincias=normalizar_provincias(provincia),
         estado=estado,
         entidad=entidad,
-        tipo_proceso=tipo_proceso,
+        tipos_proceso=normalizar_lista(tipo_proceso),
         tipo_necesidad=tipo_necesidad,
         codigo=codigo,
         desde=desde,
@@ -251,8 +252,15 @@ async def criterios(
         Query(description="Fragmento de la razón social de la entidad contratante."),
     ] = None,
     tipo_proceso: Annotated[
-        str | None,
-        Query(description="Tipo de contratación, tal y como aparece en el catálogo."),
+        list[str] | None,
+        Query(
+            description=(
+                "Tipo o tipos de contratación, tal y como aparecen en el catálogo. Se puede "
+                "repetir "
+                "el parámetro para elegir varios: `?tipo_proceso=Licitación&tipo_proceso=Subasta "
+                "Inversa Electrónica`. Se suman entre sí, como al marcar varias casillas."
+            )
+        ),
     ] = None,
     tipo_necesidad: Annotated[
         str | None,

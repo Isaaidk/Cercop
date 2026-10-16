@@ -277,6 +277,23 @@ def normalizar_terminos(entrada: Iterable[str] | str | None) -> tuple[str, ...]:
     return tuple(sorted(unicos))
 
 
+def normalizar_lista(valores: Iterable[str] | str | None) -> tuple[str, ...]:
+    """Valores de un criterio que admite varios: recortados, sin repetir y en **orden estable**.
+
+    Se ordenan por el mismo motivo que los términos y las provincias: elegir «Subasta Inversa
+    Electrónica» y después «Licitación» tiene que dar la misma consulta —y la misma entrada de
+    caché— que al revés. Sin ordenar, el acierto de caché se perdería justo cuando más se usa el
+    filtro, que es cuando se marcan varios valores.
+
+    Los vacíos se descartan: un valor en blanco no filtra nada, y dejarlo pasar añadiría una
+    condición que no corresponde a lo que pidió nadie.
+    """
+    if valores is None:
+        return ()
+    partes: list[str] = [valores] if isinstance(valores, str) else [str(valor) for valor in valores]
+    return tuple(sorted({parte.strip() for parte in partes if parte and parte.strip()}))
+
+
 def normalizar_provincias(entrada: Iterable[str] | str | None) -> tuple[str, ...]:
     """Provincias normalizadas, sin repetir y en orden estable.
 
@@ -287,10 +304,7 @@ def normalizar_provincias(entrada: Iterable[str] | str | None) -> tuple[str, ...
     Se recortan y se descartan las vacías: una provincia en blanco no filtra nada, y dejarla pasar
     añadiría una condición que no se corresponde con lo que pidió nadie.
     """
-    if entrada is None:
-        return ()
-    partes: list[str] = [entrada] if isinstance(entrada, str) else [str(p) for p in entrada]
-    return tuple(sorted({parte.strip() for parte in partes if parte and parte.strip()}))
+    return normalizar_lista(entrada)
 
 
 def _coincide_termino(palabras_texto: Sequence[str], termino: str) -> bool:
@@ -416,10 +430,15 @@ class Filtros:
     #
     # `entidad` y `codigo` comparan por **fragmento**, porque son datos que nadie recuerda enteros:
     # quien filtra por entidad escribe «municipio» y quien busca un proceso teclea los últimos
-    # dígitos. Los dos tipos comparan **exacto**, porque sus valores salen de un desplegable y una
-    # igualdad parcial encontraría «Licitación» al pedir «Lic», que no es lo que se eligió.
+    # dígitos. El tipo de compra compara **exacto**, porque sus valores salen de un desplegable y
+    # una igualdad parcial encontraría «Licitación» al pedir «Lic», que no es lo que se eligió.
+    #
+    # El **tipo de contratación** es una tupla porque se pueden marcar varios: quien prepara una
+    # oferta mira las subastas y las licitaciones a la vez, y con un valor suelto tendría que hacer
+    # dos consultas y sumar mentalmente los resultados. Los valores se suman entre sí —«cualquiera
+    # de estos»—, que es lo que espera quien marca varias casillas.
     entidad: str | None = None
-    tipo_proceso: str | None = None
+    tipos_proceso: tuple[str, ...] = ()
     tipo_necesidad: str | None = None
     codigo: str | None = None
     desde: date | None = None
@@ -555,7 +574,10 @@ class Filtros:
             # otro durante todo un TTL. Es un fallo que no deja rastro —la respuesta es correcta,
             # pero para otra consulta— y solo se nota comparando dos pantallas a la vez.
             "en": normalizar(self.entidad),
-            "tp": normalizar(self.tipo_proceso),
+            # Los tipos de contratación van **ordenados**: marcar «Subasta» y luego «Licitación» es
+            # la misma consulta que al revés, y sin ordenar ocuparía dos entradas de caché para el
+            # mismo resultado.
+            "tp": sorted(normalizar(tipo) for tipo in self.tipos_proceso),
             "tn": normalizar(self.tipo_necesidad),
             "cd": (self.codigo or "").strip().lower(),
             "d": self.desde.isoformat() if self.desde else "",
