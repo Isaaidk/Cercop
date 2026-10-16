@@ -26,7 +26,7 @@
  * que con la fuente OCDS sale vacía. Se rellena sola si se cambia la fuente a NCO, que sí lo publica.
  * Se dice aquí y en pantalla en lugar de dejar una columna muda que parezca un fallo.
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import CajonDetalleOferta from '@/components/CajonDetalleOferta.vue'
 import CampoDeTerminos from '@/components/CampoDeTerminos.vue'
@@ -53,26 +53,6 @@ const FILAS_POR_PAGINA = 25
 const FUENTE_PREDETERMINADA = 'OCDS'
 
 /**
- * Los estados que puede tener un proceso de los datos abiertos, ya traducidos.
- *
- * El listado paginado no publica el estado; lo trae la descarga masiva (`tender.status`) y se
- * traduce al guardarlo (`ESTADOS_PROCESO` en `ocds_masiva.py`). El catálogo de estados mezcla los de
- * todas las fuentes, así que con la fuente OCDS se ofrecen solo estos: un estado de las ínfimas
- * devolvería cero procesos. En 2026 el SERCOP solo publica «En curso» y «Finalizado»; los demás
- * están por si empieza a usarlos, y solo aparecen si de verdad hay procesos con ese estado.
- */
-const FUENTE_OCDS = 'OCDS'
-const ESTADOS_OCDS = [
-  'En planificación',
-  'Planificado',
-  'En curso',
-  'Finalizado',
-  'Cancelado',
-  'Desierto',
-  'Retirado',
-]
-
-/**
  * Cómo se combinan varias palabras clave en esta pestaña.
  *
  * Se pide «cualquiera» de forma explícita porque el servidor, si no se le dice otra cosa, combina
@@ -87,10 +67,8 @@ const criterios = reactive({
   cpc: [],
   modo: MODO_PALABRAS,
   provincias: [],
-  estado: '',
   entidad: '',
   tipos_proceso: [],
-  tipo_necesidad: '',
   codigo: '',
   desde: '',
   hasta: '',
@@ -141,28 +119,6 @@ const catalogo = computed(() => datos.estado.catalogos)
 const fuentes = computed(() => catalogo.value.fuente || [])
 
 /**
- * Los estados que existen de verdad en los datos, no una lista inventada. Con la fuente OCDS, solo
- * los de los procesos; con las demás, los del catálogo tal cual.
- */
-const estados = computed(() => {
-  const todos = catalogo.value.estado || []
-  if (criterios.fuente !== FUENTE_OCDS) return todos
-  return todos.filter((valor) => ESTADOS_OCDS.includes(valor))
-})
-
-/**
- * Un estado elegido que ya no existe con la fuente nueva se retira.
- *
- * Sin esto queda un filtro envenenado: cambiar de NCO a ofertas dejaba seleccionado «En Curso» —el
- * estado de las ínfimas—, el desplegable ya no lo ofrecía y el listado de procesos salía vacío sin
- * decir por qué. Se limpia el borrador; el criterio aplicado cambia cuando se pulsa «Buscar
- * procesos», igual que todos los demás.
- */
-watch(estados, (disponibles) => {
-  if (criterios.estado && !disponibles.includes(criterios.estado)) criterios.estado = ''
-})
-
-/**
  * Las palabras que se pueden buscar en un texto, ya separadas y sin repetir.
  *
  * Se descartan las de tres letras o más cortas porque son las únicas que el servidor va a tener en
@@ -197,9 +153,7 @@ const criteriosAplicados = computed(() => {
     a.provincias.length > 0,
     a.entidad.trim().length > 0,
     a.tipos_proceso.length > 0,
-    Boolean(a.tipo_necesidad),
     a.codigo.trim().length > 0,
-    Boolean(a.estado),
     Boolean(a.desde),
     Boolean(a.hasta),
     Boolean(a.fuente),
@@ -217,7 +171,6 @@ function parametros() {
   if (aplicados.value.fuente) salida.fuente = aplicados.value.fuente
   if (aplicados.value.entidad.trim()) salida.entidad = aplicados.value.entidad.trim()
   if (aplicados.value.tipos_proceso.length) salida.tipo_proceso = aplicados.value.tipos_proceso
-  if (aplicados.value.tipo_necesidad) salida.tipo_necesidad = aplicados.value.tipo_necesidad
   if (aplicados.value.codigo.trim()) salida.codigo = aplicados.value.codigo.trim()
   if (aplicados.value.desde) salida.desde = aplicados.value.desde
   if (aplicados.value.hasta) salida.hasta = aplicados.value.hasta
@@ -241,7 +194,6 @@ function parametros() {
   if (aplicados.value.provincias.length) {
     salida.provincia = aplicados.value.provincias.map(nombreParaApi)
   }
-  if (aplicados.value.estado) salida.estado = aplicados.value.estado
   return salida
 }
 
@@ -276,10 +228,8 @@ function limpiar() {
   criterios.cpc = []
   criterios.modo = MODO_PALABRAS
   criterios.provincias = []
-  criterios.estado = ''
   criterios.entidad = ''
   criterios.tipos_proceso = []
-  criterios.tipo_necesidad = ''
   criterios.codigo = ''
   criterios.desde = ''
   criterios.hasta = ''
@@ -556,16 +506,6 @@ onMounted(() => {
       </div>
 
       <div class="campo">
-        <label class="campo__etiqueta" for="of-tipo-necesidad">Tipo de compra</label>
-        <select id="of-tipo-necesidad" v-model="criterios.tipo_necesidad" class="entrada">
-          <option value="">Todos los tipos</option>
-          <option v-for="valor in catalogo.tipo_necesidad || []" :key="valor" :value="valor">
-            {{ valor }}
-          </option>
-        </select>
-      </div>
-
-      <div class="campo">
         <label class="campo__etiqueta" for="of-codigo">Código del proceso</label>
         <input
           id="of-codigo"
@@ -574,36 +514,6 @@ onMounted(() => {
           type="text"
           placeholder="Parte del código, ej.: 2026-00270"
         />
-      </div>
-
-      <div class="campo">
-        <label class="campo__etiqueta" for="of-estado">Estado de la contratación</label>
-        <select
-          id="of-estado"
-          v-model="criterios.estado"
-          class="entrada"
-          :disabled="estados.length === 0"
-        >
-          <option value="">
-            {{ estados.length ? 'Todos los estados' : 'Sin estados en los datos' }}
-          </option>
-          <option v-for="valor in estados" :key="valor" :value="valor">{{ valor }}</option>
-        </select>
-        <!--
-          Cuando no hay ningún estado que ofrecer se dice **por qué**, en lugar de dejar un
-          desplegable vacío que parece roto. No es un fallo de la pantalla: el estado del proceso lo
-          publica la descarga de los ficheros mensuales, y hasta que esa descarga no pase por el
-          histórico ningún proceso lo trae. El listado paginado que lee el worker no lo incluye.
-        -->
-        <p v-if="estados.length === 0" class="ofertas__ayuda">
-          Los datos abiertos de esta fuente todavía no traen el estado del proceso, así que no hay
-          ninguno que elegir. Aparecerán solos en cuanto la descarga de los ficheros mensuales los
-          guarde.
-        </p>
-        <p v-else-if="criterios.fuente === FUENTE_OCDS" class="ofertas__ayuda">
-          Los datos abiertos solo publican si el proceso está en curso o finalizado; no indican si
-          está suspendido, cancelado o desierto.
-        </p>
       </div>
 
       <p class="ofertas__grupo">Fechas y fuente</p>
@@ -648,9 +558,8 @@ onMounted(() => {
       Los datos vienen de los datos abiertos del SERCOP. El buscador del portal no se puede consultar
       desde aquí —su servicio pide un captcha—, así que el listado se arma con esa misma información.
       El <strong>código CercoApp</strong> es el del proceso sin el prefijo técnico del portal ni el
-      consecutivo interno que este le añade: es el que se copia y se pega para volver a buscarlo, aquí
-      o en el portal. El <strong>estado</strong> se puede filtrar arriba; los datos abiertos solo
-      distinguen «En curso» y «Finalizado», sin suspensiones ni cancelaciones.
+      consecutivo interno que este le añade: es el que se copia y se pega para volver a buscarlo,
+      aquí o en el portal.
     </p>
 
     <div v-if="filas.length" class="ofertas__barra">
@@ -743,11 +652,10 @@ onMounted(() => {
               <td class="ofertas__numero numeros">{{ presupuesto(fila) }}</td>
               <td class="numeros">{{ fechaCorta(fila.fecha_publicacion) }}</td>
               <!--
-                El código con el que se busca el proceso, y el botón que lo copia. Sustituye a la
-                columna de estado: el estado se puede filtrar arriba, mientras que copiar el código
-                es el gesto que se repite —se copia para pegarlo en el portal o para volver a
-                buscarlo aquí— y tener que seleccionar el texto con el ratón celda a celda era el
-                paso que sobraba.
+                El código con el que se busca el proceso, y el botón que lo copia. Ocupa el sitio que
+                tenía la columna de estado: copiar el código es el gesto que se repite —se copia para
+                pegarlo en el portal o para volver a buscarlo aquí— y tener que seleccionar el texto
+                con el ratón celda a celda era el paso que sobraba.
               -->
               <td class="ofertas__cercoapp">
                 <span class="ofertas__cercoapp-codigo numeros" :title="fila.codigo_cercoapp || elCodigo(fila)">
