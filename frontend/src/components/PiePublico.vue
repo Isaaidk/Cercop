@@ -15,7 +15,9 @@
     <div class="pie__envoltura">
       <div class="pie__identidad">
         <p class="pie__nombre">
-          <span class="pie__icono" aria-hidden="true">CA</span>
+          <span class="pie__icono">
+            <img src="/logo-cercoapp.png" alt="" width="28" height="28" />
+          </span>
           CercoApp
         </p>
         <p class="pie__descripcion">
@@ -76,13 +78,21 @@
 .pie__icono {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-1);
-  background: var(--acento);
-  color: #fff;
-  font-size: 0.625rem;
-  font-weight: 700;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.pie__icono img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+html[data-tema='oscuro'] .pie__icono {
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
 }
 
 .pie__descripcion {

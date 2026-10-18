@@ -55,7 +55,9 @@ async function entrar() {
   <div class="acceso">
     <header class="acceso__cabecera">
       <div class="marca">
-        <span class="marca__icono" aria-hidden="true">CA</span>
+        <span class="marca__icono">
+          <img src="/logo-cercoapp.png" alt="" width="36" height="36" />
+        </span>
         <!--
           El nombre del producto. Antes decía «Contratación pública», que describe la categoría pero
           no identifica el sitio: el nombre aparecía en el título de la pestaña y en ningún otro
@@ -191,13 +193,21 @@ async function entrar() {
 .marca__icono {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-2);
-  background: var(--acento);
-  color: #fff;
-  font-size: var(--t-xs);
-  font-weight: 700;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.marca__icono img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+html[data-tema='oscuro'] .marca__icono {
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
 }
 
 .marca__texto {

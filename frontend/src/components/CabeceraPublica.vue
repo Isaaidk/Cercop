@@ -26,7 +26,9 @@ const emit = defineEmits(['alternar-tema'])
 <template>
   <header class="cabecera">
     <a class="marca" href="/" aria-label="CercoApp: ir a la portada">
-      <span class="marca__icono" aria-hidden="true">CA</span>
+      <span class="marca__icono">
+        <img src="/logo-cercoapp.png" alt="" width="36" height="36" />
+      </span>
       <span class="marca__texto">CercoApp</span>
     </a>
 
@@ -72,13 +74,21 @@ const emit = defineEmits(['alternar-tema'])
 .marca__icono {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-2);
-  background: var(--acento);
-  color: #fff;
-  font-size: var(--t-xs);
-  font-weight: 700;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.marca__icono img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+html[data-tema='oscuro'] .marca__icono {
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 16%);
 }
 
 .marca__texto {
