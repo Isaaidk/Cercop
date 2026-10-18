@@ -114,6 +114,29 @@ def _texto_busqueda(datos: Mapping[str, Any]) -> str:
     return normalizar(" ".join(partes))
 
 
+def _completar_codigo(datos: dict[str, Any]) -> None:
+    """Rellena el código del proceso a partir del `ocid` cuando la fuente no lo publica suelto.
+
+    Por qué
+    -------
+    El código canónico sale del campo `title` del payload, y el listado paginado **no siempre lo
+    trae**: en las publicaciones más recientes llega vacío y la fila se guarda sin `codigo`. Medido
+    sobre el histórico el 2026-10-18: 198 filas así, que en la tabla salían con «—» en el código y
+    sin Código CercoApp, y que además no se podían encontrar por su identificador.
+
+    El `ocid` **contiene** ese código —`ocds-5wno2w-SIE-UC-2026-059-30951`—, así que no se inventa
+    nada: se usa el identificador que la propia fuente publica. Tiene además la misma forma que el
+    código de las demás filas, que es lo que mantiene la columna y el buscador coherentes.
+
+    Se hace aquí, en el único sitio por el que pasa todo lo que se ingesta, para que valga igual
+    para el listado, la búsqueda por término y la descarga masiva.
+    """
+    if datos.get("codigo") in (None, ""):
+        ocid = datos.get("ocid")
+        if ocid not in (None, ""):
+            datos["codigo"] = ocid
+
+
 async def ejecutar_ciclo(
     definicion: DefinicionFuente,
     repositorio: RepositorioIngesta,
@@ -351,6 +374,7 @@ def _mapear_todo(
         vistos.add(clave)
 
         datos, _ = aplicar(mapeos, crudo)
+        _completar_codigo(datos)
         # El payload se guarda sin las marcas internas del adaptador, para que sea fiel a la fuente.
         crudo_limpio = {
             clave_cruda: valor

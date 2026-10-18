@@ -37,18 +37,34 @@ ESTADO_ERROR = "error"
 # por debajo para que el número no haya que recalcularlo cada vez que una fila gane una columna.
 FILAS_POR_LOTE = 500
 
-# Los `datos` nuevos al actualizar un registro, **conservando el estado** si la fila nueva no trae.
+# Los `datos` al actualizar un registro: se **funden** con los que ya había, y gana el valor nuevo
+# en cada campo que traiga.
 #
-# Las ofertas entran por dos caminos: la descarga masiva, que trae el estado del proceso, y el
-# listado paginado que lee el worker, que no lo publica. Sin esto, cada vez que el listado volviera
-# a ver un proceso ya importado reescribiría `datos` entero y el estado desaparecería. Solo se
-# conserva cuando la fila nueva no trae estado: si trae uno, manda el nuevo, que es el más actual.
-DATOS_CONSERVANDO_ESTADO = """
+# Antes se reemplazaban enteros. Las ofertas entran por dos caminos —la descarga masiva de los
+# ficheros mensuales, que trae el objeto de compra, el tipo de proceso, el presupuesto y el estado,
+# y el listado paginado del worker, que trae solo el código, la entidad, la provincia, el cantón y
+# la fecha—. Con el reemplazo, cada vez que el listado volvía a ver un proceso ya importado, los
+# campos que no trae desaparecían de la fila; solo se conservaba `estado`, con un caso especial.
+#
+# Las 6.521 filas que hoy se ven sin objeto de compra ni tipo de proceso son las que escribió el
+# listado. Su `crudo` ya venía sin `description` ni `budget`, así que en este caso nacieron pobres y
+# no se les borró nada; pero con el reemplazo no hay forma de distinguir una cosa de la otra, y el
+# arreglo cubre las dos: un payload parcial ya no puede quitar lo que no trae.
+#
+# Con `||` los campos que la fila nueva no trae se conservan. El mapeo **omite** las claves vacías
+# —no escribe `null`—, así que un payload parcial no puede borrar nada: solo añade o actualiza lo
+# suyo. Y si un campo sí viene con valor nuevo, ese manda, que es lo que se quiere.
+#
+# `texto_busqueda` no se puede fundir —es una cadena—, así que se conserva el más largo. Es lo
+# correcto en la práctica: el texto se compone de los campos de la fila, y un payload parcial
+# produce uno más corto; quedarse con el corto perdería la búsqueda por objeto de compra.
+DATOS_FUNDIDOS = "registro.datos || EXCLUDED.datos"
+
+TEXTO_FUNDIDO = """
     CASE
-        WHEN coalesce(EXCLUDED.datos ->> 'estado', '') = ''
-             AND coalesce(registro.datos ->> 'estado', '') <> ''
-        THEN EXCLUDED.datos || jsonb_build_object('estado', registro.datos -> 'estado')
-        ELSE EXCLUDED.datos
+        WHEN length(EXCLUDED.texto_busqueda) >= length(registro.texto_busqueda)
+        THEN EXCLUDED.texto_busqueda
+        ELSE registro.texto_busqueda
     END
 """
 
@@ -517,9 +533,9 @@ class RepositorioIngesta:
                         CAST(:plazo AS timestamptz)
                     )
                     ON CONFLICT (fuente_id, clave_natural) DO UPDATE
-                        SET datos = {DATOS_CONSERVANDO_ESTADO},
+                        SET datos = {DATOS_FUNDIDOS},
                             crudo = EXCLUDED.crudo,
-                            texto_busqueda = EXCLUDED.texto_busqueda,
+                            texto_busqueda = {TEXTO_FUNDIDO},
                             hash_contenido = EXCLUDED.hash_contenido,
                             fecha_publicacion = EXCLUDED.fecha_publicacion,
                             provincia = EXCLUDED.provincia,
@@ -671,9 +687,9 @@ class RepositorioIngesta:
                         )
                         VALUES {valores}
                         ON CONFLICT (fuente_id, clave_natural) DO UPDATE
-                            SET datos = {DATOS_CONSERVANDO_ESTADO},
+                            SET datos = {DATOS_FUNDIDOS},
                                 crudo = EXCLUDED.crudo,
-                                texto_busqueda = EXCLUDED.texto_busqueda,
+                                texto_busqueda = {TEXTO_FUNDIDO},
                                 hash_contenido = EXCLUDED.hash_contenido,
                                 fecha_publicacion = EXCLUDED.fecha_publicacion,
                                 provincia = EXCLUDED.provincia,

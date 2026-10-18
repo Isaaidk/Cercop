@@ -339,7 +339,7 @@ function presupuesto(fila) {
 
 /** El código que se muestra y se copia: el de CercoApp y, si el servidor no lo mandó, el crudo. */
 function elCodigo(fila) {
-  return fila.codigo || '—'
+  return fila.codigo || fila.codigo_cercoapp || '—'
 }
 
 /**
@@ -611,54 +611,30 @@ onMounted(() => {
       <table class="ofertas__tabla">
         <thead>
           <tr>
+            <th scope="col">Código CercoApp</th>
             <th scope="col">Código</th>
             <th scope="col">Entidad contratante</th>
             <th scope="col">Objeto del proceso</th>
             <th scope="col">Provincia / Cantón</th>
             <th scope="col" class="ofertas__numero">Presupuesto referencial total (sin iva)</th>
             <th scope="col">Fecha de publicación</th>
-            <th scope="col">Código CercoApp</th>
             <th scope="col">Opciones</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="fila in filas" :key="fila.id">
             <tr class="ofertas__fila">
-              <td class="ofertas__codigo numeros" :title="fila.codigo">
-                <!--
-                  El código como enlace, igual que en la tabla de ínfimas: cuando la fuente
-                  publica la dirección del proceso, el código es la forma más corta de abrirlo. El
-                  enlace lo compone el servidor —es el mismo dato para la tabla, el mapa y el
-                  Excel— y aquí solo se pinta.
-                -->
-                <a
-                  v-if="fila.enlace_publico"
-                  class="codigo--enlace numeros"
-                  :href="fila.enlace_publico"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  :title="`Abrir ${fila.codigo || 'el proceso'} en el portal de la fuente`"
-                >
-                  {{ fila.codigo || '—' }}
-                  <span class="codigo__fuera" aria-hidden="true">↗</span>
-                </a>
-                <span v-else>{{ fila.codigo || '—' }}</span>
-              </td>
-              <td :title="fila.entidad">{{ recortar(fila.entidad || '—', 42) }}</td>
-              <td class="ofertas__objeto" :title="sinEtiquetas(fila.objeto_compra || '')">
-                {{ recortar(sinEtiquetas(fila.objeto_compra || '—'), 90) }}
-              </td>
-              <td>{{ lugar(fila) }}</td>
-              <td class="ofertas__numero numeros">{{ presupuesto(fila) }}</td>
-              <td class="numeros">{{ fechaCorta(fila.fecha_publicacion) }}</td>
               <!--
-                El código con el que se busca el proceso, y el botón que lo copia. Ocupa el sitio que
-                tenía la columna de estado: copiar el código es el gesto que se repite —se copia para
-                pegarlo en el portal o para volver a buscarlo aquí— y tener que seleccionar el texto
-                con el ratón celda a celda era el paso que sobraba.
+                El Código CercoApp va **primero**: es el que se copia y se pega para buscar el
+                proceso, aquí o en el portal, así que es el dato que se busca con la vista al entrar.
+                El botón copia ese mismo texto —no el de la columna de al lado, que lleva el prefijo
+                técnico del portal y un consecutivo que no sirven para buscar—.
               -->
               <td class="ofertas__cercoapp">
-                <span class="ofertas__cercoapp-codigo numeros" :title="fila.codigo_cercoapp || elCodigo(fila)">
+                <span
+                  class="ofertas__cercoapp-codigo numeros"
+                  :title="fila.codigo_cercoapp || elCodigo(fila)"
+                >
                   {{ fila.codigo_cercoapp || elCodigo(fila) }}
                 </span>
                 <button
@@ -672,6 +648,33 @@ onMounted(() => {
                   <span aria-hidden="true">{{ copiado === fila.id ? '✓' : '⧉' }}</span>
                 </button>
               </td>
+              <td class="ofertas__codigo numeros" :title="elCodigo(fila)">
+                <!--
+                  El código tal y como lo publica la fuente, como enlace a su ficha: cuando la
+                  fuente publica la dirección del proceso, el código es la forma más corta de
+                  abrirlo. El enlace lo compone el servidor —es el mismo dato para la tabla, el mapa
+                  y el Excel— y aquí solo se pinta.
+                -->
+                <a
+                  v-if="fila.enlace_publico"
+                  class="codigo--enlace numeros"
+                  :href="fila.enlace_publico"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="`Abrir ${elCodigo(fila)} en el portal de la fuente`"
+                >
+                  {{ elCodigo(fila) }}
+                  <span class="codigo__fuera" aria-hidden="true">↗</span>
+                </a>
+                <span v-else>{{ elCodigo(fila) }}</span>
+              </td>
+              <td :title="fila.entidad">{{ recortar(fila.entidad || '—', 42) }}</td>
+              <td class="ofertas__objeto" :title="sinEtiquetas(fila.objeto_compra || '')">
+                {{ recortar(sinEtiquetas(fila.objeto_compra || '—'), 90) }}
+              </td>
+              <td>{{ lugar(fila) }}</td>
+              <td class="ofertas__numero numeros">{{ presupuesto(fila) }}</td>
+              <td class="numeros">{{ fechaCorta(fila.fecha_publicacion) }}</td>
               <td>
                 <button
                   type="button"

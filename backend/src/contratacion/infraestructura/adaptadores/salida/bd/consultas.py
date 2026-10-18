@@ -435,6 +435,20 @@ def _fila_a_elemento(fila: Mapping[Any, Any]) -> Mapping[str, Any]:
         item.como_diccionario() for item in items_desde_crudos(fila.get("items") or ())
     ]
     elemento["cpc_codigos"] = list(fila.get("cpc_codigos") or ())
+    # El código del proceso, con respaldo en el `ocid` cuando el payload no lo trajo suelto.
+    #
+    # El listado paginado no siempre publica el `title` del que sale el código, y esas filas se
+    # guardaban sin él: en la tabla salían con «—» y sin Código CercoApp. El `ocid` **lleva dentro**
+    # ese código, así que la lectura lo usa en lugar de mostrar un hueco. Se resuelve al leer y no
+    # solo al ingestar porque las filas que ya están guardadas así no se van a reescribir solas.
+    #
+    # Solo se recurre al `ocid`, y no a la clave natural: la clave natural es un identificador
+    # interno de cada fuente y en otras no tiene forma de código de proceso, así que usarla como
+    # respaldo metería en la columna un valor que no es el que se pega en el buscador.
+    if not elemento.get("codigo"):
+        ocid = elemento.get("ocid")
+        if ocid:
+            elemento["codigo"] = str(ocid)
     # El código sin el prefijo técnico del portal y sin el consecutivo interno, que es el que se
     # copia para volver a buscar el proceso. Se calcula aquí, en el único sitio por el que pasan
     # todas las filas, para que la tabla, el cajón de detalle y el archivo de Excel muestren el
