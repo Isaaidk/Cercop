@@ -116,7 +116,7 @@ class SesionRevocada(ErrorDominio):
 # gráficas. Vive aquí, junto al error que lo lanza, porque son la misma cosa: no es un mensaje que
 # alguien escriba al suspender, es lo que significa estar suspendido.
 MENSAJE_SUSPENSION = (
-    "Tu cuenta fue suspendida. Contáctate con el administrador: isaacpuga661@gmail.com"
+    "Tu cuenta fue suspendida. Contáctate con el servicio de Soporte: Soporte.cercoapp@gmail.com"
 )
 
 

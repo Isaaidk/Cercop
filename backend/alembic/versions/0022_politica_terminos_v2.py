@@ -71,7 +71,7 @@ uses el aplicativo.
 El aplicativo CercoApp (en adelante, «el Servicio») lo presta Isaac Puga, persona natural que
 actúa en el Ecuador (en adelante, «el Prestador»), con RUC en trámite de inscripción en la fecha de
 esta revisión. Para toda comunicación, notificación, reclamación o ejercicio de derechos, el
-Prestador señala el correo electrónico isaacpuga661@gmail.com como domicilio electrónico, que ambas
+Prestador señala el correo electrónico Soporte.cercoapp@gmail.com como domicilio electrónico, que ambas
 partes aceptan como medio válido. Cualquier cambio de este canal se avisará en el propio
 aplicativo.
 
@@ -198,7 +198,7 @@ Personales del Ecuador y su normativa de desarrollo. En concreto:
      accesos.
    - Tus derechos. Puedes ejercer los derechos de acceso, rectificación, actualización, eliminación,
      oposición, portabilidad y los demás que reconoce la ley escribiendo a
-     isaacpuga661@gmail.com. Responderemos dentro del plazo legal. Ten en cuenta que retirar el
+     Soporte.cercoapp@gmail.com. Responderemos dentro del plazo legal. Ten en cuenta que retirar el
      consentimiento bloquea el acceso al Servicio, porque sin él no es posible tratar los datos que
      su uso implica.
    - Trazabilidad. Al aceptar estas condiciones se guardan, junto a tu aceptación, la versión exacta
