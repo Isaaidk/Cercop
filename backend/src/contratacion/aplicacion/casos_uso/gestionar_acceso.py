@@ -22,7 +22,9 @@ from contratacion.aplicacion.puertos.accesos import RepositorioAccesos
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.dominio.acceso import (
     ETIQUETAS_PLAZO,
+    ETIQUETAS_VISTA,
     TTL_PERMISO_SEG,
+    VISTAS_DEL_CATALOGO,
     AccesoVista,
     EstadoVista,
     Plazo,
@@ -32,10 +34,11 @@ from contratacion.dominio.acceso import (
     generacion_de_acceso,
     negocio_objetivo,
     plazo_desde_codigo,
+    puede_conceder,
     tablero,
     vista_desde_codigo,
 )
-from contratacion.dominio.errores import NoEncontrado, SinPermiso
+from contratacion.dominio.errores import DatoInvalido, NoEncontrado, SinPermiso
 from contratacion.dominio.serializacion import a_json, de_json
 
 registro = logging.getLogger(__name__)
@@ -92,15 +95,21 @@ class UsuarioConVistas:
     rol: str
     estado: str
     tablero: tuple[EstadoVista, ...]
+    bloqueado_hasta: datetime | None = None
 
     def como_diccionario(self) -> dict[str, Any]:
         vigentes = [fila for fila in self.tablero if fila.vigente]
+        bloqueada = self.bloqueado_hasta is not None and self.bloqueado_hasta > datetime.now(UTC)
         return {
             "usuario_id": str(self.usuario_id),
             "email": self.email,
             "nombre": self.nombre,
             "rol": self.rol,
             "estado": self.estado,
+            "bloqueada": bloqueada,
+            "bloqueado_hasta": (
+                self.bloqueado_hasta.isoformat() if bloqueada and self.bloqueado_hasta else None
+            ),
             "vistas_vigentes": [str(fila.vista) for fila in vigentes],
             "vistas": [vista_a_diccionario(fila) for fila in self.tablero],
         }
@@ -137,9 +146,15 @@ async def conceder_acceso(
     momento: datetime | None = None,
 ) -> ResultadoConcesion:
     """Concede (o extiende) el acceso de un usuario a una vista durante un plazo."""
-    actor.exigir_administrativo()
+    _exigir_conceder(actor)
     negocio_id = negocio_objetivo(actor.rol, actor.negocio_id, negocio_solicitado)
     vista = vista_desde_codigo(vista_codigo)
+    if vista not in VISTAS_DEL_CATALOGO:
+        raise DatoInvalido(
+            f"La vista «{vista}» ya no se concede. Usa una de: "
+            + ", ".join(ETIQUETAS_VISTA[v] for v in VISTAS_DEL_CATALOGO)
+            + "."
+        )
     plazo = plazo_desde_codigo(plazo_codigo)
     instante = momento or datetime.now(UTC)
 
@@ -187,7 +202,7 @@ async def retirar_acceso(
     momento: datetime | None = None,
 ) -> ResultadoTablero:
     """Retira el acceso de un usuario a una vista, de inmediato."""
-    actor.exigir_administrativo()
+    _exigir_conceder(actor)
     negocio_id = negocio_objetivo(actor.rol, actor.negocio_id, negocio_solicitado)
     vista = vista_desde_codigo(vista_codigo)
     instante = momento or datetime.now(UTC)
@@ -280,6 +295,7 @@ async def listar_usuarios(
                 rol=str(fila.get("rol", "")),
                 estado=str(fila.get("estado", "")),
                 tablero=await _tablero_de(negocio_id, identificador, repositorio, instante),
+                bloqueado_hasta=fila.get("bloqueado_hasta"),
             )
         )
     return tuple(resultado)
@@ -338,6 +354,15 @@ async def exigir_acceso_a_vista(
         raise SinPermiso(
             f"Este usuario no tiene acceso a la vista «{vista}». Pide al administrador que lo "
             "conceda."
+        )
+
+
+def _exigir_conceder(actor: Actor) -> None:
+    """Los plazos de uso solo los concede o retira el superadministrador."""
+    if not puede_conceder(actor.rol):
+        raise SinPermiso(
+            "Los plazos de uso de las vistas los gestiona el superadministrador de la plataforma. "
+            "Pídele que conceda o amplíe el acceso."
         )
 
 

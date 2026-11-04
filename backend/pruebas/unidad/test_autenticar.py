@@ -144,6 +144,13 @@ class CuentasFalsas:
     async def actualizar_huella(self, *, negocio_id: UUID, usuario_id: UUID, huella: str) -> None:
         self.cuentas[usuario_id] = replace(self.cuentas[usuario_id], hash_password=huella)
 
+    async def fijar_contrasena_propia(
+        self, *, negocio_id: UUID, usuario_id: UUID, huella: str
+    ) -> None:
+        self.cuentas[usuario_id] = replace(
+            self.cuentas[usuario_id], hash_password=huella, debe_cambiar_contrasena=False
+        )
+
     async def cambiar_estado(
         self, *, negocio_id: UUID, usuario_id: UUID, estado: str, momento: datetime
     ) -> None:
@@ -443,6 +450,59 @@ async def test_una_cuenta_bloqueada_lo_dice_si_la_contrasena_es_correcta() -> No
 
     assert "bloqueada" in str(fallo.value).lower()
     assert piezas["sesiones"].guardadas == {}
+
+
+async def test_el_inicio_avisa_de_una_contrasena_temporal() -> None:
+    cuenta = replace(_cuenta(), debe_cambiar_contrasena=True)
+    piezas = _piezas(cuenta)
+
+    resultado = await _entrar(cuenta, piezas)
+
+    assert resultado.como_diccionario()["debe_cambiar_contrasena"] is True
+
+
+async def test_el_mensaje_de_bloqueo_usa_la_hora_de_ecuador() -> None:
+    hasta = AHORA + timedelta(minutes=10)
+    cuenta = _cuenta(bloqueado_hasta=hasta)
+    piezas = _piezas(cuenta)
+
+    with pytest.raises(SinPermiso) as fallo:
+        await _entrar(cuenta, piezas)
+
+    from contratacion.dominio.ingesta import ZONA_FUENTE
+
+    assert hasta.astimezone(ZONA_FUENTE).strftime("%H:%M") in str(fallo.value)
+
+
+async def test_un_fallo_durante_el_bloqueo_no_lo_alarga() -> None:
+    from contratacion.dominio.credenciales import INTENTOS_ANTES_DE_BLOQUEO
+
+    hasta = AHORA + timedelta(minutes=10)
+    cuenta = _cuenta(intentos=INTENTOS_ANTES_DE_BLOQUEO, bloqueado_hasta=hasta)
+    piezas = _piezas(cuenta)
+
+    with pytest.raises(SinPermiso):
+        await _entrar(cuenta, piezas, contrasena="otra-cosa-larga")
+
+    assert piezas["cuentas"].cuentas[cuenta.usuario_id].bloqueado_hasta == hasta
+    assert piezas["cuentas"].fallos_registrados == 0
+
+
+async def test_tras_cumplir_el_bloqueo_un_error_no_vuelve_a_bloquear() -> None:
+    from contratacion.dominio.credenciales import INTENTOS_ANTES_DE_BLOQUEO
+
+    cuenta = _cuenta(
+        intentos=INTENTOS_ANTES_DE_BLOQUEO, bloqueado_hasta=AHORA - timedelta(minutes=1)
+    )
+    piezas = _piezas(cuenta)
+
+    with pytest.raises(SinPermiso) as fallo:
+        await _entrar(cuenta, piezas, contrasena="otra-cosa-larga")
+
+    assert str(fallo.value) == MENSAJE_CREDENCIALES
+    tras = piezas["cuentas"].cuentas[cuenta.usuario_id]
+    assert tras.intentos_fallidos == 1
+    assert tras.bloqueado_hasta is None
 
 
 async def test_una_cuenta_inactiva_no_revela_su_estado() -> None:

@@ -21,12 +21,18 @@ auditoría, que sobrevive para poder decir quién lo hizo.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
 from contratacion.aplicacion.actor import Actor
+from contratacion.aplicacion.casos_uso.gestionar_usuarios import (
+    ResultadoCuenta,
+    desbloquear_cuenta,
+    restablecer_contrasena,
+)
 from contratacion.aplicacion.puertos.negocios import EmpresaDePlataforma, RepositorioNegocios
+from contratacion.aplicacion.puertos.seguridad import ServicioContrasenas
 from contratacion.aplicacion.puertos.usuarios import (
     CierreDeSesiones,
     RegistroAuditoria,
@@ -388,6 +394,57 @@ async def eliminar_cuenta_de_empresa(
         avisos=(
             "La cuenta se ha borrado. Su registro de aceptación de los términos ya no existe.",
         ),
+    )
+
+
+def _actuar_en(actor: Actor, negocio_id: UUID) -> Actor:
+    """El mismo actor, situado en la empresa sobre la que actúa la plataforma.
+
+    Las operaciones de cuenta de `gestionar_usuarios` trabajan sobre el negocio del actor. Situar
+    al superadministrador en la empresa destino permite reutilizarlas tal cual —con sus guardas y su
+    auditoría— en vez de escribir una segunda versión de cada una que acabaría separándose.
+    """
+    _exigir_plataforma(actor)
+    return replace(actor, negocio_id=negocio_id)
+
+
+async def restablecer_contrasena_en_empresa(
+    actor: Actor,
+    *,
+    negocio_id: UUID,
+    usuario_id: UUID,
+    contrasena: str | None,
+    usuarios: RepositorioUsuarios,
+    sesiones: CierreDeSesiones,
+    contrasenas: ServicioContrasenas,
+    auditoria: RegistroAuditoria,
+) -> ResultadoCuenta:
+    """Contraseña temporal para una cuenta de cualquier empresa. Cierra sus sesiones."""
+    return await restablecer_contrasena(
+        _actuar_en(actor, negocio_id),
+        usuario_id=usuario_id,
+        contrasena=contrasena,
+        usuarios=usuarios,
+        sesiones=sesiones,
+        contrasenas=contrasenas,
+        auditoria=auditoria,
+    )
+
+
+async def desbloquear_cuenta_en_empresa(
+    actor: Actor,
+    *,
+    negocio_id: UUID,
+    usuario_id: UUID,
+    usuarios: RepositorioUsuarios,
+    auditoria: RegistroAuditoria,
+) -> ResultadoCuenta:
+    """Quita el bloqueo por intentos fallidos de una cuenta de cualquier empresa."""
+    return await desbloquear_cuenta(
+        _actuar_en(actor, negocio_id),
+        usuario_id=usuario_id,
+        usuarios=usuarios,
+        auditoria=auditoria,
     )
 
 

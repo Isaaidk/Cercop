@@ -24,6 +24,7 @@ from contratacion.dominio.acceso import (
     DIAS_AVISO_VENCIMIENTO,
     ETIQUETAS_PLAZO,
     ETIQUETAS_VISTA,
+    VISTAS_DEL_CATALOGO,
     Plazo,
     Vista,
 )
@@ -63,7 +64,10 @@ async def catalogo(_: ActorDep) -> dict[str, Any]:
     endpoint abierto para que la suspensión deje de significar lo que dice.
     """
     return {
-        "vistas": [{"codigo": str(vista), "etiqueta": ETIQUETAS_VISTA[vista]} for vista in Vista],
+        "vistas": [
+            {"codigo": str(vista), "etiqueta": ETIQUETAS_VISTA[vista]}
+            for vista in VISTAS_DEL_CATALOGO
+        ],
         "plazos": [
             {
                 "codigo": str(plazo),

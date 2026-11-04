@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from contratacion.dominio.acceso import (
+    VISTAS_DEL_CATALOGO,
     AccesoVista,
     Plazo,
     Vista,
@@ -28,6 +29,7 @@ from contratacion.dominio.acceso import (
     generacion_de_acceso,
     negocio_objetivo,
     plazo_desde_codigo,
+    puede_conceder,
     puede_gestionar,
     puede_ver,
     tablero,
@@ -249,8 +251,13 @@ def test_no_avisa_cuando_queda_mucho() -> None:
 def test_el_tablero_incluye_todas_las_vistas_aunque_no_haya_acceso() -> None:
     """El panel necesita distinguir «sin acceso» de «vista inexistente»."""
     filas = tablero([], ENERO_1)
-    assert len(filas) == len(list(Vista))
+    assert [fila.vista for fila in filas] == list(VISTAS_DEL_CATALOGO)
     assert all(not fila.vigente for fila in filas)
+
+
+def test_el_tablero_no_ofrece_la_vista_heredada() -> None:
+    """«Contrataciones» no tiene pestaña: pintarla sería ofrecer un botón que no abre nada."""
+    assert Vista.CONTRATACIONES not in {fila.vista for fila in tablero([], ENERO_1)}
 
 
 def test_el_tablero_marca_en_verde_lo_concedido_y_en_rojo_lo_demas() -> None:
@@ -287,6 +294,14 @@ def test_los_roles_administrativos_pueden_gestionar() -> None:
 def test_los_demas_roles_no_pueden_gestionar() -> None:
     assert not puede_gestionar("consultor")
     assert not puede_gestionar("lector")
+
+
+def test_solo_el_superadministrador_concede_plazos() -> None:
+    """Si el administrador de la empresa pudiera, se regalaría un año llamando a la API."""
+    assert puede_conceder("super_admin")
+    assert not puede_conceder("admin_negocio")
+    assert not puede_conceder("consultor")
+    assert not puede_conceder("lector")
 
 
 def test_el_administrador_no_puede_actuar_sobre_otro_negocio() -> None:

@@ -19,7 +19,19 @@ import CampoContrasena from '@/components/CampoContrasena.vue'
 import { sesion } from '@/stores/sesion'
 import { contrasenaAceptable, obtenerRequisitos, revisarContrasena } from '@/utils/politica'
 
+const props = defineProps({
+  /**
+   * La contraseña es temporal y el servidor no deja seguir sin cambiarla. Sin forma de cerrar: el
+   * panel de detrás respondería «cambio pendiente» a todo.
+   */
+  obligatorio: { type: Boolean, default: false },
+})
+
 const emit = defineEmits(['cerrar', 'cambiada'])
+
+function cerrar() {
+  if (!props.obligatorio) emit('cerrar')
+}
 
 const actual = ref('')
 const nueva = ref('')
@@ -67,11 +79,14 @@ async function guardar() {
 </script>
 
 <template>
-  <div class="velo" @click.self="emit('cerrar')">
+  <div class="velo" :class="{ 'velo--opaco': obligatorio }" @click.self="cerrar">
     <div class="dialogo aparece" role="dialog" aria-modal="true" aria-labelledby="titulo-clave">
       <header class="dialogo__cabecera">
-        <h2 id="titulo-clave" class="dialogo__titulo">Cambiar tu contraseña</h2>
+        <h2 id="titulo-clave" class="dialogo__titulo">
+          {{ obligatorio ? 'Elige tu propia contraseña' : 'Cambiar tu contraseña' }}
+        </h2>
         <button
+          v-if="!obligatorio"
           type="button"
           class="boton boton--fantasma boton--icono"
           aria-label="Cerrar"
@@ -82,10 +97,15 @@ async function guardar() {
       </header>
 
       <form class="dialogo__cuerpo" @submit.prevent="guardar">
+        <p v-if="obligatorio" class="dialogo__aviso">
+          Un administrador te ha puesto una <strong>contraseña temporal</strong>. Antes de seguir,
+          cámbiala por una que solo conozcas tú.
+        </p>
+
         <CampoContrasena
           id="clave-actual"
           v-model="actual"
-          etiqueta="Contraseña actual"
+          :etiqueta="obligatorio ? 'Contraseña temporal' : 'Contraseña actual'"
           ajuste="current-password"
           ayuda="Se pide para que nadie con una sesión abierta pueda quedarse con tu cuenta."
           :autofocus="true"
@@ -136,7 +156,12 @@ async function guardar() {
             <span v-if="enviando" class="girador" aria-hidden="true" />
             {{ enviando ? 'Guardando…' : 'Cambiar la contraseña' }}
           </button>
-          <button type="button" class="boton boton--fantasma" @click="emit('cerrar')">Cancelar</button>
+          <button v-if="!obligatorio" type="button" class="boton boton--fantasma" @click="cerrar">
+            Cancelar
+          </button>
+          <button v-else type="button" class="boton boton--fantasma" @click="emit('cerrar')">
+            Salir
+          </button>
         </div>
       </form>
     </div>
@@ -154,6 +179,10 @@ async function guardar() {
   background: rgb(0 0 0 / 40%);
   animation: aparecer var(--rapido) var(--curva) both;
   overflow-y: auto;
+}
+
+.velo--opaco {
+  background: var(--fondo);
 }
 
 .dialogo {

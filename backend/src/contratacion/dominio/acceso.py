@@ -26,7 +26,7 @@ from uuid import UUID
 from contratacion.dominio.errores import ErrorDominio, SinPermiso
 from contratacion.dominio.ingesta import ZONA_FUENTE
 from contratacion.dominio.plazos import sumar_meses
-from contratacion.dominio.roles import Rol, es_administrativo
+from contratacion.dominio.roles import Rol, es_administrativo, es_de_plataforma
 
 # Antelación con la que se avisa de un vencimiento próximo, para poder renovar a tiempo.
 DIAS_AVISO_VENCIMIENTO = 7
@@ -68,15 +68,21 @@ class Vista(StrEnum):
 
     NECESIDADES = "necesidades"
     OFERTAS = "ofertas"
+    # Heredada: concedía la fuente que hoy concede «ofertas». Se conserva para poder leer las
+    # concesiones antiguas, pero ya no se ofrece ni se puede conceder (migración 0025).
     CONTRATACIONES = "contrataciones"
     GRAFICAS = "graficas"
 
 
+# Las vistas que se conceden, una por pestaña del panel. Es lo que ve el superadministrador y lo
+# que pinta el tablero; `CONTRATACIONES` se queda fuera porque no tiene pestaña propia.
+VISTAS_DEL_CATALOGO: tuple[Vista, ...] = (Vista.NECESIDADES, Vista.OFERTAS, Vista.GRAFICAS)
+
 ETIQUETAS_VISTA: dict[Vista, str] = {
-    Vista.NECESIDADES: "Necesidades",
+    Vista.NECESIDADES: "Ínfimas cuantías",
     Vista.OFERTAS: "Ofertas",
     Vista.CONTRATACIONES: "Contrataciones",
-    Vista.GRAFICAS: "Gráficas",
+    Vista.GRAFICAS: "Mapa y resumen",
 }
 
 
@@ -147,7 +153,7 @@ def vista_desde_codigo(codigo: str) -> Vista:
     try:
         return Vista(codigo.strip().lower())
     except ValueError as exc:
-        permitidos = ", ".join(vista.value for vista in Vista)
+        permitidos = ", ".join(vista.value for vista in VISTAS_DEL_CATALOGO)
         raise ErrorDominio(
             f"Vista no reconocida: {codigo!r}. Se espera una de: {permitidos}."
         ) from exc
@@ -236,7 +242,7 @@ def tablero(
     """
     vigentes = concesion_vigente(accesos, momento)
     filas: list[EstadoVista] = []
-    for vista in Vista:
+    for vista in VISTAS_DEL_CATALOGO:
         acceso = vigentes.get(vista)
         if acceso is None:
             filas.append(EstadoVista(vista=vista, etiqueta=ETIQUETAS_VISTA[vista], vigente=False))
@@ -261,7 +267,7 @@ def momento_local(momento: datetime) -> datetime:
 
 
 def puede_gestionar(rol: str) -> bool:
-    """¿Este rol puede conceder o retirar accesos?
+    """¿Este rol puede ver los accesos de otros usuarios?
 
     Delega en `dominio.roles`, que es donde vive el catálogo. Antes esta comprobación tenía su
     propia lista de roles administrativos escrita a mano, y una segunda copia del mismo catálogo es
@@ -270,21 +276,32 @@ def puede_gestionar(rol: str) -> bool:
     return es_administrativo(rol)
 
 
+def puede_conceder(rol: str) -> bool:
+    """¿Este rol puede conceder, extender o retirar plazos de uso?
+
+    Solo el superadministrador. El plazo es lo que la empresa contrata: si el administrador de la
+    empresa pudiera concederlo, bastaría con llamar a la API para regalarse un año, y el plazo
+    solo existiría en la interfaz.
+    """
+    return es_de_plataforma(rol)
+
+
 # Qué fuente de datos alimenta cada vista.
 #
 # La correspondencia es explícita y vive aquí porque es una decisión de **autorización**, no de
-# presentación: el día que una vista cambiara de fuente, cambiaría quién ve qué. Una vista sin
-# fuente —«Ofertas» hoy— no concede ningún dato todavía, y eso está escrito a propósito en lugar
-# de dejarlo como una omisión que alguien pueda rellenar por parecido.
+# presentación: el día que una vista cambiara de fuente, cambiaría quién ve qué. Sigue a las
+# pestañas del panel: «Ínfimas cuantías» lee NCO y «Ofertas» lee OCDS. Antes OCDS lo concedía
+# «contrataciones», que no tiene pestaña, y «ofertas» no concedía nada: dar o quitar Ofertas no
+# tenía ningún efecto. «Gráficas» no concede fuente: es un permiso aparte sobre los agregados.
 FUENTES_POR_VISTA: dict[Vista, tuple[str, ...]] = {
     Vista.NECESIDADES: ("NCO",),
+    Vista.OFERTAS: ("OCDS",),
     Vista.CONTRATACIONES: ("OCDS",),
-    Vista.OFERTAS: (),
     Vista.GRAFICAS: (),
 }
 
 # Vistas que dan acceso a datos de contrataciones, para saber si alguien puede consultar algo.
-VISTAS_DE_DATOS = (Vista.NECESIDADES, Vista.CONTRATACIONES)
+VISTAS_DE_DATOS = (Vista.NECESIDADES, Vista.OFERTAS, Vista.CONTRATACIONES)
 
 
 def fuentes_para_vistas(vistas: Iterable[Vista]) -> tuple[str, ...]:

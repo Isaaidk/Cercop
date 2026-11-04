@@ -56,7 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from contratacion.aplicacion.puertos.negocios import AltaEmpresa
 from contratacion.aplicacion.puertos.usuarios import FichaUsuario
-from contratacion.dominio.acceso import Plazo, Vista
+from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Plazo
 from contratacion.dominio.credenciales import (
     LONGITUD_MINIMA,
     validar_contrasena,
@@ -171,7 +171,7 @@ async def _crear(args: argparse.Namespace, contrasena: str) -> int:
                 admin_nombre=args.nombre,
                 admin_rol=Rol.SUPER_ADMIN,
                 huella=contrasenas.hash(contrasena),
-                vistas_prueba=() if sin_vistas else tuple(Vista),
+                vistas_prueba=() if sin_vistas else VISTAS_DEL_CATALOGO,
                 plazo_prueba=Plazo.A1,
                 momento=datetime.now(UTC),
             )
@@ -181,7 +181,8 @@ async def _crear(args: argparse.Namespace, contrasena: str) -> int:
         print(f"  Correo  : {correo}")
         print(f"  Negocio : {args.negocio}  ({negocio_id})")
         print(f"  Rol     : {ETIQUETAS_ROL[Rol.SUPER_ADMIN]}")
-        print(f"  Vistas  : {'ninguna' if sin_vistas else ', '.join(str(v) for v in Vista)}")
+        vistas = "ninguna" if sin_vistas else ", ".join(str(v) for v in VISTAS_DEL_CATALOGO)
+        print(f"  Vistas  : {vistas}")
         if not sin_vistas:
             print("  Prueba  : 1 año, ampliable desde el panel de accesos")
         print()

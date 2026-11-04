@@ -42,6 +42,7 @@ from uuid import UUID, uuid4
 
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.casos_uso.consentimiento import marcar_lo_obligatorio_pendiente
+from contratacion.aplicacion.puertos.accesos import RepositorioAccesos
 from contratacion.aplicacion.puertos.cuentas import RepositorioCuentas
 from contratacion.aplicacion.puertos.negocios import RepositorioNegocios
 from contratacion.aplicacion.puertos.politicas import (
@@ -56,6 +57,7 @@ from contratacion.aplicacion.puertos.usuarios import (
     RegistroAuditoria,
     RepositorioUsuarios,
 )
+from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Plazo, concesion_vigente
 from contratacion.dominio.credenciales import validar_contrasena
 from contratacion.dominio.errores import DatoInvalido, NoEncontrado, SinPermiso
 from contratacion.dominio.negocios import limpiar_texto, validar_correo
@@ -225,9 +227,14 @@ async def crear_cuenta(
     politicas: RepositorioPoliticas,
     consentimientos: RepositorioConsentimientos,
     auditoria: RegistroAuditoria,
+    accesos: RepositorioAccesos | None = None,
     momento: datetime | None = None,
 ) -> ResultadoCuenta:
     """Crea una cuenta en la empresa del actor, con la contraseña que decide quien la crea.
+
+    La cuenta **hereda las vistas vigentes de quien la crea, con el mismo vencimiento**. Sin esto
+    nacía sin ninguna y la persona entraba a un panel vacío; y como los plazos solo los concede el
+    superadministrador, heredarlos con la misma fecha es lo único que no amplía lo contratado.
 
     Que la contraseña la elija el administrador y no se genere automáticamente es una decisión de
     producto, no técnica: es lo que permite entregarla en mano o por el canal que la empresa ya usa,
@@ -289,15 +296,51 @@ async def crear_cuenta(
     )
     registro.info("Cuenta creada: negocio=%s usuario=%s rol=%s", actor.negocio_id, usuario_id, rol)
 
+    heredadas = 0
+    if accesos is not None:
+        heredadas = await _heredar_vistas(
+            actor, usuario_id=usuario_id, accesos=accesos, momento=instante
+        )
+
     ficha = await _ficha_o_fallo(usuario_id, actor=actor, usuarios=usuarios)
     return ResultadoCuenta(
         usuario=ficha,
         avisos=(
-            "Comunica la contraseña a la persona por un canal privado y sugiérele que la cambie al "
-            "entrar.",
+            (
+                f"Recibió {heredadas} vista(s) con el mismo vencimiento que las tuyas."
+                if heredadas
+                else "No tienes vistas vigentes que heredar: pide al superadministrador que le "
+                "conceda acceso."
+            ),
+            "Comunica la contraseña a la persona por un canal privado. Es temporal: al entrar "
+            "tendrá que elegir una suya.",
             "Al entrar por primera vez tendrá que aceptar los términos y condiciones.",
         ),
     )
+
+
+async def _heredar_vistas(
+    actor: Actor, *, usuario_id: UUID, accesos: RepositorioAccesos, momento: datetime
+) -> int:
+    """Copia a la cuenta nueva las vistas vigentes del actor, sin alargar ningún vencimiento."""
+    vigentes = concesion_vigente(
+        await accesos.obtener(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id), momento
+    )
+    copiadas = 0
+    for vista, acceso in vigentes.items():
+        if vista not in VISTAS_DEL_CATALOGO:
+            continue
+        await accesos.conceder(
+            negocio_id=actor.negocio_id,
+            usuario_id=usuario_id,
+            vista=vista,
+            plazo=acceso.plazo or Plazo.D7,
+            otorgado_en=momento,
+            vence_en=acceso.vence_en,
+            otorgado_por=actor.usuario_id,
+        )
+        copiadas += 1
+    return copiadas
 
 
 # --------------------------------------------------------------------------- #
@@ -557,8 +600,43 @@ async def restablecer_contrasena(
         sesiones_cerradas=cerradas,
         avisos=(
             "Comunica la contraseña nueva por un canal privado.",
-            "Se cerraron todas sus sesiones, también las que estuvieran abiertas.",
+            "Es temporal: al entrar tendrá que elegir una suya antes de usar el panel.",
+            "Se cerraron todas sus sesiones y se quitó el bloqueo por intentos fallidos, si lo "
+            "tenía.",
         ),
+    )
+
+
+async def desbloquear_cuenta(
+    actor: Actor,
+    *,
+    usuario_id: UUID,
+    usuarios: RepositorioUsuarios,
+    auditoria: RegistroAuditoria,
+) -> ResultadoCuenta:
+    """Quita el bloqueo por intentos fallidos sin tocar la contraseña.
+
+    Es la salida para quien recuerda su contraseña pero se equivocó varias veces: sin esto, la única
+    forma de ayudarle desde el panel era cambiarle la contraseña, que es mucho más de lo que pidió.
+    No cierra sesiones: un bloqueo no dice que nadie haya entrado, dice que alguien no pudo.
+    """
+    _exigir_gestion(actor)
+    await _ficha_o_fallo(usuario_id, actor=actor, usuarios=usuarios)
+
+    await usuarios.desbloquear(negocio_id=actor.negocio_id, usuario_id=usuario_id)
+    await auditoria.auditar(
+        accion="desbloqueo_usuario",
+        negocio_id=actor.negocio_id,
+        usuario_id=actor.usuario_id,
+        entidad="usuario",
+        entidad_id=str(usuario_id),
+        resultado="ok",
+    )
+    registro.info("Cuenta desbloqueada: negocio=%s usuario=%s", actor.negocio_id, usuario_id)
+
+    return ResultadoCuenta(
+        usuario=await _ficha_o_fallo(usuario_id, actor=actor, usuarios=usuarios),
+        avisos=("La cuenta está desbloqueada. Ya puede volver a entrar con su contraseña.",),
     )
 
 
@@ -598,7 +676,7 @@ async def cambiar_mi_contrasena(
     validar_contrasena(texto, email=cuenta.email)
 
     instante = momento or datetime.now(UTC)
-    await cuentas.actualizar_huella(
+    await cuentas.fijar_contrasena_propia(
         negocio_id=actor.negocio_id, usuario_id=actor.usuario_id, huella=contrasenas.hash(texto)
     )
     cerradas = await sesiones.revocar_todas_salvo(

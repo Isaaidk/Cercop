@@ -21,6 +21,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 
 import AceptacionTerminos from '@/components/AceptacionTerminos.vue'
+import CambiarContrasena from '@/components/CambiarContrasena.vue'
 import EmpresaSuspendida from '@/components/EmpresaSuspendida.vue'
 import PantallaAcceso from '@/components/PantallaAcceso.vue'
 import PantallaContratacionPublica from '@/components/PantallaContratacionPublica.vue'
@@ -87,6 +88,9 @@ const fase = computed(() => {
   // Sin sesión manda la dirección. Es lo que permite enlazar la portada, el acceso o el registro, y
   // que recargar en cualquiera de ellas devuelva a la misma.
   if (!sesion.estaIdentificado.value) return paginaActual.value
+  // Una contraseña puesta por un administrador la conocen dos personas: el servidor no sirve datos
+  // hasta que se cambie, así que el panel tampoco se enseña.
+  if (sesion.estado.debeCambiarContrasena) return 'cambio-clave'
   // Con sesión, la dirección deja de mandar. Mientras no se haya confirmado con el servidor que no
   // falta nada, se asume que falta: es la postura segura, porque si se asumiera lo contrario un
   // fallo de red dejaría entrar sin aceptar los términos.
@@ -102,7 +106,8 @@ const fase = computed(() => {
  * con `reemplazar` para que el botón «atrás» no devuelva a la dirección que se acaba de corregir.
  */
 watch(fase, (nueva) => {
-  if ((nueva === 'panel' || nueva === 'terminos') && paginaActual.value !== 'inicio') {
+  const conSesion = nueva === 'panel' || nueva === 'terminos' || nueva === 'cambio-clave'
+  if (conSesion && paginaActual.value !== 'inicio') {
     ir('inicio', { reemplazar: true })
   }
 })
@@ -128,6 +133,11 @@ watch(fase, (nueva) => aplicarSeo(nueva), { immediate: true })
 async function cerrarSesion() {
   await sesion.salir()
   ir('login')
+}
+
+async function alCambiarClave() {
+  sesion.contrasenaCambiada()
+  await sesion.refrescarConsentimiento()
 }
 
 onMounted(async () => {
@@ -183,6 +193,10 @@ onMounted(async () => {
 
     <template v-else-if="fase === 'no-encontrada'">
       <PantallaNoEncontrada :tema="tema" @alternar-tema="alternarTema" />
+    </template>
+
+    <template v-else-if="fase === 'cambio-clave'">
+      <CambiarContrasena obligatorio @cambiada="alCambiarClave" @cerrar="cerrarSesion" />
     </template>
 
     <template v-else-if="fase === 'terminos'">

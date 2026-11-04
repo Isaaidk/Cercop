@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from contratacion.dominio.errores import (
+    CambioDeContrasenaPendiente,
     ConsentimientoPendiente,
     DatoInvalido,
     EmpresaSuspendida,
@@ -72,6 +73,7 @@ CODIGOS_POR_ERROR: tuple[tuple[type[ErrorDominio], int], ...] = (
     # administrador y el otro pide aceptar los términos. Sin esa distinción, la interfaz mostraría
     # el mismo mensaje para las dos cosas y mandaría al usuario a resolver el problema equivocado.
     (ConsentimientoPendiente, status.HTTP_403_FORBIDDEN),
+    (CambioDeContrasenaPendiente, status.HTTP_403_FORBIDDEN),
     (SinPermiso, status.HTTP_403_FORBIDDEN),
     # 403 y no 401: la sesión es válida y la contraseña también; lo que está cerrado es la empresa.
     # Volver a entrar no arregla nada y el aviso lo dice, así que mandar un 401 solo serviría para

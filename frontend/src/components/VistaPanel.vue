@@ -42,7 +42,7 @@ import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
 import { FAMILIAS } from '@/utils/familias'
-import { haceCuanto, numero } from '@/utils/formato'
+import { fechaCorta, haceCuanto, numero } from '@/utils/formato'
 
 const props = defineProps({
   tema: { type: String, default: 'claro' },
@@ -162,6 +162,68 @@ const PESTANAS = computed(() => {
     ...(sesion.estado.rol === 'super_admin' ? [deEmpresas] : []),
   ]
 })
+
+/**
+ * Qué vista del catálogo hace falta para cada pestaña de datos.
+ *
+ * El mapa y el resumen leen agregados de `/v1/estadisticas`, que el servidor guarda con la vista de
+ * gráficas. Las pestañas que no están aquí (plantilla, usuarios, empresas) dependen del rol.
+ */
+const VISTA_DE_PESTANA = {
+  infimas: 'necesidades',
+  ofertas: 'ofertas',
+  mapa: 'graficas',
+  resumen: 'graficas',
+}
+
+function vistaPropia(codigo) {
+  return sesion.estado.vistas.find((fila) => fila.vista === codigo) || null
+}
+
+/**
+ * ¿Está cerrada la pestaña por un plazo vencido o sin conceder?
+ *
+ * Mientras no se sepa —o para el dueño de la plataforma, que se concede los plazos a sí mismo— no se
+ * cierra nada: el servidor sigue comprobando el plazo en cada petición de datos.
+ */
+function pestanaCerrada(id) {
+  const codigo = VISTA_DE_PESTANA[id]
+  if (!codigo || !sesion.estado.vistasCargadas || sesion.esDePlataforma.value) return false
+  return !vistaPropia(codigo)?.vigente
+}
+
+function textoCierre(id) {
+  const fila = vistaPropia(VISTA_DE_PESTANA[id])
+  if (fila?.vence_en) {
+    return `Tu acceso a «${fila.etiqueta}» venció el ${fechaCorta(fila.vence_en)}. Pide al administrador de la plataforma que lo renueve.`
+  }
+  return `Tu cuenta no tiene acceso a «${fila?.etiqueta || 'esta sección'}». Pide al administrador de la plataforma que te lo conceda.`
+}
+
+/** Vistas vigentes a las que les queda poco: se avisa antes de que se cierren. */
+const vistasPorVencer = computed(() =>
+  sesion.estado.vistas.filter((fila) => fila.vigente && fila.por_vencer),
+)
+
+const avisoVencimiento = computed(() =>
+  vistasPorVencer.value
+    .map((fila) => {
+      const dias = fila.dias_restantes
+      const cuando = dias === 0 ? 'hoy' : dias === 1 ? 'mañana' : `en ${dias} días`
+      return `«${fila.etiqueta}» vence ${cuando} (${fechaCorta(fila.vence_en)})`
+    })
+    .join(' · '),
+)
+
+const MS_REVISION_VISTAS = 5 * 60_000
+let revisorVistas = null
+
+/** Si la pestaña abierta se cerró, se pasa a la primera que siga abierta. */
+function ajustarPestana() {
+  if (!pestanaCerrada(pestana.value)) return
+  const abierta = PESTANAS.value.find((opcion) => !pestanaCerrada(opcion.id))
+  if (abierta) abrirPestana(abierta.id)
+}
 
 /**
  * Cambia de pestaña, fijando la familia cuando la pestaña la determina.
@@ -365,8 +427,16 @@ onMounted(async () => {
     filtros.cargarPalabras(),
     filtros.cargarCpc(),
     datos.cargarCatalogos(),
+    sesion.refrescarVistas(),
   ])
+  ajustarPestana()
   await datos.cargar()
+
+  revisorVistas = setInterval(async () => {
+    if (document.hidden) return
+    await sesion.refrescarVistas()
+    ajustarPestana()
+  }, MS_REVISION_VISTAS)
 
   // A partir de aquí, la tabla se pone al día sola cuando la ingesta escribe. Sin esto, lo único que
   // la refrescaba era tocar un filtro: la ingesta podía cerrar dos ciclos y la pantalla seguía
@@ -378,6 +448,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   clearTimeout(temporizador)
   clearInterval(revisorNovedades)
+  clearInterval(revisorVistas)
   document.removeEventListener('visibilitychange', alVolverALaPestana)
   // Aquí se avisaba al servidor del cierre de la ventana, y ese aviso revocaba la sesión. Se quitó
   // por dos motivos: al recargar la página no salta, pero **cualquier desmontaje del panel sí** —y
@@ -499,12 +570,16 @@ const ultimaActualizacion = computed(() =>
             :key="opcion.id"
             type="button"
             class="pestanas__boton"
-            :class="{ 'pestanas__boton--activa': pestana === opcion.id }"
+            :class="{
+              'pestanas__boton--activa': pestana === opcion.id,
+              'pestanas__boton--cerrada': pestanaCerrada(opcion.id),
+            }"
             :aria-selected="pestana === opcion.id"
+            :title="pestanaCerrada(opcion.id) ? textoCierre(opcion.id) : undefined"
             role="tab"
             @click="abrirPestana(opcion.id)"
           >
-            <span aria-hidden="true">{{ opcion.icono }}</span>
+            <span aria-hidden="true">{{ pestanaCerrada(opcion.id) ? '🔒' : opcion.icono }}</span>
             {{ opcion.etiqueta }}
             <!--
               El número de cada pestaña es el de **su** familia, no el de la consulta en curso.
@@ -525,6 +600,18 @@ const ultimaActualizacion = computed(() =>
           </button>
         </nav>
 
+        <p v-if="avisoVencimiento" class="panel__vencimiento" role="status">
+          Tu acceso está por vencer: {{ avisoVencimiento }}. Pide la renovación al administrador de
+          la plataforma.
+        </p>
+
+        <section v-if="pestanaCerrada(pestana)" class="panel__cerrada superficie" role="status">
+          <span class="panel__cerrada-icono" aria-hidden="true">🔒</span>
+          <p>{{ textoCierre(pestana) }}</p>
+        </section>
+
+        <!-- Se oculta y no se desmonta: al renovar el plazo las gráficas vuelven sin reconstruirse. -->
+        <div v-show="!pestanaCerrada(pestana)" class="panel__contenido">
         <section v-show="pestana === 'resumen'" class="resumen">
           <!-- El selector de gráficas. Va aquí arriba y no escondido en un menú porque lo que
                decide es qué hay debajo; un ajuste que cambia la pantalla tiene que verse en la
@@ -677,6 +764,7 @@ const ultimaActualizacion = computed(() =>
             <GestionUsuarios />
           </div>
         </section>
+        </div>
 
         <footer class="panel__pie">
           <span>{{ ultimaActualizacion }}</span>
@@ -872,6 +960,40 @@ const ultimaActualizacion = computed(() =>
   background: var(--superficie);
   color: var(--texto);
   box-shadow: var(--sombra-1);
+}
+
+.pestanas__boton--cerrada {
+  opacity: 0.6;
+}
+
+/* El envoltorio no debe cambiar la rejilla del contenido: solo sirve para ocultarlo entero. */
+.panel__contenido {
+  display: contents;
+}
+
+.panel__vencimiento {
+  padding: var(--e-3) var(--e-4);
+  border-radius: var(--r-2);
+  border-left: 3px solid var(--aviso);
+  background: var(--aviso-suave);
+  color: var(--aviso);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+
+.panel__cerrada {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-5);
+  border-radius: var(--r-2);
+  color: var(--texto-suave);
+  font-size: var(--t-md);
+  line-height: 1.5;
+}
+
+.panel__cerrada-icono {
+  font-size: var(--t-lg);
 }
 
 .pestanas__cuenta {

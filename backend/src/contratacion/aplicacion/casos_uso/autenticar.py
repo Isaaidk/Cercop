@@ -48,6 +48,7 @@ from contratacion.dominio.credenciales import (
     siguiente_bloqueo,
 )
 from contratacion.dominio.errores import SinPermiso
+from contratacion.dominio.ingesta import ZONA_FUENTE
 from contratacion.dominio.sesiones import MotivoRevocacion, sesiones_a_expulsar
 
 registro = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class SesionIniciada:
     debe_aceptar_politica_version: int | None
     sesiones_abiertas: int
     sesiones_expulsadas: int
+    debe_cambiar_contrasena: bool = False
 
     @property
     def debe_aceptar_terminos(self) -> bool:
@@ -102,6 +104,9 @@ class SesionIniciada:
             "politica_version": self.debe_aceptar_politica_version,
             "sesiones_abiertas": self.sesiones_abiertas,
             "sesiones_expulsadas": self.sesiones_expulsadas,
+            # Igual que los términos, lo decide el servidor y lo vuelve a exigir en cada petición
+            # de datos: el panel solo enseña la pantalla de cambio.
+            "debe_cambiar_contrasena": self.debe_cambiar_contrasena,
         }
 
 
@@ -190,7 +195,9 @@ async def iniciar_sesion(
         assert restante is not None  # lo garantiza `esta_bloqueada`
         raise SinPermiso(
             "La cuenta está bloqueada temporalmente por intentos fallidos. "
-            f"Vuelve a intentarlo después de las {restante.astimezone().strftime('%H:%M')}."
+            "Vuelve a intentarlo después de las "
+            f"{restante.astimezone(ZONA_FUENTE).strftime('%H:%M')}, o pide al administrador que "
+            "la desbloquee."
         )
 
     if not cuenta.puede_iniciar_sesion:
@@ -277,6 +284,7 @@ async def iniciar_sesion(
         debe_aceptar_politica_version=cuenta.debe_aceptar_politica_version,
         sesiones_abiertas=len(vigentes) - expulsadas + 1,
         sesiones_expulsadas=expulsadas,
+        debe_cambiar_contrasena=cuenta.debe_cambiar_contrasena,
     )
 
 
@@ -391,6 +399,7 @@ async def renovar_sesion(
         debe_aceptar_politica_version=cuenta.debe_aceptar_politica_version,
         sesiones_abiertas=1,
         sesiones_expulsadas=0,
+        debe_cambiar_contrasena=cuenta.debe_cambiar_contrasena,
     )
 
 
@@ -431,7 +440,14 @@ async def cerrar_sesion(
 
 
 async def _registrar_fallo(cuentas: RepositorioCuentas, cuenta: Cuenta, momento: datetime) -> None:
-    intentos = intentos_tras_fallo(cuenta.intentos_fallidos)
+    """Anota el fallo. Durante un bloqueo activo no se anota nada.
+
+    Si cada fallo durante el bloqueo lo alargara, bastaría con seguir probando —o con que otro
+    escribiera mal la contraseña a propósito— para que la cuenta no se desbloqueara nunca.
+    """
+    if esta_bloqueada(cuenta.bloqueado_hasta, momento):
+        return
+    intentos = intentos_tras_fallo(cuenta.intentos_fallidos, cuenta.bloqueado_hasta, momento)
     await cuentas.registrar_fallo(
         negocio_id=cuenta.negocio_id,
         usuario_id=cuenta.usuario_id,

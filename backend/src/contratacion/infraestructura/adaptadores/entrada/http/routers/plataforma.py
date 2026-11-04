@@ -16,12 +16,15 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Query, status
+from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.administrar_negocios import (
+    desbloquear_cuenta_en_empresa,
     eliminar_cuenta_de_empresa,
     eliminar_empresa,
     listar_empresas,
     reactivar_empresa,
+    restablecer_contrasena_en_empresa,
     suspender_empresa,
 )
 from contratacion.aplicacion.casos_uso.operar_ingesta import solicitar_ciclo, tablero_ingesta
@@ -32,6 +35,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     CacheDep,
     CierreSesionesDep,
     ConsultasDep,
+    ContrasenasDep,
     NegociosDep,
     UsuariosDep,
 )
@@ -225,5 +229,61 @@ async def eliminar_usuario(
         sesiones=sesiones,
         auditoria=auditoria,
         confirmacion=confirmacion,
+    )
+    return cuerpo_json(resultado.como_diccionario())
+
+
+class ContrasenaTemporal(BaseModel):
+    """Contraseña temporal que fija la plataforma para una cuenta de otra empresa."""
+
+    contrasena: str = Field(max_length=128)
+
+
+@router.post(
+    "/empresas/{negocio_id}/usuarios/{usuario_id}/contrasena",
+    summary="Asignar una contraseña temporal a una cuenta de cualquier empresa",
+)
+async def fijar_contrasena_usuario(
+    negocio_id: UUID,
+    usuario_id: UUID,
+    cuerpo: ContrasenaTemporal,
+    actor: ActorDep,
+    usuarios: UsuariosDep,
+    sesiones: CierreSesionesDep,
+    contrasenas: ContrasenasDep,
+    auditoria: AuditoriaDep,
+) -> dict[str, Any]:
+    """La persona tendrá que cambiarla al entrar. Se cierran todas sus sesiones."""
+    resultado = await restablecer_contrasena_en_empresa(
+        actor,
+        negocio_id=negocio_id,
+        usuario_id=usuario_id,
+        contrasena=cuerpo.contrasena,
+        usuarios=usuarios,
+        sesiones=sesiones,
+        contrasenas=contrasenas,
+        auditoria=auditoria,
+    )
+    return cuerpo_json(resultado.como_diccionario())
+
+
+@router.post(
+    "/empresas/{negocio_id}/usuarios/{usuario_id}/desbloqueo",
+    summary="Quitar el bloqueo por intentos fallidos de una cuenta de cualquier empresa",
+)
+async def desbloquear_usuario(
+    negocio_id: UUID,
+    usuario_id: UUID,
+    actor: ActorDep,
+    usuarios: UsuariosDep,
+    auditoria: AuditoriaDep,
+) -> dict[str, Any]:
+    """Es la salida cuando el bloqueado es el único administrador de su empresa."""
+    resultado = await desbloquear_cuenta_en_empresa(
+        actor,
+        negocio_id=negocio_id,
+        usuario_id=usuario_id,
+        usuarios=usuarios,
+        auditoria=auditoria,
     )
     return cuerpo_json(resultado.como_diccionario())

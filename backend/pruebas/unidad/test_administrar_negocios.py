@@ -29,6 +29,7 @@ import pytest
 
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.casos_uso.administrar_negocios import (
+    desbloquear_cuenta_en_empresa,
     eliminar_cuenta_de_empresa,
     eliminar_empresa,
 )
@@ -98,6 +99,7 @@ class UsuariosFalsos:
     def __init__(self, cuentas: list[FichaUsuario] | None = None) -> None:
         self.cuentas = {cuenta.usuario_id: cuenta for cuenta in (cuentas or [])}
         self.eliminadas: list[tuple[UUID, UUID]] = []
+        self.desbloqueadas: list[tuple[UUID, UUID]] = []
 
     def _de(self, negocio_id: UUID) -> list[FichaUsuario]:
         return [cuenta for cuenta in self.cuentas.values() if cuenta.negocio_id == negocio_id]
@@ -141,6 +143,9 @@ class UsuariosFalsos:
 
     async def cambiar_estado(self, **_: Any) -> None:
         raise AssertionError("el borrado no debe cambiar estados de cuenta")
+
+    async def desbloquear(self, *, negocio_id: UUID, usuario_id: UUID) -> None:
+        self.desbloqueadas.append((negocio_id, usuario_id))
 
     async def eliminar(self, *, negocio_id: UUID, usuario_id: UUID) -> None:
         self.eliminadas.append((negocio_id, usuario_id))
@@ -511,6 +516,45 @@ async def test_solo_se_cierran_las_sesiones_de_la_empresa_borrada() -> None:
 
     assert [negocio for negocio, _, _ in sesiones.revocadas] == [CLIENTE]
     assert len(usuarios.cuentas) == 2, "el doble no borra: la empresa es la que se lleva las filas"
+
+
+# --------------------------------------------------------------------------- #
+# Desbloqueo desde la plataforma
+# --------------------------------------------------------------------------- #
+
+
+async def test_la_plataforma_desbloquea_una_cuenta_de_otra_empresa() -> None:
+    """Es la salida cuando el bloqueado es el único administrador de su empresa."""
+    usuarios = UsuariosFalsos(
+        [_cuenta(ADMIN_CLIENTE, email="jefe@andina.ec", rol=Rol.ADMIN_NEGOCIO)]
+    )
+    auditoria = AuditoriaFalsa()
+
+    await desbloquear_cuenta_en_empresa(
+        DE_PLATAFORMA,
+        negocio_id=CLIENTE,
+        usuario_id=ADMIN_CLIENTE,
+        usuarios=usuarios,
+        auditoria=auditoria,
+    )
+
+    assert usuarios.desbloqueadas == [(CLIENTE, ADMIN_CLIENTE)]
+    assert auditoria.lineas[0]["accion"] == "desbloqueo_usuario"
+    assert auditoria.lineas[0]["negocio_id"] == CLIENTE
+
+
+async def test_un_administrador_de_empresa_no_desbloquea_desde_la_plataforma() -> None:
+    usuarios = UsuariosFalsos([_cuenta(CONSULTOR, negocio_id=OTRO_CLIENTE, email="x@sur.ec")])
+
+    with pytest.raises(SinPermiso):
+        await desbloquear_cuenta_en_empresa(
+            ADMINISTRADOR,
+            negocio_id=OTRO_CLIENTE,
+            usuario_id=CONSULTOR,
+            usuarios=usuarios,
+            auditoria=AuditoriaFalsa(),
+        )
+    assert usuarios.desbloqueadas == []
 
 
 # --------------------------------------------------------------------------- #

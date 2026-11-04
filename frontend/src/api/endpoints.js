@@ -197,6 +197,12 @@ export const api = {
   fijarContrasenaDeUsuario: (usuarioId, contrasena) =>
     http.post(`/v1/usuarios/${usuarioId}/contrasena`, { contrasena }),
 
+  /** Quita el bloqueo por intentos fallidos sin tocar la contraseña. */
+  desbloquearUsuario: (usuarioId) => http.post(`/v1/usuarios/${usuarioId}/desbloqueo`),
+
+  /** Las vistas propias con su plazo. Cualquiera puede consultar las suyas. */
+  misVistas: (usuarioId) => http.get(`/v1/accesos/usuarios/${usuarioId}`),
+
   // --- Contraseña propia --------------------------------------------------
   cambiarMiContrasena: (contrasenaActual, contrasenaNueva, sesionActual) =>
     http.post('/v1/auth/contrasena', {
@@ -254,6 +260,16 @@ export const api = {
   /** Elimina una cuenta concreta de cualquier empresa. Se confirma con su correo. */
   eliminarUsuarioDeEmpresa: (negocioId, usuarioId, confirmacion) =>
     http.del(`/v1/plataforma/empresas/${negocioId}/usuarios/${usuarioId}`, { confirmacion }),
+
+  /** Contraseña temporal para una cuenta de cualquier empresa; se exige cambiarla al entrar. */
+  fijarContrasenaEnEmpresa: (negocioId, usuarioId, contrasena) =>
+    http.post(`/v1/plataforma/empresas/${negocioId}/usuarios/${usuarioId}/contrasena`, {
+      contrasena,
+    }),
+
+  /** Quita el bloqueo por intentos fallidos de una cuenta de cualquier empresa. */
+  desbloquearEnEmpresa: (negocioId, usuarioId) =>
+    http.post(`/v1/plataforma/empresas/${negocioId}/usuarios/${usuarioId}/desbloqueo`),
 
   // Las vistas se conceden **por cuenta**, no por empresa: el plazo es de una persona concreta para
   // una vista concreta. Por eso hay que decir de qué negocio es la cuenta (`negocio`) cuando quien

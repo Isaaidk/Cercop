@@ -95,6 +95,17 @@ def siguiente_bloqueo(intentos_fallidos: int, momento: datetime) -> datetime | N
     return momento + timedelta(minutes=MINUTOS_DE_BLOQUEO)
 
 
-def intentos_tras_fallo(intentos_actuales: int) -> int:
-    """Contador de fallos tras un intento incorrecto más."""
+def intentos_tras_fallo(
+    intentos_actuales: int,
+    bloqueado_hasta: datetime | None = None,
+    momento: datetime | None = None,
+) -> int:
+    """Contador de fallos tras un intento incorrecto más.
+
+    Si la cuenta ya cumplió un bloqueo, el contador **vuelve a empezar**. Sin este reinicio el
+    contador se queda en el umbral para siempre y, pasado el bloqueo, un solo error de tecleo
+    bloquea otros quince minutos: en la práctica, un bloqueo del que no se sale.
+    """
+    if bloqueado_hasta is not None and momento is not None and bloqueado_hasta <= momento:
+        return 1
     return max(0, intentos_actuales) + 1

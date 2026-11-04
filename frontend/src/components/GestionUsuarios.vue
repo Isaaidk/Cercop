@@ -27,7 +27,8 @@ import { api } from '@/api/endpoints'
 import CampoContrasena from '@/components/CampoContrasena.vue'
 import { sesion } from '@/stores/sesion'
 import { ETIQUETAS_ROL } from '@/utils/roles'
-import { fechaCorta, haceCuanto } from '@/utils/formato'
+import { fechaCorta, haceCuanto, horaCorta } from '@/utils/formato'
+import { contrasenaAceptable, obtenerRequisitos } from '@/utils/politica'
 
 const estado = ref({
   usuarios: [],
@@ -65,15 +66,27 @@ const contrasenaNueva = ref('')
 const borrando = ref(null)
 const confirmacion = ref('')
 
+const requisitos = ref(null)
+
 const sinPlazas = computed(() => listo.value && estado.value.plazas_libres <= 0)
 
 const puedeCrear = computed(
   () =>
     nuevo.value.email.includes('@') &&
-    nuevo.value.contrasena.length >= 8 &&
+    contrasenaAceptable(nuevo.value.contrasena, requisitos.value, nuevo.value.email) &&
     !enviando.value &&
     !sinPlazas.value,
 )
+
+const ayudaClave = computed(() => {
+  const minimo = requisitos.value?.longitud_minima ?? 12
+  const distintos = requisitos.value?.caracteres_distintos_minimos ?? 4
+  return `Mínimo ${minimo} caracteres, con ${distintos} distintos. Es temporal: tendrá que cambiarla al entrar.`
+})
+
+function claveValidaPara(usuario) {
+  return contrasenaAceptable(contrasenaNueva.value, requisitos.value, usuario.email)
+}
 
 async function cargar() {
   cargando.value = true
@@ -88,7 +101,10 @@ async function cargar() {
   }
 }
 
-onMounted(cargar)
+onMounted(async () => {
+  await cargar()
+  requisitos.value = await obtenerRequisitos()
+})
 
 function anotar(resultado) {
   avisos.value = [...(resultado?.avisos || []), ...avisos.value].slice(0, 4)
@@ -141,12 +157,25 @@ async function reactivar(usuario) {
 }
 
 async function restablecer(usuario) {
-  if (contrasenaNueva.value.length < 8) return
+  if (!claveValidaPara(usuario)) return
   ocupado.value = usuario.usuario_id
   try {
     anotar(await api.fijarContrasenaDeUsuario(usuario.usuario_id, contrasenaNueva.value))
     restableciendo.value = null
     contrasenaNueva.value = ''
+    await cargar()
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = null
+  }
+}
+
+async function desbloquear(usuario) {
+  ocupado.value = usuario.usuario_id
+  try {
+    anotar(await api.desbloquearUsuario(usuario.usuario_id))
+    await cargar()
   } catch (fallo) {
     error.value = fallo.message
   } finally {
@@ -242,7 +271,7 @@ function etiquetaRol(codigo) {
           v-model="nuevo.contrasena"
           etiqueta="Contraseña inicial"
           ajuste="new-password"
-          ayuda="Mínimo 12 caracteres, con 4 distintos."
+          :ayuda="ayudaClave"
           :maxlength="128"
         />
       </div>
@@ -294,12 +323,32 @@ function etiquetaRol(codigo) {
           <span class="etiqueta" :class="usuario.activo ? 'etiqueta--ok' : 'etiqueta--error'">
             {{ usuario.activo ? 'Activa' : 'Dada de baja' }}
           </span>
+          <span
+            v-if="usuario.bloqueada"
+            class="etiqueta etiqueta--error"
+            :title="fechaCorta(usuario.bloqueado_hasta)"
+          >
+            Bloqueada hasta las {{ horaCorta(usuario.bloqueado_hasta) }}
+          </span>
+          <span v-if="usuario.debe_cambiar_contrasena" class="etiqueta etiqueta--aviso">
+            Contraseña temporal
+          </span>
           <span class="cuenta__uso" :title="fechaCorta(usuario.ultimo_acceso)">
             {{ usuario.ultimo_acceso ? `Último acceso ${haceCuanto(usuario.ultimo_acceso)}` : 'Nunca ha entrado' }}
           </span>
         </div>
 
         <div class="cuenta__acciones">
+          <button
+            v-if="usuario.bloqueada"
+            type="button"
+            class="boton boton--principal boton--pequeno"
+            :disabled="ocupado === usuario.usuario_id"
+            @click="desbloquear(usuario)"
+          >
+            Desbloquear
+          </button>
+
           <button
             type="button"
             class="boton boton--secundario boton--pequeno"
@@ -345,16 +394,16 @@ function etiquetaRol(codigo) {
           <CampoContrasena
             :id="`clave-${usuario.usuario_id}`"
             v-model="contrasenaNueva"
-            etiqueta="Contraseña nueva para esta cuenta"
+            etiqueta="Contraseña temporal para esta cuenta"
             ajuste="new-password"
-            ayuda="Se cerrarán todas sus sesiones, incluidas las que tenga abiertas ahora."
+            :ayuda="`${ayudaClave} Se cerrarán sus sesiones y se quitará el bloqueo si lo tiene.`"
             :maxlength="128"
           />
           <div class="panel-accion__botones">
             <button
               type="button"
               class="boton boton--principal boton--pequeno"
-              :disabled="contrasenaNueva.length < 8 || ocupado === usuario.usuario_id"
+              :disabled="!claveValidaPara(usuario) || ocupado === usuario.usuario_id"
               @click="restablecer(usuario)"
             >
               Guardar la contraseña

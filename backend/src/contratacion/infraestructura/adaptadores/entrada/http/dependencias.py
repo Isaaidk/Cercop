@@ -60,7 +60,11 @@ from contratacion.aplicacion.sesiones_vivas import (
     seguir,
 )
 from contratacion.dominio.acceso import Vista
-from contratacion.dominio.errores import EmpresaSuspendida, SesionRevocada
+from contratacion.dominio.errores import (
+    CambioDeContrasenaPendiente,
+    EmpresaSuspendida,
+    SesionRevocada,
+)
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion
 from contratacion.infraestructura.adaptadores.salida.archivos.local import obtener_almacen
 from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
@@ -518,8 +522,16 @@ async def vistas_del_actor(actor: ActorDep, accesos: AccesosDep) -> frozenset[Vi
 VistasDep = Annotated[frozenset[Vista], Depends(vistas_del_actor)]
 
 
-async def consentimiento_del_actor(actor: ActorDep, consentimientos: ConsentimientosDep) -> None:
+async def consentimiento_del_actor(
+    actor: ActorDep, consentimientos: ConsentimientosDep, cuentas: CuentasDep
+) -> None:
     """Puerta de bloqueo: niega el paso si la cuenta debe aceptar alguna política.
+
+    Es también la puerta de la **contraseña temporal**: si un administrador puso la contraseña, no
+    se sirven datos hasta que la persona elige la suya. Va en la misma puerta porque protege lo
+    mismo y por las mismas rutas; una segunda dependencia habría que acordarse de añadirla en cada
+    enrutador, y la que se olvide es la que deja pasar. Cambiar la contraseña y cerrar sesión no
+    llevan esta puerta, así que nadie queda atrapado.
 
     **No es una dependencia global.** Se aplica enrutador por enrutador a propósito: una dependencia
     global alcanzaría también a `/salud`, al inicio de sesión y a la pantalla de aceptación, y
@@ -530,6 +542,11 @@ async def consentimiento_del_actor(actor: ActorDep, consentimientos: Consentimie
     quién tiene la página abierta: la presencia no da ningún dato del sistema, y bloquearla dejaría
     a la pantalla de aceptación sin poder avisar de que sigue abierta.
     """
+    cuenta = await cuentas.obtener(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id)
+    if cuenta is not None and cuenta.debe_cambiar_contrasena:
+        raise CambioDeContrasenaPendiente(
+            "La contraseña de tu cuenta es temporal. Elige una nueva para seguir usando el panel."
+        )
     await exigir_aceptado(actor, consentimientos=consentimientos)
 
 

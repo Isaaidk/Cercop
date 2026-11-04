@@ -46,7 +46,7 @@ from contratacion.aplicacion.puertos.politicas import (
     RepositorioPoliticas,
 )
 from contratacion.aplicacion.puertos.seguridad import ServicioContrasenas
-from contratacion.dominio.acceso import Plazo, Vista
+from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Plazo, Vista
 from contratacion.dominio.credenciales import (
     CARACTERES_DISTINTOS_MINIMOS,
     LONGITUD_MAXIMA,
@@ -72,7 +72,7 @@ PLAZO_PRUEBA = Plazo.D7
 # Todas las vistas del catálogo. Se concede la lista entera a propósito: una prueba a medias
 # hace que la persona no pueda saber si el producto le sirve, que es lo único que una prueba
 # tiene que resolver.
-VISTAS_DE_PRUEBA: tuple[Vista, ...] = tuple(Vista)
+VISTAS_DE_PRUEBA: tuple[Vista, ...] = VISTAS_DEL_CATALOGO
 
 LONGITUD_MAXIMA_EMAIL = 254
 LONGITUD_MAXIMA_NOMBRE_PERSONA = 120

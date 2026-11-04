@@ -90,3 +90,15 @@ def test_sin_bloqueo_no_esta_bloqueada() -> None:
 def test_los_intentos_nunca_bajan_de_cero() -> None:
     assert intentos_tras_fallo(0) == 1
     assert intentos_tras_fallo(-5) == 1
+
+
+def test_un_bloqueo_cumplido_reinicia_el_contador() -> None:
+    """Sin el reinicio, un error de tecleo tras el bloqueo volvería a bloquear la cuenta."""
+    vencido = AHORA - timedelta(minutes=1)
+    intentos = intentos_tras_fallo(INTENTOS_ANTES_DE_BLOQUEO, vencido, AHORA)
+    assert intentos == 1
+    assert siguiente_bloqueo(intentos, AHORA) is None
+
+
+def test_sin_bloqueo_previo_el_contador_sigue_sumando() -> None:
+    assert intentos_tras_fallo(3, None, AHORA) == 4

@@ -23,10 +23,12 @@
  */
 import { computed, onMounted, ref } from 'vue'
 
+import CampoContrasena from '@/components/CampoContrasena.vue'
 import TrabajoWorkers from '@/components/TrabajoWorkers.vue'
 import { api } from '@/api/endpoints'
 import { sesion } from '@/stores/sesion'
-import { fechaCorta } from '@/utils/formato'
+import { fechaCorta, horaCorta } from '@/utils/formato'
+import { contrasenaAceptable, obtenerRequisitos } from '@/utils/politica'
 
 const empresas = ref([])
 const catalogo = ref({ vistas: [], plazos: [] })
@@ -97,7 +99,70 @@ async function cargar() {
   }
 }
 
-onMounted(cargar)
+/** Contraseña temporal que se está escribiendo para la cuenta abierta con «Contraseña». */
+const claveTemporal = ref('')
+const requisitos = ref(null)
+
+onMounted(async () => {
+  await cargar()
+  requisitos.value = await obtenerRequisitos()
+})
+
+async function recargarUsuarios(negocioId) {
+  const datos = await api.usuariosDeNegocio(negocioId)
+  usuarios.value = datos.usuarios || []
+}
+
+function abrirClave(usuario) {
+  abrirBorrado(`clave:${usuario.usuario_id}`)
+  claveTemporal.value = ''
+}
+
+function claveValidaPara(usuario) {
+  return contrasenaAceptable(claveTemporal.value, requisitos.value, usuario.email)
+}
+
+/** El superadministrador es la salida cuando quien quedó bloqueado es el único administrador. */
+async function desbloquear(usuario) {
+  const negocioId = abierta.value
+  ocupado.value = usuario.usuario_id
+  error.value = ''
+  aviso.value = ''
+  try {
+    const resultado = await api.desbloquearEnEmpresa(negocioId, usuario.usuario_id)
+    aviso.value = (resultado?.avisos || []).join(' ') || `${usuario.email} ya puede volver a entrar.`
+    await recargarUsuarios(negocioId)
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = ''
+  }
+}
+
+async function fijarClave(usuario) {
+  if (!claveValidaPara(usuario)) return
+  const negocioId = abierta.value
+  ocupado.value = usuario.usuario_id
+  error.value = ''
+  aviso.value = ''
+  try {
+    const resultado = await api.fijarContrasenaEnEmpresa(
+      negocioId,
+      usuario.usuario_id,
+      claveTemporal.value,
+    )
+    aviso.value =
+      (resultado?.avisos || []).join(' ') ||
+      `Contraseña temporal guardada para ${usuario.email}. Tendrá que cambiarla al entrar.`
+    claveTemporal.value = ''
+    cerrarBorrado()
+    await recargarUsuarios(negocioId)
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = ''
+  }
+}
 
 async function alternarEmpresa(empresa) {
   if (abierta.value === empresa.negocio_id) {
@@ -374,6 +439,13 @@ async function eliminarUsuario(usuario) {
                 <span class="etiqueta" :class="usuario.estado === 'activo' ? 'etiqueta--ok' : 'etiqueta--error'">
                   {{ usuario.rol }}
                 </span>
+                <span
+                  v-if="usuario.bloqueada"
+                  class="etiqueta etiqueta--error"
+                  :title="fechaCorta(usuario.bloqueado_hasta)"
+                >
+                  Bloqueada hasta las {{ horaCorta(usuario.bloqueado_hasta) }}
+                </span>
 
                 <label class="plataforma__plazo">
                   <span>Plazo</span>
@@ -389,6 +461,26 @@ async function eliminarUsuario(usuario) {
                 </label>
 
                 <button
+                  v-if="usuario.bloqueada"
+                  type="button"
+                  class="boton boton--principal boton--pequeno"
+                  :disabled="ocupado === usuario.usuario_id"
+                  @click="desbloquear(usuario)"
+                >
+                  Desbloquear
+                </button>
+
+                <button
+                  type="button"
+                  class="boton boton--secundario boton--pequeno"
+                  :aria-expanded="borrando === `clave:${usuario.usuario_id}`"
+                  :disabled="ocupado === usuario.usuario_id"
+                  @click="abrirClave(usuario)"
+                >
+                  Contraseña
+                </button>
+
+                <button
                   v-if="usuario.usuario_id !== sesion.estado.usuario"
                   type="button"
                   class="boton boton--fantasma boton--pequeno"
@@ -398,6 +490,33 @@ async function eliminarUsuario(usuario) {
                 >
                   Eliminar
                 </button>
+              </div>
+
+              <div
+                v-if="borrando === `clave:${usuario.usuario_id}`"
+                class="plataforma__borrado aparece"
+              >
+                <CampoContrasena
+                  :id="`clave-plataforma-${usuario.usuario_id}`"
+                  v-model="claveTemporal"
+                  etiqueta="Contraseña temporal"
+                  ajuste="new-password"
+                  :ayuda="`Mínimo ${requisitos?.longitud_minima ?? 12} caracteres. Se cerrarán sus sesiones, se quitará el bloqueo y tendrá que cambiarla al entrar.`"
+                  :maxlength="128"
+                />
+                <div class="plataforma__borrado-botones">
+                  <button
+                    type="button"
+                    class="boton boton--principal boton--pequeno"
+                    :disabled="!claveValidaPara(usuario) || ocupado === usuario.usuario_id"
+                    @click="fijarClave(usuario)"
+                  >
+                    Guardar la contraseña temporal
+                  </button>
+                  <button type="button" class="boton boton--fantasma boton--pequeno" @click="cerrarBorrado">
+                    Cancelar
+                  </button>
+                </div>
               </div>
 
               <!-- Borrado de la cuenta: se confirma con su correo. -->

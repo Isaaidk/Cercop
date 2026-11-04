@@ -39,7 +39,8 @@ from contratacion.infraestructura.adaptadores.salida.bd.contexto import contexto
 registro = logging.getLogger(__name__)
 
 CAMPOS_FICHA = """
-    id, negocio_id, email, nombre, rol, estado, ultimo_acceso, creado_en
+    id, negocio_id, email, nombre, rol, estado, ultimo_acceso, creado_en,
+    bloqueado_hasta, intentos_fallidos, debe_cambiar_contrasena
 """
 
 
@@ -53,6 +54,9 @@ def _a_ficha(fila: Mapping[Any, Any]) -> FichaUsuario:
         estado=str(fila["estado"]),
         ultimo_acceso=fila["ultimo_acceso"],
         creado_en=fila["creado_en"],
+        bloqueado_hasta=fila["bloqueado_hasta"],
+        intentos_fallidos=int(fila["intentos_fallidos"] or 0),
+        debe_cambiar_contrasena=bool(fila["debe_cambiar_contrasena"]),
     )
 
 
@@ -69,12 +73,13 @@ class RepositorioUsuariosBd:
                     text(
                         """
                         INSERT INTO usuario (id, negocio_id, email, hash_password, nombre, rol,
-                                             estado, creado_en)
+                                             estado, creado_en, debe_cambiar_contrasena)
                         VALUES (:id, :negocio_id, :email, :huella, :nombre, :rol,
-                                'activo', :momento)
+                                'activo', :momento, :temporal)
                         """
                     ),
                     {
+                        "temporal": cuenta.contrasena_temporal,
                         "id": cuenta.usuario_id,
                         "negocio_id": cuenta.negocio_id,
                         "email": cuenta.email,
@@ -172,17 +177,34 @@ class RepositorioUsuariosBd:
     async def actualizar_huella(
         self, *, negocio_id: UUID, usuario_id: UUID, huella: str, momento: datetime
     ) -> None:
+        # Solo la usa el restablecimiento por un administrador: la contraseña la conocen dos, así
+        # que queda marcada como temporal hasta que la persona elija la suya.
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             await conexion.execute(
                 text(
                     """
                     UPDATE usuario
-                    SET hash_password = :huella, intentos_fallidos = 0, bloqueado_hasta = NULL
+                    SET hash_password = :huella, intentos_fallidos = 0, bloqueado_hasta = NULL,
+                        debe_cambiar_contrasena = true
                     WHERE negocio_id = :negocio_id
                       AND id = :usuario_id
                     """
                 ),
                 {"negocio_id": negocio_id, "usuario_id": usuario_id, "huella": huella},
+            )
+
+    async def desbloquear(self, *, negocio_id: UUID, usuario_id: UUID) -> None:
+        async with contexto_negocio(self._motor, negocio_id) as conexion:
+            await conexion.execute(
+                text(
+                    """
+                    UPDATE usuario
+                    SET intentos_fallidos = 0, bloqueado_hasta = NULL
+                    WHERE negocio_id = :negocio_id
+                      AND id = :usuario_id
+                    """
+                ),
+                {"negocio_id": negocio_id, "usuario_id": usuario_id},
             )
 
     async def actualizar_identidad(

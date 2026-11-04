@@ -34,17 +34,18 @@ def test_necesidades_da_acceso_a_la_fuente_de_necesidades() -> None:
     assert fuentes_para_vistas([Vista.NECESIDADES]) == ("NCO",)
 
 
-def test_contrataciones_da_acceso_a_la_fuente_de_procesos() -> None:
+def test_ofertas_da_acceso_a_la_fuente_de_procesos() -> None:
+    """La pestaña Ofertas lee OCDS: conceder la vista tiene que abrir justo esa fuente."""
+    assert fuentes_para_vistas([Vista.OFERTAS]) == ("OCDS",)
+
+
+def test_contrataciones_sigue_dando_la_fuente_de_procesos() -> None:
+    """Vista heredada: las concesiones antiguas no pierden lo que daban."""
     assert fuentes_para_vistas([Vista.CONTRATACIONES]) == ("OCDS",)
 
 
 def test_las_dos_vistas_juntas_dan_las_dos_fuentes() -> None:
-    assert fuentes_para_vistas([Vista.NECESIDADES, Vista.CONTRATACIONES]) == ("NCO", "OCDS")
-
-
-def test_una_vista_sin_datos_no_concede_ninguna_fuente() -> None:
-    """«Ofertas» existe en el catálogo, pero todavía no tiene datos detrás."""
-    assert fuentes_para_vistas([Vista.OFERTAS]) == ()
+    assert fuentes_para_vistas([Vista.NECESIDADES, Vista.OFERTAS]) == ("NCO", "OCDS")
 
 
 def test_las_graficas_no_conceden_datos_de_registros() -> None:

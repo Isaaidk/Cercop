@@ -45,6 +45,8 @@ class Cuenta:
     intentos_fallidos: int
     bloqueado_hasta: datetime | None
     debe_aceptar_politica_version: int | None
+    # La contraseña la puso otra persona —un administrador— y hay que cambiarla antes de seguir.
+    debe_cambiar_contrasena: bool = False
 
     @property
     def activa(self) -> bool:
@@ -111,6 +113,16 @@ class RepositorioCuentas(Protocol):
 
     async def actualizar_huella(self, *, negocio_id: UUID, usuario_id: UUID, huella: str) -> None:
         """Sustituye la huella de la contraseña cuando el algoritmo se ha quedado atrás."""
+        ...
+
+    async def fijar_contrasena_propia(
+        self, *, negocio_id: UUID, usuario_id: UUID, huella: str
+    ) -> None:
+        """Guarda la contraseña que la persona eligió y retira la marca de contraseña temporal.
+
+        Va aparte de `actualizar_huella` porque esa también se usa al rehacer la huella durante el
+        inicio de sesión, y ahí retirar la marca dejaría pasar a quien entra con la temporal.
+        """
         ...
 
     async def cambiar_estado(

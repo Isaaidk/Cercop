@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from contratacion.aplicacion.casos_uso.gestionar_usuarios import (
     crear_cuenta,
     desactivar_cuenta,
+    desbloquear_cuenta,
     eliminar_cuenta,
     listar_cuentas,
     reactivar_cuenta,
@@ -31,6 +32,7 @@ from contratacion.aplicacion.casos_uso.gestionar_usuarios import (
 )
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
+    AccesosDep,
     ActorDep,
     AuditoriaDep,
     CierreSesionesDep,
@@ -115,6 +117,7 @@ async def crear(
     politicas: PoliticasDep,
     consentimientos: ConsentimientosDep,
     auditoria: AuditoriaDep,
+    accesos: AccesosDep,
     _: ConsentimientoDep,
 ) -> dict[str, Any]:
     """Crea una cuenta activa en la empresa de quien llama.
@@ -135,6 +138,7 @@ async def crear(
         politicas=politicas,
         consentimientos=consentimientos,
         auditoria=auditoria,
+        accesos=accesos,
     )
     return cuerpo_json(resultado.como_diccionario())
 
@@ -224,6 +228,21 @@ async def borrar(
         sesiones=sesiones,
         auditoria=auditoria,
         confirmacion=confirmacion,
+    )
+    return cuerpo_json(resultado.como_diccionario())
+
+
+@router.post("/{usuario_id}/desbloqueo", summary="Quitar el bloqueo por intentos fallidos")
+async def desbloquear(
+    usuario_id: UUID,
+    actor: ActorDep,
+    usuarios: UsuariosDep,
+    auditoria: AuditoriaDep,
+    _: ConsentimientoDep,
+) -> dict[str, Any]:
+    """Pone a cero los intentos fallidos y levanta el bloqueo. No cambia la contraseña."""
+    resultado = await desbloquear_cuenta(
+        actor, usuario_id=usuario_id, usuarios=usuarios, auditoria=auditoria
     )
     return cuerpo_json(resultado.como_diccionario())
 

@@ -94,6 +94,16 @@ class ConsentimientoPendiente(ErrorDominio):
     codigo = "consentimiento_pendiente"
 
 
+class CambioDeContrasenaPendiente(ErrorDominio):
+    """La contraseña de la cuenta la puso un administrador y hay que cambiarla antes de seguir.
+
+    Un 403 con su propio código, igual que `ConsentimientoPendiente`: la interfaz no tiene que
+    pedir permiso a nadie, tiene que abrir la pantalla de cambio de contraseña.
+    """
+
+    codigo = "cambio_contrasena_pendiente"
+
+
 class SesionRevocada(ErrorDominio):
     """La sesión existió y ya no vale: la cerraron desde otro sitio o la expulsó otro acceso.
 

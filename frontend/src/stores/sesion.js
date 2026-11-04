@@ -18,6 +18,7 @@ import { computed, reactive } from 'vue'
 import { api } from '@/api/endpoints'
 import {
   alCaducarSesion,
+  alExigirCambioDeContrasena,
   alSuspenderEmpresa,
   anunciarCierreDeSesion,
   guardarAcceso,
@@ -46,6 +47,16 @@ const estado = reactive({
   suspendida: false,
   /** El aviso exacto que mandó el servidor, para no reescribirlo aquí y que digan lo mismo. */
   motivoSuspension: '',
+  /** La contraseña la puso un administrador y el servidor no deja seguir hasta cambiarla. */
+  debeCambiarContrasena: false,
+  /** Vistas propias con su plazo, tal como las devuelve `/v1/accesos/usuarios/{id}`. */
+  vistas: [],
+  /** `true` cuando ya se preguntó al servidor por las vistas, aunque la lista venga vacía. */
+  vistasCargadas: false,
+})
+
+alExigirCambioDeContrasena(() => {
+  estado.debeCambiarContrasena = true
 })
 
 // Cuando el cliente HTTP no consigue renovar el token, la sesión se ha perdido de verdad. Se limpia
@@ -163,6 +174,32 @@ export const sesion = {
     return datos
   },
 
+  /** El usuario ya eligió su propia contraseña: el servidor dejó de exigir el cambio. */
+  contrasenaCambiada() {
+    estado.debeCambiarContrasena = false
+  },
+
+  /**
+   * Las vistas propias y sus plazos.
+   *
+   * Sirven solo para decidir qué pestañas enseñar: el servidor vuelve a comprobar el plazo en cada
+   * petición de datos, así que si esto se queda atrás lo peor que pasa es ver una pestaña que
+   * responde «sin permiso».
+   */
+  async refrescarVistas() {
+    if (!estado.usuario) return
+    try {
+      const datos = await api.misVistas(estado.usuario)
+      estado.vistas = datos?.vistas || []
+    } catch {
+      // Sin respuesta no se ocultan pestañas: decide el servidor en cada petición.
+      estado.vistas = []
+      estado.vistasCargadas = false
+      return
+    }
+    estado.vistasCargadas = true
+  },
+
   async salir() {
     const token = leerRenovacion()
 
@@ -191,6 +228,9 @@ export const sesion = {
     estado.pendientes = []
     estado.catalogo = []
     estado.alDia = null
+    estado.debeCambiarContrasena = false
+    estado.vistas = []
+    estado.vistasCargadas = false
   },
 }
 
@@ -207,5 +247,6 @@ function aplicarSesion(datos) {
   estado.nombre = datos.nombre || datos.email || ''
   estado.email = datos.email || ''
   estado.rol = datos.rol
+  estado.debeCambiarContrasena = Boolean(datos.debe_cambiar_contrasena)
   estado.error = ''
 }

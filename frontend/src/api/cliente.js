@@ -203,6 +203,24 @@ function avisarEmpresaSuspendida(mensaje) {
   for (const funcion of alQuedarSuspendida) funcion(mensaje)
 }
 
+/**
+ * Quien se suscribe se entera de que el servidor exige cambiar la contraseña temporal.
+ *
+ * Normalmente el panel ya lo sabe al entrar, porque viene en la respuesta del inicio de sesión. Esto
+ * cubre el caso de que un administrador la restablezca con la pestaña abierta: la siguiente petición
+ * de datos devuelve el 403 y el panel abre la pantalla de cambio en vez de enseñar un error.
+ */
+const alPedirCambioDeContrasena = new Set()
+
+export function alExigirCambioDeContrasena(funcion) {
+  alPedirCambioDeContrasena.add(funcion)
+  return () => alPedirCambioDeContrasena.delete(funcion)
+}
+
+function avisarCambioDeContrasena() {
+  for (const funcion of alPedirCambioDeContrasena) funcion()
+}
+
 // --- El canal entre las pestañas del mismo navegador -----------------------
 
 /**
@@ -359,6 +377,7 @@ async function enviar(ruta, { metodo = 'GET', cuerpo, parametros, sinReintento =
     const error = await interpretarError(respuesta)
     // Una empresa suspendida se avisa por su propio camino: la sesión no se toca.
     if (error.codigo === 'empresa_suspendida') avisarEmpresaSuspendida(error.message)
+    if (error.codigo === 'cambio_contrasena_pendiente') avisarCambioDeContrasena()
     throw error
   }
 

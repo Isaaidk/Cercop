@@ -192,7 +192,8 @@ class RepositorioAccesosBd:
                     await conexion.execute(
                         text(
                             """
-                            SELECT id AS usuario_id, email, nombre, rol, estado, ultimo_acceso
+                            SELECT id AS usuario_id, email, nombre, rol, estado, ultimo_acceso,
+                                   bloqueado_hasta
                             FROM usuario
                             WHERE negocio_id = :negocio_id
                             ORDER BY nombre, email

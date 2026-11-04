@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -57,14 +57,29 @@ class FichaUsuario:
     estado: str
     ultimo_acceso: datetime | None
     creado_en: datetime
+    bloqueado_hasta: datetime | None = None
+    intentos_fallidos: int = 0
+    debe_cambiar_contrasena: bool = False
 
     @property
     def activo(self) -> bool:
         """¿Puede esta cuenta entrar al sistema?"""
         return self.estado in {"activo", "pendiente"}
 
+    def bloqueada(self, momento: datetime | None = None) -> bool:
+        """¿Está en un bloqueo temporal por intentos fallidos ahora mismo?"""
+        instante = momento or datetime.now(UTC)
+        return self.bloqueado_hasta is not None and self.bloqueado_hasta > instante
+
     def como_diccionario(self) -> dict[str, object]:
+        bloqueada = self.bloqueada()
         return {
+            "bloqueada": bloqueada,
+            "bloqueado_hasta": (
+                self.bloqueado_hasta.isoformat() if bloqueada and self.bloqueado_hasta else None
+            ),
+            "intentos_fallidos": self.intentos_fallidos,
+            "debe_cambiar_contrasena": self.debe_cambiar_contrasena,
             "usuario_id": str(self.usuario_id),
             "email": self.email,
             "nombre": self.nombre,
@@ -87,6 +102,8 @@ class NuevaCuenta:
     rol: Rol
     huella: str
     momento: datetime
+    # La contraseña inicial la elige quien crea la cuenta: la persona debe cambiarla al entrar.
+    contrasena_temporal: bool = True
 
 
 class RepositorioUsuarios(Protocol):
@@ -130,7 +147,7 @@ class RepositorioUsuarios(Protocol):
     async def actualizar_huella(
         self, *, negocio_id: UUID, usuario_id: UUID, huella: str, momento: datetime
     ) -> None:
-        """Sustituye la contraseña."""
+        """Sustituye la contraseña, quita el bloqueo y la deja marcada como temporal."""
         ...
 
     async def actualizar_identidad(
@@ -143,6 +160,10 @@ class RepositorioUsuarios(Protocol):
         self, *, negocio_id: UUID, usuario_id: UUID, estado: str, momento: datetime
     ) -> None:
         """Activa, desactiva o bloquea una cuenta."""
+        ...
+
+    async def desbloquear(self, *, negocio_id: UUID, usuario_id: UUID) -> None:
+        """Quita el bloqueo por intentos fallidos y pone el contador a cero."""
         ...
 
     async def eliminar(self, *, negocio_id: UUID, usuario_id: UUID) -> None:

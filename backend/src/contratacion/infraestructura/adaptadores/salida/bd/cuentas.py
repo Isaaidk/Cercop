@@ -37,7 +37,7 @@ LONGITUD_MAXIMA_AGENTE = 300
 
 CAMPOS_CUENTA = """
     id, negocio_id, email, nombre, rol, estado, hash_password,
-    intentos_fallidos, bloqueado_hasta, debe_aceptar_politica_version
+    intentos_fallidos, bloqueado_hasta, debe_aceptar_politica_version, debe_cambiar_contrasena
 """
 
 CAMPOS_SESION = """
@@ -84,6 +84,7 @@ def _a_cuenta(fila: Mapping[Any, Any]) -> Cuenta:
         intentos_fallidos=int(fila["intentos_fallidos"]),
         bloqueado_hasta=fila["bloqueado_hasta"],
         debe_aceptar_politica_version=fila["debe_aceptar_politica_version"],
+        debe_cambiar_contrasena=bool(fila["debe_cambiar_contrasena"]),
     )
 
 
@@ -201,6 +202,18 @@ class RepositorioCuentasBd:
             await conexion.execute(
                 text(
                     "UPDATE usuario SET hash_password = :huella"
+                    " WHERE negocio_id = :negocio_id AND id = :usuario_id"
+                ),
+                {"negocio_id": negocio_id, "usuario_id": usuario_id, "huella": huella},
+            )
+
+    async def fijar_contrasena_propia(
+        self, *, negocio_id: UUID, usuario_id: UUID, huella: str
+    ) -> None:
+        async with contexto_negocio(self._motor, negocio_id) as conexion:
+            await conexion.execute(
+                text(
+                    "UPDATE usuario SET hash_password = :huella, debe_cambiar_contrasena = false"
                     " WHERE negocio_id = :negocio_id AND id = :usuario_id"
                 ),
                 {"negocio_id": negocio_id, "usuario_id": usuario_id, "huella": huella},
