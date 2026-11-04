@@ -38,7 +38,7 @@ from contratacion.dominio.acceso import (
     tablero,
     vista_desde_codigo,
 )
-from contratacion.dominio.errores import DatoInvalido, NoEncontrado, SinPermiso
+from contratacion.dominio.errores import DatoInvalido, EmpresaSuspendida, NoEncontrado, SinPermiso
 from contratacion.dominio.serializacion import a_json, de_json
 
 registro = logging.getLogger(__name__)
@@ -338,7 +338,12 @@ async def vistas_vigentes(
         return guardado
 
     accesos = await repositorio.obtener(negocio_id=negocio_id, usuario_id=usuario_id)
-    vigentes = frozenset(concesion_vigente(accesos, instante))
+    vigentes_por_vista = concesion_vigente(accesos, instante)
+    if not vigentes_por_vista and _plazo_agotado(accesos, instante):
+        # El mismo aviso que una empresa suspendida: el panel ya lo enseña a pantalla completa y el
+        # texto sale del servidor, no de una copia en el navegador.
+        raise EmpresaSuspendida()
+    vigentes = frozenset(vigentes_por_vista)
     await _guardar_permiso(cache, clave, vigentes)
     return vigentes
 
@@ -369,6 +374,20 @@ async def exigir_acceso_a_vista(
             f"Este usuario no tiene acceso a la vista «{vista}». Pide al administrador que lo "
             "conceda."
         )
+
+
+def _plazo_agotado(accesos: Any, momento: datetime) -> bool:
+    """¿Se le acabó el plazo de uso, sin que nadie se lo hubiera quitado a mano?
+
+    Una retirada manual no es una suspensión: el administrador quitó la vista. Aquí solo cuenta una
+    concesión que llegó a su fecha y sigue sin revocar. Si queda alguna viva, no entra en esta
+    función, porque quien llama ya vio que hay concesiones vigentes.
+    """
+    catalogo = set(VISTAS_DEL_CATALOGO)
+    return any(
+        acceso.vista in catalogo and acceso.revocado_en is None and acceso.vence_en <= momento
+        for acceso in accesos
+    )
 
 
 def _exigir_conceder(actor: Actor) -> None:

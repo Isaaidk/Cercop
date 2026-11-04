@@ -101,6 +101,19 @@ function venceDe(usuario) {
   return fechas.sort()[0]
 }
 
+function diasRestantes(usuario) {
+  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente)
+  if (!vigentes.length) return null
+  return Math.min(...vigentes.map((fila) => fila.dias_restantes ?? 0))
+}
+
+function textoDias(dias) {
+  if (dias === null || dias === undefined) return ''
+  if (dias <= 0) return 'queda menos de un día'
+  if (dias === 1) return 'queda 1 día'
+  return `quedan ${dias} días`
+}
+
 function esSuperAdmin(usuario) {
   return usuario.rol === 'super_admin'
 }
@@ -230,24 +243,24 @@ async function cambiarEstado(empresa) {
 }
 
 /**
- * Cambiar el desplegable guarda el plazo de las vistas que ya tiene.
+ * Guarda el plazo elegido en todas las secciones del usuario.
  *
- * Antes el número solo vivía en el navegador: al recargar volvía a 7 días, que es la primera
- * opción del catálogo, aunque en la base siguiera otro vencimiento. Ahora se escribe en cada
- * vista vigente y, al volver a cargar, el desplegable sale de lo guardado.
+ * El desplegable solo elige. Hasta que no se pulsa Aplicar no se escribe nada, así que se puede
+ * cambiar de 7 a 30 días y arrepentirse sin tocar la cuenta. Al aplicar, el plazo empieza a contar
+ * desde ahora en cada sección.
  */
-async function aplicarPlazo(usuario, codigo) {
+async function aplicarPlazo(usuario) {
   if (esSuperAdmin(usuario)) return
-  plazos.value[usuario.usuario_id] = codigo
-  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente)
-  if (!vigentes.length) return
+  const codigo = plazoDe(usuario.usuario_id)
+  const secciones = usuario.tablero || []
+  if (!secciones.length) return
 
   const negocioId = abierta.value
   ocupado.value = usuario.usuario_id
   error.value = ''
   aviso.value = ''
   try {
-    for (const vista of vigentes) {
+    for (const vista of secciones) {
       await api.concederVista(usuario.usuario_id, negocioId, vista.vista, codigo)
     }
     const etiqueta = plazosDisponibles.value.find((plazo) => plazo.codigo === codigo)?.etiqueta || codigo
@@ -484,8 +497,8 @@ async function eliminarUsuario(usuario) {
 
           <template v-else>
             <p class="plataforma__nota">
-              El plazo es el que queda guardado. Al cambiarlo empieza a contar desde ahora y, cuando
-              vence, el usuario deja de ver esas secciones. El superadministrador no tiene plazo.
+              Elige el plazo y pulsa Aplicar para guardarlo. Empieza a contar desde ese momento. Cuando
+              se acaba, la cuenta queda suspendida. El superadministrador no tiene plazo.
             </p>
 
             <div v-for="usuario in usuarios" :key="usuario.usuario_id" class="plataforma__cuenta">
@@ -510,14 +523,28 @@ async function eliminarUsuario(usuario) {
                     class="seleccion"
                     :value="plazoDe(usuario.usuario_id)"
                     :disabled="ocupado === usuario.usuario_id"
-                    @change="aplicarPlazo(usuario, $event.target.value)"
+                    @change="plazos[usuario.usuario_id] = $event.target.value"
                   >
                     <option v-for="plazo in plazosDisponibles" :key="plazo.codigo" :value="plazo.codigo">
                       {{ plazo.etiqueta }}
                     </option>
                   </select>
-                  <span v-if="venceDe(usuario)">vence {{ fechaCorta(venceDe(usuario)) }}</span>
+                  <span v-if="venceDe(usuario)">
+                    vence {{ fechaCorta(venceDe(usuario)) }}
+                    <template v-if="diasRestantes(usuario) !== null">
+                      · {{ textoDias(diasRestantes(usuario)) }}
+                    </template>
+                  </span>
                 </label>
+                <button
+                  v-if="!esSuperAdmin(usuario)"
+                  type="button"
+                  class="boton boton--principal boton--pequeno"
+                  :disabled="ocupado === usuario.usuario_id"
+                  @click="aplicarPlazo(usuario)"
+                >
+                  Aplicar
+                </button>
 
                 <button
                   v-if="usuario.bloqueada"

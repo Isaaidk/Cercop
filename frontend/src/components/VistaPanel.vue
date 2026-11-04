@@ -200,20 +200,30 @@ function textoCierre(id) {
   return `Tu cuenta no tiene acceso a «${fila?.etiqueta || 'esta sección'}». Pide al administrador de la plataforma que te lo conceda.`
 }
 
-/** Vistas vigentes a las que les queda poco: se avisa antes de que se cierren. */
-const vistasPorVencer = computed(() =>
-  sesion.estado.vistas.filter((fila) => fila.vigente && fila.por_vencer),
-)
+/**
+ * Días que le quedan en la plataforma, el menor de las secciones que aún tiene.
+ *
+ * Es un solo número y no uno por pestaña: la cuenta se suspende cuando se acaba el plazo, y lo que
+ * la persona necesita saber es cuánto falta para eso.
+ */
+const diasDePlataforma = computed(() => {
+  if (sesion.esDePlataforma.value || !sesion.estado.vistasCargadas) return null
+  const vigentes = sesion.estado.vistas.filter((fila) => fila.vigente)
+  if (!vigentes.length) return null
+  return Math.min(...vigentes.map((fila) => fila.dias_restantes ?? 0))
+})
 
-const avisoVencimiento = computed(() =>
-  vistasPorVencer.value
-    .map((fila) => {
-      const dias = fila.dias_restantes
-      const cuando = dias === 0 ? 'hoy' : dias === 1 ? 'mañana' : `en ${dias} días`
-      return `«${fila.etiqueta}» vence ${cuando} (${fechaCorta(fila.vence_en)})`
-    })
-    .join(' · '),
-)
+const avisoPlazo = computed(() => {
+  const dias = diasDePlataforma.value
+  if (dias === null) return ''
+  if (dias <= 0) {
+    return 'Te queda menos de un día en la plataforma. Cuando se acabe, tu cuenta quedará suspendida.'
+  }
+  if (dias === 1) {
+    return 'Te queda 1 día en la plataforma. Cuando se acabe, tu cuenta quedará suspendida.'
+  }
+  return `Te quedan ${dias} días en la plataforma. Cuando se acaben, tu cuenta quedará suspendida.`
+})
 
 const MS_REVISION_VISTAS = 5 * 60_000
 let revisorVistas = null
@@ -600,10 +610,7 @@ const ultimaActualizacion = computed(() =>
           </button>
         </nav>
 
-        <p v-if="avisoVencimiento" class="panel__vencimiento" role="status">
-          Tu acceso está por vencer: {{ avisoVencimiento }}. Pide la renovación al administrador de
-          la plataforma.
-        </p>
+        <p v-if="avisoPlazo" class="panel__vencimiento" role="status">{{ avisoPlazo }}</p>
 
         <section v-if="pestanaCerrada(pestana)" class="panel__cerrada superficie" role="status">
           <span class="panel__cerrada-icono" aria-hidden="true">🔒</span>

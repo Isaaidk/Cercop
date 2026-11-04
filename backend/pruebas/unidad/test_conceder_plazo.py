@@ -6,9 +6,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
+
 from contratacion.aplicacion.actor import Actor
-from contratacion.aplicacion.casos_uso.gestionar_acceso import conceder_acceso
+from contratacion.aplicacion.casos_uso.gestionar_acceso import conceder_acceso, vistas_vigentes
 from contratacion.dominio.acceso import AccesoVista, Plazo, Vista
+from contratacion.dominio.errores import EmpresaSuspendida
 
 NEGOCIO = uuid4()
 USUARIO = uuid4()
@@ -88,3 +91,63 @@ async def test_un_plazo_mas_corto_sustituye_al_anterior() -> None:
     assert accesos.concedidas[0][2] == AHORA + timedelta(days=7)
     assert resultado.vence_en == AHORA + timedelta(days=7)
     assert resultado.tablero[0].plazo is Plazo.D7
+
+
+class AccesosConFilas:
+    def __init__(self, filas: tuple[AccesoVista, ...]) -> None:
+        self.filas = filas
+
+    async def obtener(self, **_: Any) -> tuple[AccesoVista, ...]:
+        return self.filas
+
+    async def conceder(self, **_: Any) -> UUID:
+        return uuid4()
+
+    async def retirar(self, **_: Any) -> int:
+        return 0
+
+    async def historial(self, **_: Any) -> tuple[dict[str, Any], ...]:
+        return ()
+
+    async def usuarios(self, **_: Any) -> tuple[dict[str, Any], ...]:
+        return ()
+
+    async def usuario(self, **_: Any) -> dict[str, Any] | None:
+        return None
+
+
+async def test_un_plazo_vencido_suspende_la_cuenta() -> None:
+    vencido = AccesoVista(
+        vista=Vista.NECESIDADES,
+        otorgado_en=AHORA - timedelta(days=8),
+        vence_en=AHORA - timedelta(days=1),
+        plazo=Plazo.D7,
+    )
+
+    with pytest.raises(EmpresaSuspendida):
+        await vistas_vigentes(
+            negocio_id=NEGOCIO,
+            usuario_id=USUARIO,
+            repositorio=AccesosConFilas((vencido,)),
+            cache=CacheMudo(),
+            momento=AHORA,
+        )
+
+
+async def test_un_plazo_vigente_no_suspende_la_cuenta() -> None:
+    vivo = AccesoVista(
+        vista=Vista.NECESIDADES,
+        otorgado_en=AHORA,
+        vence_en=AHORA + timedelta(days=7),
+        plazo=Plazo.D7,
+    )
+
+    vigentes = await vistas_vigentes(
+        negocio_id=NEGOCIO,
+        usuario_id=USUARIO,
+        repositorio=AccesosConFilas((vivo,)),
+        cache=CacheMudo(),
+        momento=AHORA,
+    )
+
+    assert Vista.NECESIDADES in vigentes
