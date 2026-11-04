@@ -45,9 +45,10 @@ class CacheMudo:
 
 
 class AccesosQueRecuerdan:
-    def __init__(self) -> None:
+    def __init__(self, previa: AccesoVista | None = None) -> None:
         self.retiradas: list[Vista] = []
         self.concedidas: list[tuple[Vista, Plazo, datetime]] = []
+        self.previa = previa
 
     async def usuario(self, *, negocio_id: UUID, usuario_id: UUID) -> dict[str, Any]:
         return {"usuario_id": usuario_id, "negocio_id": negocio_id}
@@ -61,10 +62,12 @@ class AccesosQueRecuerdan:
         return uuid4()
 
     async def obtener(self, **_: Any) -> tuple[AccesoVista, ...]:
-        if not self.concedidas:
-            return ()
-        vista, plazo, vence = self.concedidas[-1]
-        return (AccesoVista(vista=vista, otorgado_en=AHORA, vence_en=vence, plazo=plazo),)
+        if self.concedidas:
+            vista, plazo, vence = self.concedidas[-1]
+            return (AccesoVista(vista=vista, otorgado_en=AHORA, vence_en=vence, plazo=plazo),)
+        if self.previa is not None:
+            return (self.previa,)
+        return ()
 
     async def historial(self, **_: Any) -> tuple[dict[str, Any], ...]:
         return ()
@@ -91,6 +94,29 @@ async def test_un_plazo_mas_corto_sustituye_al_anterior() -> None:
     assert accesos.concedidas[0][2] == AHORA + timedelta(days=7)
     assert resultado.vence_en == AHORA + timedelta(days=7)
     assert resultado.tablero[0].plazo is Plazo.D7
+
+
+async def test_aplicar_suma_los_dias_sobre_el_vencimiento_que_ya_tiene() -> None:
+    """7 días con Aplicar son otros 7, no una cuenta que vuelve a empezar hoy."""
+    previa = AccesoVista(
+        vista=Vista.NECESIDADES,
+        otorgado_en=AHORA - timedelta(days=1),
+        vence_en=AHORA + timedelta(days=5),
+        plazo=Plazo.D7,
+    )
+    accesos = AccesosQueRecuerdan(previa)
+
+    resultado = await conceder_acceso(
+        ACTOR,
+        usuario_id=USUARIO,
+        vista_codigo="necesidades",
+        plazo_codigo="7d",
+        repositorio=accesos,
+        cache=CacheMudo(),
+        momento=AHORA,
+    )
+
+    assert resultado.vence_en == AHORA + timedelta(days=12)
 
 
 class AccesosConFilas:

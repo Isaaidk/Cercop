@@ -57,7 +57,7 @@ from contratacion.aplicacion.puertos.usuarios import (
     RegistroAuditoria,
     RepositorioUsuarios,
 )
-from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Plazo, concesion_vigente
+from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Plazo
 from contratacion.dominio.credenciales import validar_contrasena
 from contratacion.dominio.errores import DatoInvalido, NoEncontrado, SinPermiso
 from contratacion.dominio.negocios import limpiar_texto, validar_correo
@@ -296,9 +296,8 @@ async def crear_cuenta(
     )
     registro.info("Cuenta creada: negocio=%s usuario=%s rol=%s", actor.negocio_id, usuario_id, rol)
 
-    heredadas = 0
     if accesos is not None:
-        heredadas = await _heredar_vistas(
+        await _conceder_plazo_inicial(
             actor, usuario_id=usuario_id, accesos=accesos, momento=instante
         )
 
@@ -306,12 +305,7 @@ async def crear_cuenta(
     return ResultadoCuenta(
         usuario=ficha,
         avisos=(
-            (
-                f"Recibió {heredadas} vista(s) con el mismo vencimiento que las tuyas."
-                if heredadas
-                else "No tienes vistas vigentes que heredar: pide al superadministrador que le "
-                "conceda acceso."
-            ),
+            "La cuenta nace con 7 días de acceso. El superadministrador puede sumarle más tiempo.",
             "Comunica la contraseña a la persona por un canal privado. Es temporal: al entrar "
             "tendrá que elegir una suya.",
             "Al entrar por primera vez tendrá que aceptar los términos y condiciones.",
@@ -319,28 +313,25 @@ async def crear_cuenta(
     )
 
 
-async def _heredar_vistas(
+async def _conceder_plazo_inicial(
     actor: Actor, *, usuario_id: UUID, accesos: RepositorioAccesos, momento: datetime
-) -> int:
-    """Copia a la cuenta nueva las vistas vigentes del actor, sin alargar ningún vencimiento."""
-    vigentes = concesion_vigente(
-        await accesos.obtener(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id), momento
-    )
-    copiadas = 0
-    for vista, acceso in vigentes.items():
-        if vista not in VISTAS_DEL_CATALOGO:
-            continue
+) -> None:
+    """La cuenta nueva entra con siete días en todas las secciones del panel.
+
+    No se copia el vencimiento de quien la crea. El superadministrador no tiene plazo propio, y
+    copiar el suyo dejaba la cuenta sin ningún acceso: el botón Aplicar no tenía dónde escribir.
+    """
+    vence = Plazo.D7.calcular(momento)
+    for vista in VISTAS_DEL_CATALOGO:
         await accesos.conceder(
             negocio_id=actor.negocio_id,
             usuario_id=usuario_id,
             vista=vista,
-            plazo=acceso.plazo or Plazo.D7,
+            plazo=Plazo.D7,
             otorgado_en=momento,
-            vence_en=acceso.vence_en,
+            vence_en=vence,
             otorgado_por=actor.usuario_id,
         )
-        copiadas += 1
-    return copiadas
 
 
 # --------------------------------------------------------------------------- #

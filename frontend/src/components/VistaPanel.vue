@@ -38,6 +38,7 @@ import PlantillaExcel from '@/components/PlantillaExcel.vue'
 import TablaRegistros from '@/components/TablaRegistros.vue'
 import { usePresencia } from '@/composables/usePresencia'
 import { useEsMovil } from '@/composables/useEsMovil'
+import { api } from '@/api/endpoints'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
@@ -216,13 +217,19 @@ const diasDePlataforma = computed(() => {
 const avisoPlazo = computed(() => {
   const dias = diasDePlataforma.value
   if (dias === null) return ''
-  if (dias <= 0) {
-    return 'Te queda menos de un día en la plataforma. Cuando se acabe, tu cuenta quedará suspendida.'
-  }
-  if (dias === 1) {
-    return 'Te queda 1 día en la plataforma. Cuando se acabe, tu cuenta quedará suspendida.'
-  }
-  return `Te quedan ${dias} días en la plataforma. Cuando se acaben, tu cuenta quedará suspendida.`
+  const vence = venceDePlataforma.value ? ` Vence el ${fechaCorta(venceDePlataforma.value)}.` : ''
+  if (dias <= 0) return `Te queda menos de un día en la plataforma.${vence}`
+  if (dias === 1) return `Te queda 1 día en la plataforma.${vence}`
+  return `Te quedan ${dias} días en la plataforma.${vence}`
+})
+
+const venceDePlataforma = computed(() => {
+  if (sesion.esDePlataforma.value) return null
+  const fechas = sesion.estado.vistas
+    .filter((fila) => fila.vigente && fila.vence_en)
+    .map((fila) => fila.vence_en)
+  if (!fechas.length) return null
+  return fechas.sort()[0]
 })
 
 const MS_REVISION_VISTAS = 5 * 60_000
@@ -358,6 +365,16 @@ function alternarGrafica(id) {
     localStorage.setItem(CLAVE_GRAFICAS, JSON.stringify(ocultas))
   } catch {
     /* sin almacenamiento, la elección dura lo que dure la pestaña */
+  }
+}
+
+async function pedirMasTiempo() {
+  try {
+    const resultado = await api.pedirMasTiempo()
+    exito.value = resultado?.aviso || 'Tu pedido de más tiempo ya quedó anotado.'
+  } catch (fallo) {
+    exito.value = ''
+    sesion.estado.error = fallo.message
   }
 }
 
@@ -498,6 +515,9 @@ const ultimaActualizacion = computed(() =>
       :filtros-abiertos="esMovil ? filtrosAbiertos : filtrosVisibles"
       :filtros-activos="filtros.hayFiltros.value"
       :con-filtros="!sinFiltrosDelPanel"
+      :dias-restantes="diasDePlataforma"
+      :texto-plazo="avisoPlazo"
+      @pedir-tiempo="pedirMasTiempo"
       @alternar-tema="emit('alternar-tema')"
       @cerrar-sesion="emit('cerrar-sesion')"
       @alternar-panel="panelCuentaAbierto = !panelCuentaAbierto"

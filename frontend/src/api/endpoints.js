@@ -203,6 +203,9 @@ export const api = {
   /** Las vistas propias con su plazo. Cualquiera puede consultar las suyas. */
   misVistas: (usuarioId) => http.get(`/v1/accesos/usuarios/${usuarioId}`),
 
+  /** Avisa al superadministrador de que este usuario necesita más días. No alarga el plazo. */
+  pedirMasTiempo: () => http.post('/v1/accesos/solicitud'),
+
   // --- Contraseña propia --------------------------------------------------
   cambiarMiContrasena: (contrasenaActual, contrasenaNueva, sesionActual) =>
     http.post('/v1/auth/contrasena', {

@@ -96,6 +96,7 @@ class UsuarioConVistas:
     estado: str
     tablero: tuple[EstadoVista, ...]
     bloqueado_hasta: datetime | None = None
+    pidio_mas_tiempo: bool = False
 
     def como_diccionario(self) -> dict[str, Any]:
         vigentes = [fila for fila in self.tablero if fila.vigente]
@@ -112,6 +113,7 @@ class UsuarioConVistas:
             ),
             "vistas_vigentes": [str(fila.vista) for fila in vigentes],
             "vistas": [vista_a_diccionario(fila) for fila in self.tablero],
+            "pidio_mas_tiempo": self.pidio_mas_tiempo,
         }
 
 
@@ -145,10 +147,11 @@ async def conceder_acceso(
     negocio_solicitado: UUID | None = None,
     momento: datetime | None = None,
 ) -> ResultadoConcesion:
-    """Concede el acceso de un usuario a una vista durante el plazo elegido.
+    """Suma el plazo elegido al acceso que el usuario ya tiene en esa vista.
 
-    El plazo nuevo sustituye al anterior de esa vista, aunque sea más corto. El que elige los días
-    es el superadministrador, y lo que deja seleccionado es lo que tiene que cumplirse.
+    Si todavía le queda tiempo, los días se añaden al vencimiento actual: aplicar 7 días le da otros
+    7, no lo devuelve a una semana desde hoy. Si ya se le acabó, o no tenía acceso, el plazo empieza
+    ahora. Se deja una sola concesión vigente para que al recargar se vea la fecha de verdad.
     """
     _exigir_conceder(actor)
     negocio_id = negocio_objetivo(actor.rol, actor.negocio_id, negocio_solicitado)
@@ -165,10 +168,14 @@ async def conceder_acceso(
     if await repositorio.usuario(negocio_id=negocio_id, usuario_id=usuario_id) is None:
         raise NoEncontrado("El usuario no existe en este negocio.")
 
-    vence = plazo.calcular(instante)
-    # El plazo elegido es el plazo: se retiran las concesiones anteriores de esa vista y se guarda
-    # la nueva. Si solo se añadiera una fila, la más larga seguiría mandando y cambiar de 30 días a
-    # 7 no tendría efecto, ni al revés se vería al recargar.
+    actuales = concesion_vigente(
+        await repositorio.obtener(negocio_id=negocio_id, usuario_id=usuario_id), instante
+    )
+    base = instante
+    previa = actuales.get(vista)
+    if previa is not None and previa.vence_en > instante:
+        base = previa.vence_en
+    vence = plazo.calcular(base)
     await repositorio.retirar(
         negocio_id=negocio_id,
         usuario_id=usuario_id,
@@ -310,6 +317,7 @@ async def listar_usuarios(
                 estado=str(fila.get("estado", "")),
                 tablero=await _tablero_de(negocio_id, identificador, repositorio, instante),
                 bloqueado_hasta=fila.get("bloqueado_hasta"),
+                pidio_mas_tiempo=bool(fila.get("pidio_mas_tiempo")),
             )
         )
     return tuple(resultado)
@@ -374,6 +382,22 @@ async def exigir_acceso_a_vista(
             f"Este usuario no tiene acceso a la vista «{vista}». Pide al administrador que lo "
             "conceda."
         )
+
+
+async def pedir_mas_tiempo(actor: Actor, *, auditoria: Any) -> None:
+    """Deja constancia de que el usuario pide más días.
+
+    No alarga el plazo: eso lo decide el superadministrador al pulsar Aplicar.
+    """
+    await auditoria.auditar(
+        accion="solicitud_plazo",
+        negocio_id=actor.negocio_id,
+        usuario_id=actor.usuario_id,
+        entidad="usuario",
+        entidad_id=str(actor.usuario_id),
+        resultado="pedido",
+        detalle={"pedido": "mas_tiempo"},
+    )
 
 
 def _plazo_agotado(accesos: Any, momento: datetime) -> bool:

@@ -6,7 +6,7 @@
  * que es lo que se reconoce— y los botones pasan a ser de solo icono. Aplastarlo todo en una fila
  * estrecha deja botones de tres milímetros que no se pueden pulsar con el dedo.
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import IndicadorPresencia from '@/components/IndicadorPresencia.vue'
 
@@ -42,6 +42,10 @@ const props = defineProps({
    * sin efecto, que se lee como un fallo.
    */
   conFiltros: { type: Boolean, default: true },
+  /** Días que le quedan. `null` oculta el reloj: el superadministrador no tiene plazo. */
+  diasRestantes: { type: Number, default: null },
+  /** Texto del vencimiento, para el detalle al pasar el mouse. */
+  textoPlazo: { type: String, default: '' },
 })
 
 const emit = defineEmits([
@@ -50,7 +54,25 @@ const emit = defineEmits([
   'alternar-panel',
   'alternar-filtros',
   'cambiar-contrasena',
+  'pedir-tiempo',
 ])
+
+const relojAbierto = ref(false)
+const pedidoEnviado = ref(false)
+
+function alSalirReloj(evento) {
+  const destino = evento.relatedTarget
+  if (destino && evento.currentTarget.contains(destino)) return
+  relojAbierto.value = false
+}
+
+const claseReloj = computed(() => {
+  const dias = props.diasRestantes
+  if (dias === null) return ''
+  if (dias <= 1) return 'reloj--urgente'
+  if (dias <= 7) return 'reloj--aviso'
+  return 'reloj--holgado'
+})
 
 const iniciales = computed(() => {
   const fuente = props.nombre || props.email || '?'
@@ -114,6 +136,36 @@ const iniciales = computed(() => {
         <span aria-hidden="true">{{ tema === 'oscuro' ? '☀' : '☾' }}</span>
       </button>
 
+      <div
+        v-if="diasRestantes !== null"
+        class="reloj"
+        @mouseenter="relojAbierto = true"
+        @mouseleave="relojAbierto = false"
+        @focusin="relojAbierto = true"
+        @focusout="alSalirReloj"
+      >
+        <button
+          type="button"
+          class="reloj__boton"
+          :class="claseReloj"
+          :aria-expanded="relojAbierto"
+          aria-label="Tiempo de acceso que te queda"
+        >
+          <span aria-hidden="true">⏱</span>
+        </button>
+        <div v-if="relojAbierto" class="reloj__detalle superficie" role="status">
+          <p>{{ textoPlazo }}</p>
+          <button
+            type="button"
+            class="boton boton--secundario boton--pequeno"
+            :disabled="pedidoEnviado"
+            @click="pedidoEnviado = true; emit('pedir-tiempo')"
+          >
+            {{ pedidoEnviado ? 'Pedido enviado' : 'Pedir más tiempo' }}
+          </button>
+        </div>
+      </div>
+
       <div class="barra__cuenta">
         <button
           type="button"
@@ -165,6 +217,54 @@ const iniciales = computed(() => {
      tras una franja opaca. Es una guía de que hay más página. */
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--borde);
+}
+
+.reloj {
+  position: relative;
+}
+
+.reloj__boton {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--borde);
+  border-radius: var(--r-redondo);
+  background: var(--superficie);
+  font-size: var(--t-md);
+  cursor: pointer;
+}
+
+.reloj--holgado {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.reloj--aviso {
+  color: var(--aviso);
+  border-color: var(--aviso);
+}
+
+.reloj--urgente {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.reloj__detalle {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-2);
+  width: 240px;
+  padding: var(--e-3);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-2);
+  box-shadow: var(--sombra-2);
+  font-size: var(--t-sm);
+  line-height: 1.45;
 }
 
 .marca {

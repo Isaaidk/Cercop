@@ -87,14 +87,14 @@ function plazoDe(usuarioId) {
 
 /** El plazo que está guardado: el de la vista vigente que vence antes. */
 function plazoGuardado(usuario) {
-  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente && fila.plazo)
+  const vigentes = (usuario.vistas || []).filter((fila) => fila.vigente && fila.plazo)
   if (!vigentes.length) return null
   vigentes.sort((a, b) => new Date(a.vence_en) - new Date(b.vence_en))
   return vigentes[0].plazo
 }
 
 function venceDe(usuario) {
-  const fechas = (usuario.tablero || [])
+  const fechas = (usuario.vistas || [])
     .filter((fila) => fila.vigente && fila.vence_en)
     .map((fila) => fila.vence_en)
   if (!fechas.length) return null
@@ -102,7 +102,7 @@ function venceDe(usuario) {
 }
 
 function diasRestantes(usuario) {
-  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente)
+  const vigentes = (usuario.vistas || []).filter((fila) => fila.vigente)
   if (!vigentes.length) return null
   return Math.min(...vigentes.map((fila) => fila.dias_restantes ?? 0))
 }
@@ -252,8 +252,11 @@ async function cambiarEstado(empresa) {
 async function aplicarPlazo(usuario) {
   if (esSuperAdmin(usuario)) return
   const codigo = plazoDe(usuario.usuario_id)
-  const secciones = usuario.tablero || []
-  if (!secciones.length) return
+  const secciones = usuario.vistas || []
+  if (!secciones.length) {
+    error.value = 'Este usuario no tiene secciones a las que aplicar el plazo.'
+    return
+  }
 
   const negocioId = abierta.value
   ocupado.value = usuario.usuario_id
@@ -264,7 +267,7 @@ async function aplicarPlazo(usuario) {
       await api.concederVista(usuario.usuario_id, negocioId, vista.vista, codigo)
     }
     const etiqueta = plazosDisponibles.value.find((plazo) => plazo.codigo === codigo)?.etiqueta || codigo
-    aviso.value = `El plazo de ${usuario.email} quedó en ${etiqueta}. Empieza a contar desde ahora.`
+    aviso.value = `Se sumaron ${etiqueta} al acceso de ${usuario.email}. Si aún le quedaban días, se añaden a esa fecha.`
     await recargarUsuarios(negocioId)
   } catch (fallo) {
     error.value = fallo.message
@@ -497,8 +500,8 @@ async function eliminarUsuario(usuario) {
 
           <template v-else>
             <p class="plataforma__nota">
-              Elige el plazo y pulsa Aplicar para guardarlo. Empieza a contar desde ese momento. Cuando
-              se acaba, la cuenta queda suspendida. El superadministrador no tiene plazo.
+              Cada cuenta nace con 7 días. Aplicar suma el plazo elegido a lo que le queda: 7 días más
+              son otros 7, no una cuenta nueva. Cuando se acaba, la cuenta queda suspendida.
             </p>
 
             <div v-for="usuario in usuarios" :key="usuario.usuario_id" class="plataforma__cuenta">
@@ -516,6 +519,7 @@ async function eliminarUsuario(usuario) {
                   Bloqueada hasta las {{ horaCorta(usuario.bloqueado_hasta) }}
                 </span>
 
+                <span v-if="usuario.pidio_mas_tiempo" class="etiqueta etiqueta--aviso">Pidió más tiempo</span>
                 <span v-if="esSuperAdmin(usuario)" class="etiqueta etiqueta--acento">Sin plazo</span>
                 <label v-else class="plataforma__plazo">
                   <span>Plazo</span>
@@ -641,7 +645,7 @@ async function eliminarUsuario(usuario) {
 
               <div class="plataforma__vistas">
                 <button
-                  v-for="estadoVista in usuario.tablero"
+                  v-for="estadoVista in usuario.vistas"
                   :key="estadoVista.vista"
                   type="button"
                   class="boton boton--pequeno"

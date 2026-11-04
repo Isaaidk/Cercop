@@ -193,7 +193,19 @@ class RepositorioAccesosBd:
                         text(
                             """
                             SELECT id AS usuario_id, email, nombre, rol, estado, ultimo_acceso,
-                                   bloqueado_hasta
+                                   bloqueado_hasta,
+                                   EXISTS (
+                                     SELECT 1 FROM auditoria a
+                                     WHERE a.negocio_id = usuario.negocio_id
+                                       AND a.usuario_id = usuario.id
+                                       AND a.accion = 'solicitud_plazo'
+                                       AND a.ocurrido_en > COALESCE((
+                                         SELECT MAX(av.otorgado_en) FROM acceso_vista av
+                                         WHERE av.negocio_id = usuario.negocio_id
+                                           AND av.usuario_id = usuario.id
+                                           AND av.revocado_en IS NULL
+                                       ), '-infinity'::timestamptz)
+                                   ) AS pidio_mas_tiempo
                             FROM usuario
                             WHERE negocio_id = :negocio_id
                             ORDER BY nombre, email

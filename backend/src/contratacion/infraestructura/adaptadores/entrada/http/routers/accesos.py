@@ -18,6 +18,7 @@ from contratacion.aplicacion.casos_uso.gestionar_acceso import (
     conceder_acceso,
     consultar_accesos,
     listar_usuarios,
+    pedir_mas_tiempo,
     retirar_acceso,
 )
 from contratacion.dominio.acceso import (
@@ -32,6 +33,7 @@ from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     AccesosDep,
     ActorDep,
+    AuditoriaDep,
     ConsentimientoDep,
 )
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
@@ -99,6 +101,15 @@ async def usuarios(
     return cuerpo_json({"usuarios": [fila.como_diccionario() for fila in filas]})
 
 
+@router.post("/solicitud", summary="Pedir más tiempo al superadministrador")
+async def solicitar_plazo(
+    actor: ActorDep, auditoria: AuditoriaDep, _: ConsentimientoDep
+) -> dict[str, Any]:
+    """Anota el pedido. No cambia el vencimiento: quien suma días es el superadministrador."""
+    await pedir_mas_tiempo(actor, auditoria=auditoria)
+    return cuerpo_json({"pedido": True, "aviso": "Tu pedido de más tiempo ya quedó anotado."})
+
+
 @router.get("/usuarios/{usuario_id}", summary="Estado de las vistas de un usuario")
 async def tablero_usuario(
     usuario_id: UUID,
@@ -127,11 +138,9 @@ async def conceder(
     _: ConsentimientoDep,
     negocio: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, Any]:
-    """Concede el acceso durante el plazo pedido.
+    """Suma el plazo pedido al vencimiento que ya tiene.
 
-    Si el usuario ya tenía acceso, **no lo acorta**: se añade una concesión nueva y la vigente pasa
-    a ser la de vencimiento más lejano. Un administrador que renueva nunca puede quitarle días sin
-    querer a quien ya había pagado.
+    Si le quedan días, se añaden a esa fecha. Si el plazo ya se acabó, empieza a contar desde ahora.
     """
     resultado = await conceder_acceso(
         actor,
