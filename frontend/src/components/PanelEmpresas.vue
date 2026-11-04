@@ -82,7 +82,34 @@ const plazosDisponibles = computed(() => catalogo.value.plazos || [])
 const vistas = computed(() => catalogo.value.vistas || [])
 
 function plazoDe(usuarioId) {
-  return plazos.value[usuarioId] || plazosDisponibles.value[0]?.codigo || '30d'
+  return plazos.value[usuarioId] || plazosDisponibles.value[0]?.codigo || '7d'
+}
+
+/** El plazo que está guardado: el de la vista vigente que vence antes. */
+function plazoGuardado(usuario) {
+  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente && fila.plazo)
+  if (!vigentes.length) return null
+  vigentes.sort((a, b) => new Date(a.vence_en) - new Date(b.vence_en))
+  return vigentes[0].plazo
+}
+
+function venceDe(usuario) {
+  const fechas = (usuario.tablero || [])
+    .filter((fila) => fila.vigente && fila.vence_en)
+    .map((fila) => fila.vence_en)
+  if (!fechas.length) return null
+  return fechas.sort()[0]
+}
+
+function esSuperAdmin(usuario) {
+  return usuario.rol === 'super_admin'
+}
+
+function recordarPlazos(lista) {
+  for (const usuario of lista) {
+    plazos.value[usuario.usuario_id] =
+      plazoGuardado(usuario) || plazosDisponibles.value[0]?.codigo || '7d'
+  }
 }
 
 async function cargar() {
@@ -111,6 +138,7 @@ onMounted(async () => {
 async function recargarUsuarios(negocioId) {
   const datos = await api.usuariosDeNegocio(negocioId)
   usuarios.value = datos.usuarios || []
+  recordarPlazos(usuarios.value)
 }
 
 function abrirClave(usuario) {
@@ -176,11 +204,7 @@ async function alternarEmpresa(empresa) {
   try {
     const datos = await api.usuariosDeNegocio(empresa.negocio_id)
     usuarios.value = datos.usuarios || []
-    for (const usuario of usuarios.value) {
-      if (!plazos.value[usuario.usuario_id]) {
-        plazos.value[usuario.usuario_id] = plazosDisponibles.value[0]?.codigo || '30d'
-      }
-    }
+    recordarPlazos(usuarios.value)
   } catch (fallo) {
     error.value = fallo.message
   } finally {
@@ -198,6 +222,37 @@ async function cambiarEstado(empresa) {
       : await api.reactivarEmpresa(empresa.negocio_id)
     aviso.value = resultado.aviso
     await cargar()
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    ocupado.value = ''
+  }
+}
+
+/**
+ * Cambiar el desplegable guarda el plazo de las vistas que ya tiene.
+ *
+ * Antes el número solo vivía en el navegador: al recargar volvía a 7 días, que es la primera
+ * opción del catálogo, aunque en la base siguiera otro vencimiento. Ahora se escribe en cada
+ * vista vigente y, al volver a cargar, el desplegable sale de lo guardado.
+ */
+async function aplicarPlazo(usuario, codigo) {
+  if (esSuperAdmin(usuario)) return
+  plazos.value[usuario.usuario_id] = codigo
+  const vigentes = (usuario.tablero || []).filter((fila) => fila.vigente)
+  if (!vigentes.length) return
+
+  const negocioId = abierta.value
+  ocupado.value = usuario.usuario_id
+  error.value = ''
+  aviso.value = ''
+  try {
+    for (const vista of vigentes) {
+      await api.concederVista(usuario.usuario_id, negocioId, vista.vista, codigo)
+    }
+    const etiqueta = plazosDisponibles.value.find((plazo) => plazo.codigo === codigo)?.etiqueta || codigo
+    aviso.value = `El plazo de ${usuario.email} quedó en ${etiqueta}. Empieza a contar desde ahora.`
+    await recargarUsuarios(negocioId)
   } catch (fallo) {
     error.value = fallo.message
   } finally {
@@ -227,6 +282,7 @@ async function alternarVista(usuario, estadoVista) {
     }
     const datos = await api.usuariosDeNegocio(negocioId)
     usuarios.value = datos.usuarios || []
+    recordarPlazos(usuarios.value)
   } catch (fallo) {
     error.value = fallo.message
   } finally {
@@ -428,8 +484,8 @@ async function eliminarUsuario(usuario) {
 
           <template v-else>
             <p class="plataforma__nota">
-              Pulsa una vista para concederla o quitarla. El plazo se aplica al conceder, y renovar
-              nunca acorta lo que ya estaba concedido.
+              El plazo es el que queda guardado. Al cambiarlo empieza a contar desde ahora y, cuando
+              vence, el usuario deja de ver esas secciones. El superadministrador no tiene plazo.
             </p>
 
             <div v-for="usuario in usuarios" :key="usuario.usuario_id" class="plataforma__cuenta">
@@ -447,17 +503,20 @@ async function eliminarUsuario(usuario) {
                   Bloqueada hasta las {{ horaCorta(usuario.bloqueado_hasta) }}
                 </span>
 
-                <label class="plataforma__plazo">
+                <span v-if="esSuperAdmin(usuario)" class="etiqueta etiqueta--acento">Sin plazo</span>
+                <label v-else class="plataforma__plazo">
                   <span>Plazo</span>
                   <select
                     class="seleccion"
                     :value="plazoDe(usuario.usuario_id)"
-                    @change="plazos[usuario.usuario_id] = $event.target.value"
+                    :disabled="ocupado === usuario.usuario_id"
+                    @change="aplicarPlazo(usuario, $event.target.value)"
                   >
                     <option v-for="plazo in plazosDisponibles" :key="plazo.codigo" :value="plazo.codigo">
                       {{ plazo.etiqueta }}
                     </option>
                   </select>
+                  <span v-if="venceDe(usuario)">vence {{ fechaCorta(venceDe(usuario)) }}</span>
                 </label>
 
                 <button

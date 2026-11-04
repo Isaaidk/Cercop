@@ -59,12 +59,13 @@ from contratacion.aplicacion.sesiones_vivas import (
     abrir,
     seguir,
 )
-from contratacion.dominio.acceso import Vista
+from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Vista
 from contratacion.dominio.errores import (
     CambioDeContrasenaPendiente,
     EmpresaSuspendida,
     SesionRevocada,
 )
+from contratacion.dominio.roles import es_de_plataforma
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion
 from contratacion.infraestructura.adaptadores.salida.archivos.local import obtener_almacen
 from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
@@ -510,7 +511,14 @@ async def vistas_del_actor(actor: ActorDep, accesos: AccesosDep) -> frozenset[Vi
     guardaban y se podían consultar, pero no se exigían al leer. El permiso se resuelve con una
     caché de un minuto, y retirar un acceso sube la generación, así que el cambio se nota en la
     petición siguiente y no cuando caduque el caché.
+
+    El superadministrador no tiene plazo. Si se le aplicara el mismo vencimiento que a un cliente,
+    el día que caducara su propia concesión se quedaría fuera del panel que usa para renovar a los
+    demás.
     """
+    if es_de_plataforma(actor.rol):
+        return frozenset(VISTAS_DEL_CATALOGO)
+
     return await vistas_vigentes(
         negocio_id=actor.negocio_id,
         usuario_id=actor.usuario_id,

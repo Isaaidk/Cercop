@@ -145,7 +145,11 @@ async def conceder_acceso(
     negocio_solicitado: UUID | None = None,
     momento: datetime | None = None,
 ) -> ResultadoConcesion:
-    """Concede (o extiende) el acceso de un usuario a una vista durante un plazo."""
+    """Concede el acceso de un usuario a una vista durante el plazo elegido.
+
+    El plazo nuevo sustituye al anterior de esa vista, aunque sea más corto. El que elige los días
+    es el superadministrador, y lo que deja seleccionado es lo que tiene que cumplirse.
+    """
     _exigir_conceder(actor)
     negocio_id = negocio_objetivo(actor.rol, actor.negocio_id, negocio_solicitado)
     vista = vista_desde_codigo(vista_codigo)
@@ -162,6 +166,16 @@ async def conceder_acceso(
         raise NoEncontrado("El usuario no existe en este negocio.")
 
     vence = plazo.calcular(instante)
+    # El plazo elegido es el plazo: se retiran las concesiones anteriores de esa vista y se guarda
+    # la nueva. Si solo se añadiera una fila, la más larga seguiría mandando y cambiar de 30 días a
+    # 7 no tendría efecto, ni al revés se vería al recargar.
+    await repositorio.retirar(
+        negocio_id=negocio_id,
+        usuario_id=usuario_id,
+        vista=vista,
+        momento=instante,
+        retirado_por=actor.usuario_id,
+    )
     await repositorio.conceder(
         negocio_id=negocio_id,
         usuario_id=usuario_id,
