@@ -610,9 +610,8 @@ const ultimaActualizacion = computed(() =>
           <p>{{ textoCierre(pestana) }}</p>
         </section>
 
-        <!-- Se oculta y no se desmonta: al renovar el plazo las gráficas vuelven sin reconstruirse. -->
-        <div v-show="!pestanaCerrada(pestana)" class="panel__contenido">
-        <section v-show="pestana === 'resumen'" class="resumen">
+        <!-- `v-show` y no `v-if`: al renovar el plazo las gráficas vuelven sin reconstruirse. -->
+        <section v-show="pestana === 'resumen' && !pestanaCerrada('resumen')" class="resumen">
           <!-- El selector de gráficas. Va aquí arriba y no escondido en un menú porque lo que
                decide es qué hay debajo; un ajuste que cambia la pantalla tiene que verse en la
                pantalla que cambia. -->
@@ -655,7 +654,7 @@ const ultimaActualizacion = computed(() =>
           </div>
         </section>
 
-        <section v-show="pestana === 'mapa'" class="panel__pila">
+        <section v-show="pestana === 'mapa' && !pestanaCerrada('mapa')" class="panel__pila">
           <!--
             El selector de familia, dentro del mapa.
 
@@ -737,7 +736,7 @@ const ultimaActualizacion = computed(() =>
           <PanelEmpresas />
         </section>
 
-        <section v-show="pestana === 'infimas'">
+        <section v-show="pestana === 'infimas' && !pestanaCerrada('infimas')">
           <TablaRegistros :titulo="TITULO_INFIMAS">
             <template #paginacion>
               <Paginacion
@@ -751,7 +750,7 @@ const ultimaActualizacion = computed(() =>
           </TablaRegistros>
         </section>
 
-        <section v-show="pestana === 'ofertas'">
+        <section v-show="pestana === 'ofertas' && !pestanaCerrada('ofertas')">
           <OfertasTab />
         </section>
 
@@ -764,7 +763,6 @@ const ultimaActualizacion = computed(() =>
             <GestionUsuarios />
           </div>
         </section>
-        </div>
 
         <footer class="panel__pie">
           <span>{{ ultimaActualizacion }}</span>
@@ -964,11 +962,6 @@ const ultimaActualizacion = computed(() =>
 
 .pestanas__boton--cerrada {
   opacity: 0.6;
-}
-
-/* El envoltorio no debe cambiar la rejilla del contenido: solo sirve para ocultarlo entero. */
-.panel__contenido {
-  display: contents;
 }
 
 .panel__vencimiento {
