@@ -15,6 +15,7 @@ en la cola pueden quedar actas viejas pedidas antes de la regla: se cierran sin 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -87,6 +88,36 @@ async def atender_uno(repositorio: RepositorioTdr, carpeta: Path) -> bool:
     return await atender_lote(repositorio, carpeta, tamano=1) > 0
 
 
+async def archivo_local(repositorio: RepositorioTdr, fila: dict[str, Any]) -> Path | None:
+    """Ruta del archivo de un pedido listo en **este** servicio, o None si ya no existe.
+
+    Si el archivo no está en el disco (lo bajó el worker en otro contenedor), se trae la copia de
+    la base por su huella y se escribe en la misma ruta. La huella se comprueba: lo que se escribe
+    es exactamente lo que bajó el worker.
+    """
+    ruta_cruda = str(fila.get("ruta") or "")
+    if not ruta_cruda:
+        return None
+    ruta = Path(ruta_cruda)
+    if ruta.is_file():
+        return ruta
+    huella = str(fila.get("sha256") or "")
+    if not huella or ruta.name != huella:
+        return None
+    contenido = await repositorio.contenido_archivo(huella)
+    if contenido is None or hashlib.sha256(contenido).hexdigest() != huella:
+        return None
+
+    def _escribir() -> None:
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        temporal = ruta.with_name(f".copia-{huella[:16]}")
+        temporal.write_bytes(contenido)
+        temporal.replace(ruta)
+
+    await asyncio.to_thread(_escribir)
+    return ruta
+
+
 async def _acta_superada(repositorio: RepositorioTdr, pedido: dict[str, Any]) -> bool:
     """Es un acta y el proceso publica otra más reciente. Solo consulta la base si es un acta."""
     nombre = str(pedido.get("nombre") or "")
@@ -122,6 +153,9 @@ async def _atender(
             # (doc 38). Las redirecciones se comprueban una a una dentro de `descargar_a`.
             dominios=obtener_ajustes().anexos_dominios_permitidos,
         )
+        # Copia en la base: el API no ve el disco del worker (servicios distintos en Railway).
+        contenido = await asyncio.to_thread(ruta.read_bytes)
+        await repositorio.guardar_archivo(sha, contenido)
         await repositorio.marcar_listo(
             pedido["id"],
             sha256=sha,

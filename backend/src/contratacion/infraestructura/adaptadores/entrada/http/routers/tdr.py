@@ -16,6 +16,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from contratacion.aplicacion.casos_uso.atender_tdr import archivo_local
 from contratacion.dominio.acceso import fuentes_para_vistas
 from contratacion.dominio.anexos import elegir_anexos
 from contratacion.dominio.documentos import parece_enlace
@@ -147,8 +148,8 @@ async def archivo(
     fila = await tdr.uno(documento_id)
     if fila is None or fila["registro_id"] != registro_id or fila["estado"] != "listo":
         raise HTTPException(status_code=404, detail="El TDR todavía no está listo.")
-    ruta = Path(str(fila["ruta"]))
-    if not ruta.is_file():
+    ruta = await archivo_local(tdr, fila)
+    if ruta is None:
         raise HTTPException(status_code=404, detail="El archivo temporal ya venció.")
     return FileResponse(
         ruta,

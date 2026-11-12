@@ -222,6 +222,37 @@ class RepositorioTdr:
                 },
             )
 
+    async def guardar_archivo(self, sha256: str, contenido: bytes) -> None:
+        """Copia del archivo en la base, para el servicio que no comparte disco con el worker.
+
+        De paso borra las copias de más de dos días: el pedido vence a las 24 horas y, al vencer,
+        se vuelve a bajar.
+        """
+        async with sin_contexto(self._motor) as conexion:
+            await conexion.execute(
+                text(
+                    """
+                    INSERT INTO archivo_tdr (sha256, contenido, tamano_bytes)
+                    VALUES (:sha, :contenido, :tamano)
+                    ON CONFLICT (sha256) DO UPDATE SET guardado_en = now()
+                    """
+                ),
+                {"sha": sha256, "contenido": contenido, "tamano": len(contenido)},
+            )
+            await conexion.execute(
+                text("DELETE FROM archivo_tdr WHERE guardado_en < now() - interval '2 days'")
+            )
+
+    async def contenido_archivo(self, sha256: str) -> bytes | None:
+        async with sin_contexto(self._motor) as conexion:
+            contenido = (
+                await conexion.execute(
+                    text("SELECT contenido FROM archivo_tdr WHERE sha256 = :sha"),
+                    {"sha": sha256},
+                )
+            ).scalar_one_or_none()
+        return bytes(contenido) if contenido is not None else None
+
     async def marcar_error(self, documento_id: UUID, error: str) -> None:
         async with sin_contexto(self._motor) as conexion:
             await conexion.execute(

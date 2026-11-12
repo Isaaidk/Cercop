@@ -12,6 +12,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from contratacion.aplicacion.actor import Actor
+from contratacion.aplicacion.casos_uso.atender_tdr import archivo_local
 from contratacion.aplicacion.casos_uso.ver_mercado import ver_entidades, ver_proveedores
 from contratacion.aplicacion.casos_uso.ver_radar import ver_radar
 from contratacion.aplicacion.creditos_actor import creditos_de
@@ -450,8 +451,8 @@ async def preparar_desde_codigo(
     for fila in filas:
         if fila["estado"] != "listo":
             continue
-        ruta = Path(str(fila.get("ruta") or ""))
-        if not ruta.is_file():
+        ruta = await archivo_local(tdr, fila)
+        if ruta is None:
             await tdr.reabrir(fila["id"])
             reabierto = True
             continue

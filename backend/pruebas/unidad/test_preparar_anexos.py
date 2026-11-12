@@ -103,6 +103,9 @@ class _Tdr:
     async def reabrir(self, documento_id: UUID) -> None:
         return None
 
+    async def contenido_archivo(self, sha256: str) -> bytes | None:
+        return None
+
     async def auditar(self, *args: Any) -> None:
         return None
 

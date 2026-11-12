@@ -89,10 +89,13 @@ def upgrade() -> None:
             ('usuario', 'tdr.ver'),
             ('usuario', 'vistas.necesidades');
 
+        -- Primero se quita el CHECK de los cuatro roles viejos: con él puesto, traducir
+        -- 'admin_negocio' a 'dueno_empresa' lo viola (falló así en producción).
+        ALTER TABLE usuario DROP CONSTRAINT IF EXISTS usuario_rol_check;
+
         UPDATE usuario SET rol = 'dueno_empresa' WHERE rol = 'admin_negocio';
         UPDATE usuario SET rol = 'usuario' WHERE rol IN ('consultor', 'lector');
 
-        ALTER TABLE usuario DROP CONSTRAINT IF EXISTS usuario_rol_check;
         ALTER TABLE usuario
             ADD CONSTRAINT usuario_rol_fk FOREIGN KEY (rol) REFERENCES rol(codigo);
         """
