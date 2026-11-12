@@ -30,6 +30,20 @@ class RepositorioMantenimientoBd:
     def __init__(self, motor: AsyncEngine) -> None:
         self._motor = motor
 
+    async def asegurar_particiones(self) -> None:
+        """Crea las particiones de los próximos meses, si la función ya está migrada.
+
+        Un fallo aquí no puede tumbar el mantenimiento: sin la función (base todavía en una
+        revisión anterior) o con filas ya metidas en la partición predeterminada, se sigue con la
+        purga. Las filas nuevas de un mes sin partición caen en la predeterminada, que sigue
+        existiendo.
+        """
+        try:
+            async with self._motor.begin() as conexion:
+                await conexion.execute(text("SELECT asegurar_particiones()"))
+        except Exception:  # noqa: BLE001 - sin la función, el mantenimiento sigue
+            return
+
     async def contar_vencimientos(self, *, desde: datetime, hasta: datetime) -> int:
         async with self._motor.connect() as conexion:
             resultado = await conexion.execute(

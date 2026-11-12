@@ -87,6 +87,98 @@ export const api = {
 
   vaciarCpc: () => http.del('/v1/cpc'),
 
+  verPerfil: () => http.get('/v1/empresa/perfil'),
+  guardarPerfil: (campos) => http.put('/v1/empresa/perfil', campos),
+  consultarRuc: (ruc) => http.post('/v1/empresa/perfil/consulta-ruc', { ruc }),
+  consultarContratos: (ruc, razon_social) =>
+    http.post('/v1/empresa/perfil/consulta-contratos', { ruc, razon_social }),
+  // El RUP no tiene consulta pública: se sube el certificado en PDF impreso desde el SOCE.
+  leerRup: (archivo) => http.enviarArchivo('/v1/empresa/perfil/leer-rup', archivo),
+  // Lo mismo con el texto ya sacado en el navegador por OCR (RUP escaneado o foto).
+  leerRupTexto: (texto) => http.post('/v1/empresa/perfil/leer-rup-texto', { texto }),
+  aplicarRup: (eleccion) => http.post('/v1/empresa/perfil/aplicar-rup', eleccion),
+  agregarPerfil: (coleccion, campos) => http.post(`/v1/empresa/perfil/${coleccion}`, campos),
+  quitarPerfil: (coleccion, id) => http.del(`/v1/empresa/perfil/${coleccion}/${id}`),
+
+  verRadar: () => http.get('/v1/radar'),
+  verPropuestas: (parametros = {}) => http.get('/v1/propuestas', parametros),
+  listarBusquedas: () => http.get('/v1/busquedas'),
+  guardarBusqueda: (nombre, parametros) => http.post('/v1/busquedas', { nombre, parametros }),
+  quitarBusqueda: (id) => http.del(`/v1/busquedas/${id}`),
+  listarAlertas: () => http.get('/v1/alertas'),
+  crearAlerta: (campos) => http.post('/v1/alertas', campos),
+  previsualizarAlerta: (campos) => http.post('/v1/alertas/vista-previa', campos),
+  // «Mis ofertas»: las proformas hechas, por etapa.
+  misOfertas: () => http.get('/v1/mis-ofertas'),
+  moverOferta: (id, campos) => http.patch(`/v1/mis-ofertas/${id}`, campos),
+  quitarAlerta: (id) => http.del(`/v1/alertas/${id}`),
+  listarAvisos: () => http.get('/v1/avisos'),
+  leerAviso: (id) => http.post(`/v1/avisos/${id}/leido`),
+
+  adjudicaciones: (parametros) => http.get('/v1/mercado/adjudicaciones', parametros),
+  preciosMercado: (parametros) => http.get('/v1/mercado/precios', parametros),
+  proveedoresMercado: (parametros) => http.get('/v1/mercado/proveedores', parametros),
+  entidadesMercado: (parametros) => http.get('/v1/mercado/entidades', parametros),
+  demandaMercado: (parametros) => http.get('/v1/mercado/demanda', parametros),
+  compararMercado: (ids) => http.post('/v1/mercado/comparar', { ids }),
+
+  leerDocumento: (archivo) => http.enviarArchivo('/v1/documentos/leer', archivo),
+  lecturas: () => http.get('/v1/documentos/lecturas'),
+  resumenDocumento: (campos) => http.post('/v1/documentos/resumen', campos),
+  estadoDesdeCodigo: (codigo) => http.get('/v1/documentos/desde-codigo/estado', { codigo }),
+  prepararDesdeCodigo: (codigo, reintentar = false) =>
+    http.post('/v1/documentos/desde-codigo', { codigo, reintentar }),
+  requisitosDocumento: (lecturaId) =>
+    http.get('/v1/documentos/requisitos', lecturaId ? { lectura_id: lecturaId } : {}),
+  marcarRequisito: (id, estado) => http.post(`/v1/documentos/requisitos/${id}`, { estado }),
+  crearProforma: (campos) => http.post('/v1/documentos/proformas', campos),
+  // Títulos ya usados: el panel avisa antes de guardar, porque no se pueden repetir.
+  titulosProformas: () => http.get('/v1/documentos/proformas/titulos'),
+  crearCotizacion: (campos) => http.post('/v1/documentos/cotizaciones', campos),
+  crearFicha: (campos) => http.post('/v1/documentos/fichas', campos),
+  contrastarDocumento: (lecturaId, proformaId) =>
+    http.post('/v1/documentos/contrastar', { lectura_id: lecturaId, proforma_id: proformaId }),
+  preguntar: (pregunta, lecturaId = null) =>
+    http.post('/v1/documentos/preguntar', { pregunta, lectura_id: lecturaId }),
+  bajarDocumento: (id, formato) =>
+    http.descargar(`/v1/documentos/proformas/${id}/${formato}`, { aceptar: '*/*' }),
+  generarOferta: (campos) => http.post('/v1/documentos/generar', campos),
+  verificarDocumento: (id) => http.get(`/v1/documentos/proformas/${id}/verificacion`),
+  // El servidor entrega los datos; el PDF lo arma el navegador y el servidor solo lo firma.
+  verDocumento: (id) => http.get(`/v1/documentos/proformas/${id}`),
+  firmarPdf: (id, pdf, cajas, certificado, clave, lugar = '') => {
+    const formulario = new FormData()
+    formulario.append('pdf', pdf, 'proforma.pdf')
+    formulario.append('cajas', JSON.stringify(cajas))
+    formulario.append('certificado', certificado, certificado.name)
+    formulario.append('clave', clave)
+    formulario.append('lugar', lugar)
+    return http.enviarFormularioYBajar(`/v1/documentos/proformas/${id}/firmar-pdf`, formulario)
+  },
+  // El certificado y la clave van solo en esta petición; el servidor no los guarda.
+  firmarDocumento: (id, certificado, clave, lugar = '') => {
+    const formulario = new FormData()
+    formulario.append('certificado', certificado, certificado.name)
+    formulario.append('clave', clave)
+    formulario.append('lugar', lugar)
+    return http.enviarFormularioYBajar(`/v1/documentos/proformas/${id}/firmar`, formulario)
+  },
+  verCreditos: () => http.get('/v1/ia/creditos'),
+  comprarCreditos: (paquete) => http.post('/v1/ia/compras', { paquete }),
+  otorgarCreditosIa: (negocioId, cantidad, motivo) =>
+    http.post(`/v1/plataforma/ia/otorgar/${negocioId}`, { cantidad, motivo }),
+  comprasPendientesIa: () => http.get('/v1/plataforma/ia/compras'),
+  resolverCompraIa: (negocioId, compraId, pagada) =>
+    http.post(`/v1/plataforma/ia/compras/${negocioId}/${compraId}`, { pagada }),
+
+  pedirTdr: (registroId) => http.post(`/v1/tdr/${registroId}`),
+  estadoTdr: (registroId) => http.get(`/v1/tdr/${registroId}`),
+  rellenoTdr: (registroId) => http.get(`/v1/tdr/${registroId}/relleno`),
+  // El archivo va con el token. Un iframe con la URL a pelo no manda Authorization y el visor
+  // recibiría un 401.
+  archivoTdr: (registroId, documentoId) =>
+    http.descargar(`/v1/tdr/${registroId}/archivo/${documentoId}`, { aceptar: '*/*' }),
+
   // --- Datos ---------------------------------------------------------------
   /**
    * La versión de los datos: un solo número que sube cuando la ingesta escribe algo.
@@ -170,6 +262,8 @@ export const api = {
   requisitosDeRegistro: () => http.get('/v1/registro/requisitos'),
 
   registrarEmpresa: (datos) => http.post('/v1/registro/empresa', datos),
+  // Respaldo sin sesión de la consulta al SRI del registro (el navegador la intenta primero).
+  consultarRucPublico: (ruc) => http.post('/v1/registro/consulta-ruc', { ruc }),
 
   // --- Empresa propia ------------------------------------------------------
   miEmpresa: () => http.get('/v1/negocio'),
@@ -284,4 +378,24 @@ export const api = {
 
   retirarVista: (usuarioId, negocioId, vista) =>
     http.del(`/v1/accesos/usuarios/${usuarioId}/vistas/${vista}`, { negocio: negocioId }),
+
+  /**
+   * Anexos para la proforma de un proceso con oferta (OCDS): TDR, pliego, especificaciones y solo
+   * la última acta, más el monto del proceso con su fuente. Consulta los datos abiertos del SERCOP
+   * (una petición, recordada media hora); para una ínfima responde 400.
+   */
+  anexosDeProceso: (registroId) => http.get(`/v1/procesos/${registroId}/anexos`),
+
+  // ------------------------------------------------------------------ Asistente (chat con IA)
+  /** Saludo, resumen, sugerencias, conversaciones guardadas, la última abierta y los créditos de IA. */
+  asistenteInicio: () => http.get('/v1/asistente/inicio'),
+  asistenteConversaciones: () => http.get('/v1/asistente/conversaciones'),
+  /** Una conversación con sus mensajes. */
+  asistenteConversacion: (id) => http.get(`/v1/asistente/conversaciones/${encodeURIComponent(id)}`),
+  renombrarConversacion: (id, titulo) =>
+    http.patch(`/v1/asistente/conversaciones/${encodeURIComponent(id)}`, { titulo }),
+  borrarConversacion: (id) => http.del(`/v1/asistente/conversaciones/${encodeURIComponent(id)}`),
+  /** Envía un mensaje; sin `conversacion_id` el servidor abre una conversación nueva. */
+  asistenteEnviar: ({ texto, conversacion_id = null }) =>
+    http.post('/v1/asistente/mensajes', { texto, conversacion_id }),
 }

@@ -128,7 +128,7 @@ def test_rechaza_un_token_sin_firma() -> None:
         "iss": "contratacion-api",
         "aud": "contratacion-web",
     }
-    sin_firma = jwt.encode(contenido, None, algorithm="none")
+    sin_firma = jwt.encode(contenido, None, algorithm="none")  # type: ignore[arg-type]
 
     with pytest.raises(SinPermiso):
         TokensJwt(SECRETO).verificar(sin_firma, TipoToken.ACCESO)

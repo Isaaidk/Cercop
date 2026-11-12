@@ -369,7 +369,8 @@ a {
   background: var(--superficie);
   border: 1px solid var(--borde);
   border-radius: var(--r-3);
-  box-shadow: var(--sombra-1);
+  /* Sin sombra en reposo: la guía separa con borde y espacio, y deja la sombra para el ratón. */
+  box-shadow: none;
   transition:
     box-shadow var(--normal) var(--curva),
     transform var(--normal) var(--curva),
@@ -531,6 +532,141 @@ a {
   color: var(--texto-tenue);
 }
 
+/*
+ * Campos sin clase propia. Muchos formularios del panel escriben `<input>` a secas; con esto se ven
+ * igual que `.entrada` sin tocar cada componente. `:where` deja la especificidad en cero, así que
+ * cualquier clase de un componente sigue mandando.
+ */
+:where(
+    input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color']),
+    select,
+    textarea
+  ) {
+  min-height: 2.5rem;
+  padding: 0.55rem 0.8rem;
+  background: var(--superficie);
+  border: 1px solid var(--borde-fuerte);
+  border-radius: var(--r-2);
+  font-size: var(--t-base);
+  color: var(--texto);
+  box-shadow: inset 0 1px 2px rgba(19, 28, 51, 0.04);
+  transition:
+    border-color var(--rapido) var(--curva),
+    box-shadow var(--rapido) var(--curva),
+    background-color var(--rapido) var(--curva);
+}
+
+:where(textarea:not([class])) {
+  min-height: 5rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+:where(select:not([class])) {
+  appearance: none;
+  padding-right: 2.2rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--texto-suave) 50%),
+    linear-gradient(135deg, var(--texto-suave) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 52%,
+    calc(100% - 11px) 52%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+:where(input, select, textarea):not([class]):hover:not(:disabled) {
+  border-color: var(--acento);
+}
+
+:where(input, select, textarea):not([class]):focus {
+  outline: none;
+  border-color: var(--acento);
+  box-shadow: 0 0 0 3px var(--acento-suave);
+}
+
+:where(input, textarea):not([class])::placeholder {
+  color: var(--texto-tenue);
+}
+
+:where(input, select, textarea):not([class]):disabled {
+  background-color: var(--superficie-3);
+  color: var(--texto-tenue);
+  cursor: not-allowed;
+}
+
+:where(input[type='checkbox'], input[type='radio']):not([class]) {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--acento);
+  cursor: pointer;
+}
+
+:where(input[type='file']):not([class]) {
+  width: 100%;
+  padding: var(--e-4);
+  border: 1.5px dashed var(--borde-fuerte);
+  border-radius: var(--r-3);
+  background: var(--superficie-2);
+  font-size: var(--t-sm);
+  color: var(--texto-suave);
+  cursor: pointer;
+}
+
+:where(input[type='file']):not([class]):hover {
+  border-color: var(--acento);
+  background: var(--acento-tenue);
+}
+
+:where(input[type='file']):not([class])::file-selector-button {
+  margin-right: var(--e-3);
+  padding: 0.45rem 0.9rem;
+  border: 0;
+  border-radius: var(--r-2);
+  background: var(--acento);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/*
+ * Formulario en rejilla con la etiqueta encima de cada campo. Las columnas se reparten solas según
+ * el ancho, así la misma pieza sirve en escritorio y en móvil.
+ */
+.formulario {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--e-3) var(--e-4);
+  align-items: end;
+}
+
+.formulario__campo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.formulario__campo > span {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--texto-suave);
+  letter-spacing: 0.01em;
+}
+
+.formulario__campo--ancho {
+  grid-column: 1 / -1;
+}
+
+.formulario__acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-2);
+  align-items: center;
+}
+
 /* Etiquetas y distintivos */
 .etiqueta {
   display: inline-flex;
@@ -567,10 +703,14 @@ a {
 }
 
 /*
- El semáforo del plazo de proformas. Es global y no de un componente porque lo pintan dos sitios
- —la tabla de registros y el listado de la provincia bajo el mapa— y tiene que verse igual en los
- dos. Tres colores y no uno que se aclara: lo que hace falta es mirar la columna y ver de un golpe
- cuáles están a punto de cerrarse, sin leer los números.
+ La insignia del plazo de proformas. Es global y no de un componente porque la pinta más de una
+ pantalla y tiene que verse igual en todas.
+
+ Desde el rediseño 2026-11 (ver docs/35-guia-de-diseno-del-panel.md) el plazo holgado va en gris:
+ el color se reserva para lo que pide actuar —ámbar si cierra esta semana, rojo si ya casi no hay
+ tiempo—. Un listado entero en verde no informa de nada y, según el cliente, se veía «feísimo».
+ Las ínfimas cuantías usan `insigniaDePlazo` (utils/plazo.js) con `.etiqueta`, que pone rojo solo
+ a lo que cierra hoy o mañana.
 */
 .plazo {
   display: inline-flex;
@@ -586,8 +726,8 @@ a {
 }
 
 .plazo--verde {
-  background: var(--ok-suave);
-  color: var(--ok);
+  background: var(--superficie-3);
+  color: var(--texto-suave);
 }
 .plazo--amarillo {
   background: var(--aviso-suave);
@@ -717,3 +857,11 @@ a {
      escritorio 1024px – 1439px
      ancho      ≥ 1440px
    ------------------------------------------------------------------------- */
+
+
+/* Ayuda plegable: el texto explicativo largo vive detrás de un «?» y no empuja el contenido. */
+.ayuda { font-size: var(--t-xs); color: var(--texto-suave); }
+.ayuda > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--acento-fuerte); font-weight: 650; cursor: pointer; list-style: none; }
+.ayuda > summary::-webkit-details-marker { display: none; }
+.ayuda > summary::before { content: '?'; display: inline-grid; place-items: center; width: 1.15rem; height: 1.15rem; border-radius: 50%; background: var(--acento-suave); font-size: 0.7rem; font-weight: 700; }
+.ayuda > p { margin-top: var(--e-2); line-height: 1.5; }

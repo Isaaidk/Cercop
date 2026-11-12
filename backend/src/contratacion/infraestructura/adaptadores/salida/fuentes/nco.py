@@ -23,9 +23,12 @@ from contratacion.dominio.cpc import ItemCpc
 from contratacion.dominio.ingesta import Presupuesto, clave_natural
 from contratacion.infraestructura.adaptadores.salida.fuentes.limitador import LimitadorTasa
 from contratacion.infraestructura.adaptadores.salida.fuentes.nco_detalle import (
+    campos_que_pide,
+    parsear_documentos,
     parsear_items,
     token_de_enlace,
 )
+from contratacion.infraestructura.adaptadores.salida.fuentes.salidas import PoolSalidas
 
 CODIGO = "NCO"
 ENDPOINT = (
@@ -60,19 +63,17 @@ class FuenteNco:
 
     codigo = CODIGO
 
-    def __init__(self, limitador: LimitadorTasa | None = None) -> None:
+    def __init__(self, limitador: LimitadorTasa | PoolSalidas | None = None) -> None:
         # El servidor de necesidades descarta en silencio las conexiones que llegan de centros de
-        # datos: se ve como `ConnectTimeout` tras dos minutos de espera, sin que llegue a ver la
-        # petición. Los datos abiertos (OCDS) no lo hacen, así que **solo esta fuente** sale por el
-        # proxy, y únicamente si `NCO_PROXY_URL` está definida. Sin ella —o vacía— no hay proxy y
-        # todo se comporta como antes.
-        #
-        # La decisión se toma aquí, en la fuente, y no dentro del limitador: aquel módulo se ocupa
-        # del transporte y no tiene por qué saber qué fuente lo está usando.
-        self._limitador = limitador or LimitadorTasa(
-            cabeceras=CABECERAS,
-            proxy_url=os.getenv("NCO_PROXY_URL") or None,
-        )
+        # datos. Solo esta fuente sale por proxy. `NCO_PROXY_URLS` admite varias salidas, separadas
+        # por coma; si no está, se usa `NCO_PROXY_URL`. Sin ninguna, el desarrollo
+        # local sale directo.
+        if limitador is not None:
+            self._limitador = limitador
+            return
+        crudas = os.getenv("NCO_PROXY_URLS") or os.getenv("NCO_PROXY_URL") or ""
+        urls = [url.strip() for url in crudas.split(",") if url.strip()]
+        self._limitador = PoolSalidas.desde_urls(urls, cabeceras=CABECERAS)
 
     async def extraer(self, desde: datetime, presupuesto: Presupuesto) -> ResultadoExtraccion:
         """Trae el listado completo. `desde` no se usa: la fuente no filtra por fecha."""
@@ -145,6 +146,27 @@ class FuenteNco:
         if html is None:
             return None
         return parsear_items(html)
+
+    async def detalle(
+        self, enlace: str | None, presupuesto: Presupuesto
+    ) -> tuple[tuple[ItemCpc, ...], tuple[dict[str, str], ...]] | None:
+        """Ítems y documentos de la misma ficha. Una petición, dos lecturas."""
+        token = token_de_enlace(enlace)
+        if not token or not presupuesto.consumir():
+            return None
+        html = await self._limitador.solicitar_texto(
+            ENDPOINT_DETALLE,
+            {"id": token, "op": 0},
+            etiqueta="NCO detalle",
+            tiempo_limite=TIEMPO_LIMITE_SEG,
+        )
+        if html is None:
+            return None
+        documentos = [
+            {**documento, "campos_pedido": list(campos_que_pide(html))}
+            for documento in parsear_documentos(html)
+        ]
+        return parsear_items(html), tuple(documentos)  # type: ignore[arg-type]
 
     async def cerrar(self) -> None:
         await self._limitador.cerrar()

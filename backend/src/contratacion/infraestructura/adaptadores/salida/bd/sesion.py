@@ -13,6 +13,7 @@ de Row Level Security.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy import text
@@ -140,8 +141,38 @@ def obtener_motor() -> AsyncEngine:
             max_overflow=ajustes.bd_max_overflow,
             pool_timeout=ajustes.bd_pool_timeout_seg,
             pool_recycle=ajustes.bd_pool_recycle_seg,
+            # Tope para **abrir** una conexión. El de asyncpg son 60 s: con el servidor caído o
+            # inalcanzable, cada petición que necesitara una conexión nueva se quedaba un minuto
+            # colgada, y quinientas así agotan el proceso aunque el resto del código esté bien.
+            connect_args={
+                "timeout": ajustes.bd_conexion_timeout_seg,
+                "server_settings": parametros_de_sesion(
+                    statement_timeout_ms=ajustes.bd_statement_timeout_ms,
+                    idle_tx_timeout_ms=ajustes.bd_idle_tx_timeout_ms,
+                    nombre=ajustes.bd_nombre_aplicacion,
+                ),
+            },
         )
     return _motor
+
+
+def parametros_de_sesion(
+    *, statement_timeout_ms: int, idle_tx_timeout_ms: int, nombre: str = "cercoapp-api"
+) -> dict[str, str]:
+    """Parámetros de PostgreSQL que viajan al abrir cada conexión, sin un viaje extra.
+
+    Van en el arranque de la conexión (`server_settings` de asyncpg) y no en un `SET` por petición:
+    así no cuestan nada por operación y no dependen de que nadie se acuerde de ponerlos. Un cero
+    deja el valor del servidor, que es lo que pide el worker. `application_name` identifica las
+    conexiones de cada proceso (API o worker) en `pg_stat_activity`, que es lo primero que se mira
+    cuando la base se llena.
+    """
+    parametros = {"application_name": nombre[:60] or "cercoapp"}
+    if statement_timeout_ms > 0:
+        parametros["statement_timeout"] = str(statement_timeout_ms)
+    if idle_tx_timeout_ms > 0:
+        parametros["idle_in_transaction_session_timeout"] = str(idle_tx_timeout_ms)
+    return parametros
 
 
 def obtener_fabrica_sesiones() -> async_sessionmaker[AsyncSession]:
@@ -173,6 +204,30 @@ async def estado_bd() -> tuple[bool, str]:
         registro.warning("Postgres no responde: %s", motivo)
         return False, motivo
     return True, ""
+
+
+async def calentar_pool() -> int:
+    """Abre de antemano las conexiones del pool. Devuelve cuántas quedaron abiertas.
+
+    El pool crea las conexiones bajo demanda. Con la primera tanda de cientos de personas —justo
+    después de un reinicio, o de la hora punta de la mañana— cada petición espera a que se abra una
+    conexión nueva, y las que pasan del tiempo del pool fallan. Con las conexiones ya abiertas, esa
+    primera tanda cuesta lo mismo que cualquier otra. Es de mejor esfuerzo: si falla, el pool sigue
+    funcionando y se abre bajo demanda como siempre.
+    """
+    ajustes = obtener_ajustes()
+    motor = obtener_motor()
+
+    async def una() -> None:
+        async with motor.connect() as conexion:
+            await conexion.execute(text("SELECT 1"))
+            # Se retiene un instante para que las demás tomen otra conexión y no la misma.
+            await asyncio.sleep(0.1)
+
+    resultados = await asyncio.gather(
+        *(una() for _ in range(max(1, ajustes.bd_pool_size))), return_exceptions=True
+    )
+    return sum(1 for resultado in resultados if not isinstance(resultado, BaseException))
 
 
 async def verificar_bd() -> bool:

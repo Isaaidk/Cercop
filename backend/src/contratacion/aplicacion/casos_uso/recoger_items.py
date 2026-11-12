@@ -24,9 +24,11 @@ delatara.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from contratacion.aplicacion.casos_uso.ejecutar_ingesta import DefinicionFuente
 from contratacion.aplicacion.puertos.fuente import FuenteConDetalle
@@ -83,6 +85,7 @@ async def recoger_items(
     *,
     presupuesto_peticiones: int,
     limite: int = LIMITE_FICHAS_POR_CICLO,
+    concurrencia: int = 1,
 ) -> ResultadoDetalle:
     """Lee las fichas pendientes y guarda sus ítems. Devuelve lo que hizo.
 
@@ -96,32 +99,45 @@ async def recoger_items(
 
     pendientes = await repositorio.registros_sin_items(list(adaptadores), limite)
     presupuesto = Presupuesto(limite=presupuesto_peticiones)
+    semaforo = asyncio.Semaphore(max(1, concurrencia))
 
-    for fila in pendientes:
-        if presupuesto.agotado():
-            break
+    async def _una(fila: Mapping[str, Any]) -> None:
+        async with semaforo:
+            if presupuesto.agotado():
+                return
+            adaptador = adaptadores.get(str(fila["fuente"]))
+            if adaptador is None:
+                return
+            resultado.revisados += 1
+            detalle = getattr(adaptador, "detalle", None)
+            documentos: tuple[Any, ...] = ()
+            if detalle is not None:
+                leido = await detalle(fila["enlace"], presupuesto)
+                if leido is None:
+                    resultado.fallidos += 1
+                    return
+                items, documentos = leido
+            else:
+                items = await adaptador.items(fila["enlace"], presupuesto)
+                if items is None:
+                    # No se marca como leída: se reintenta en la siguiente.
+                    resultado.fallidos += 1
+                    return
+            await repositorio.guardar_items(
+                fila["id"],
+                items=[item.como_diccionario() for item in items],
+                cpc_busqueda=texto_de_cpc(items),
+                cpc_codigos=codigos_de(items),
+                documentos=[dict(doc) for doc in documentos],
+            )
+            if items:
+                resultado.con_items += 1
+            else:
+                resultado.sin_items += 1
 
-        adaptador = adaptadores.get(str(fila["fuente"]))
-        if adaptador is None:
-            continue
-
-        resultado.revisados += 1
-        items = await adaptador.items(fila["enlace"], presupuesto)
-        if items is None:
-            # No se marca como leída: se reintenta en la siguiente, con los ítems que ya tuviera.
-            resultado.fallidos += 1
-            continue
-
-        await repositorio.guardar_items(
-            fila["id"],
-            items=[item.como_diccionario() for item in items],
-            cpc_busqueda=texto_de_cpc(items),
-            cpc_codigos=codigos_de(items),
-        )
-        if items:
-            resultado.con_items += 1
-        else:
-            resultado.sin_items += 1
+    async with asyncio.TaskGroup() as grupo:
+        for fila in pendientes:
+            grupo.create_task(_una(fila))
 
     resultado.peticiones = presupuesto.usadas
     # Lo que falta se **pregunta**, no se deduce: la cuenta anterior era la diferencia de la tanda

@@ -1,6 +1,11 @@
 <script setup>
 /**
- * Barra superior: identidad, estado del servicio, presencia y cuenta.
+ * Barra superior: identidad, pantalla actual, presencia y cuenta.
+ *
+ * Desde el rediseño es **mínima**: la navegación se fue al menú lateral, y aquí queda solo lo que
+ * vale en cualquier pantalla —dónde estoy, el tema, el plazo, quién está conectado y mi cuenta—. El
+ * botón ☰ abre el menú lateral (cajón en móvil, plegar en escritorio) y el de «Filtros» aparece solo
+ * en las pantallas que usan la columna de filtros.
  *
  * En móvil se simplifica en lugar de encogerse: se oculta el nombre de la persona —queda el avatar,
  * que es lo que se reconoce— y los botones pasan a ser de solo icono. Aplastarlo todo en una fila
@@ -8,6 +13,7 @@
  */
 import { computed, ref } from 'vue'
 
+import IconoPanel from '@/components/IconoPanel.vue'
 import IndicadorPresencia from '@/components/IndicadorPresencia.vue'
 
 const props = defineProps({
@@ -42,6 +48,11 @@ const props = defineProps({
    * sin efecto, que se lee como un fallo.
    */
   conFiltros: { type: Boolean, default: true },
+  /** Nombre de la pantalla que se está viendo, y del área a la que pertenece. */
+  titulo: { type: String, default: '' },
+  area: { type: String, default: '' },
+  /** Si el menú lateral está a la vista: cajón abierto en móvil, columna desplegada en escritorio. */
+  menuAbierto: { type: Boolean, default: true },
   /** Días que le quedan. `null` oculta el reloj: el superadministrador no tiene plazo. */
   diasRestantes: { type: Number, default: null },
   /** Texto del vencimiento, para el detalle al pasar el mouse. */
@@ -53,6 +64,7 @@ const emit = defineEmits([
   'cerrar-sesion',
   'alternar-panel',
   'alternar-filtros',
+  'alternar-menu',
   'cambiar-contrasena',
   'pedir-tiempo',
 ])
@@ -88,36 +100,50 @@ const iniciales = computed(() => {
 <template>
   <header class="barra">
     <button
-      v-if="conFiltros"
       type="button"
-      class="barra__hamburguesa"
-      :aria-label="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
-      :aria-expanded="filtrosAbiertos"
-      aria-controls="panel-filtros"
-      :title="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
-      @click="emit('alternar-filtros')"
+      class="barra__boton-menu"
+      :aria-label="menuAbierto ? 'Ocultar el menú' : 'Mostrar el menú'"
+      :aria-expanded="menuAbierto"
+      aria-controls="menu-lateral"
+      :title="menuAbierto ? 'Ocultar el menú' : 'Mostrar el menú'"
+      @click="emit('alternar-menu')"
     >
-      <span aria-hidden="true">☰</span>
-      <!-- El punto verde avisa de que hay filtros puestos aunque la columna esté escondida: sin
-           él, la única forma de saberlo sería volver a mostrarla. -->
-      <span
-        v-if="filtrosActivos && !filtrosAbiertos"
-        class="barra__hamburguesa-marca"
-        aria-hidden="true"
-      />
+      <IconoPanel nombre="menu" :tamano="20" />
     </button>
 
     <div class="marca">
       <span class="marca__icono">
-        <img src="/logo-cercoapp.png" alt="" width="36" height="36" />
+        <img src="/logo-cercoapp.png" alt="" width="32" height="32" />
       </span>
-      <span class="marca__texto">
-        CercoApp
-        <small>Panel de seguimiento</small>
-      </span>
+      <span class="marca__texto">CercoApp</span>
     </div>
 
+    <!-- Dónde estoy. El área va en tono tenue y la pantalla en el del texto: se lee primero lo que
+         importa, y el área solo sitúa. -->
+    <p v-if="titulo" class="barra__titulo">
+      <span v-if="area" class="barra__area">{{ area }}</span>
+      <span v-if="area" class="barra__sep" aria-hidden="true">/</span>
+      <span class="barra__pantalla">{{ titulo }}</span>
+    </p>
+
     <div class="barra__acciones">
+      <!-- Filtros: solo en las pantallas que usan la columna. En escritorio la esconde y la muestra;
+           en móvil abre el cajón. El punto avisa de que hay filtros puestos aunque no se vean. -->
+      <button
+        v-if="conFiltros"
+        type="button"
+        class="boton boton--secundario boton--pequeno barra__filtros"
+        :aria-label="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
+        :aria-expanded="filtrosAbiertos"
+        aria-controls="panel-filtros"
+        :title="filtrosAbiertos ? 'Ocultar los filtros' : 'Mostrar los filtros'"
+        @click="emit('alternar-filtros')"
+      >
+        <IconoPanel nombre="filtros" :tamano="16" />
+        <span class="barra__filtros-texto">Filtros</span>
+        <span v-if="filtrosActivos" class="barra__filtros-marca" aria-hidden="true" />
+      </button>
+
       <IndicadorPresencia
         v-if="presencia"
         :conectados="conectados"
@@ -131,9 +157,10 @@ const iniciales = computed(() => {
         type="button"
         class="boton boton--fantasma boton--icono"
         :aria-label="tema === 'oscuro' ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'"
+        :title="tema === 'oscuro' ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'"
         @click="emit('alternar-tema')"
       >
-        <span aria-hidden="true">{{ tema === 'oscuro' ? '☀' : '☾' }}</span>
+        <IconoPanel :nombre="tema === 'oscuro' ? 'sol' : 'luna'" />
       </button>
 
       <div
@@ -151,7 +178,7 @@ const iniciales = computed(() => {
           :aria-expanded="relojAbierto"
           aria-label="Tiempo de acceso que te queda"
         >
-          <span aria-hidden="true">⏱</span>
+          <IconoPanel nombre="reloj" :tamano="17" />
         </button>
         <div v-if="relojAbierto" class="reloj__detalle superficie" role="status">
           <p>{{ textoPlazo }}</p>
@@ -177,17 +204,18 @@ const iniciales = computed(() => {
           <span class="barra__avatar" aria-hidden="true">{{ iniciales }}</span>
           <span class="barra__datos">
             <span class="barra__nombre">{{ nombre || email }}</span>
-            <span v-if="admin" class="etiqueta etiqueta--acento">Administrador</span>
           </span>
         </button>
 
         <Transition name="fundido">
           <div v-if="panelAbierto" id="menu-cuenta" class="barra__menu superficie aparece">
+            <p class="barra__menu-nombre">{{ nombre || email }}</p>
             <p class="barra__menu-email">{{ email }}</p>
+            <span v-if="admin" class="etiqueta etiqueta--acento barra__menu-rol">Administrador</span>
             <hr class="separador" />
             <button
               type="button"
-              class="boton boton--secundario barra__menu-boton"
+              class="boton boton--fantasma barra__menu-boton"
               @click="emit('cambiar-contrasena')"
             >
               Cambiar mi contraseña
@@ -211,7 +239,7 @@ const iniciales = computed(() => {
   align-items: center;
   gap: var(--e-3);
   height: var(--altura-cabecera);
-  padding: 0 var(--e-5);
+  padding: 0 var(--e-4);
   background: color-mix(in srgb, var(--superficie) 88%, transparent);
   /* El desenfoque hace que el contenido se intuya al desplazar por debajo, en lugar de desaparecer
      tras una franja opaca. Es una guía de que hay más página. */
@@ -235,9 +263,13 @@ const iniciales = computed(() => {
   cursor: pointer;
 }
 
+.reloj__boton {
+  color: var(--texto-suave);
+}
+
+/* Con tiempo de sobra el reloj va en gris: el color se guarda para cuando hay que hacer algo. */
 .reloj--holgado {
-  color: var(--ok);
-  border-color: var(--ok);
+  color: var(--texto-suave);
 }
 
 .reloj--aviso {
@@ -278,8 +310,8 @@ const iniciales = computed(() => {
   display: grid;
   place-items: center;
   flex: none;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   overflow: hidden;
 }
@@ -295,17 +327,37 @@ html[data-tema='oscuro'] .marca__icono {
 }
 
 .marca__texto {
-  display: flex;
-  flex-direction: column;
-  font-weight: 650;
+  font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
 }
 
-.marca__texto small {
-  font-size: var(--t-xs);
-  font-weight: 500;
+/* La pantalla actual. Separada de la marca por una raya fina, como una miga de pan corta. */
+.barra__titulo {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  min-width: 0;
+  padding-left: var(--e-3);
+  margin-left: var(--e-1);
+  border-left: 1px solid var(--borde);
+  font-size: var(--t-base);
+  white-space: nowrap;
+}
+
+.barra__area {
   color: var(--texto-tenue);
+}
+
+.barra__sep {
+  color: var(--borde-fuerte);
+}
+
+.barra__pantalla {
+  font-weight: 650;
+  color: var(--texto);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .barra__acciones {
@@ -373,8 +425,25 @@ html[data-tema='oscuro'] .marca__icono {
   box-shadow: var(--sombra-3);
 }
 
+.barra__menu-nombre {
+  padding: var(--e-2) var(--e-2) 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.barra__menu-rol {
+  margin: 0 var(--e-2) var(--e-2);
+}
+
+.barra__menu {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
 .barra__menu-email {
-  padding: var(--e-2) var(--e-2) var(--e-1);
+  padding: 0 var(--e-2) var(--e-1);
   font-size: var(--t-xs);
   color: var(--texto-tenue);
   overflow-wrap: anywhere;
@@ -385,29 +454,37 @@ html[data-tema='oscuro'] .marca__icono {
   justify-content: flex-start;
 }
 
-/* La hamburguesa gobierna el panel de filtros en los dos anchos, así que se ve siempre: en móvil
-   abre y cierra el cajón y en escritorio esconde y muestra la columna. Antes solo existía en móvil
-   —en escritorio el panel estaba siempre a la vista y no había forma de esconderlo—. */
-.barra__hamburguesa {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  padding: 0.4rem;
-  border: 1px solid var(--borde);
-  border-radius: var(--r-1);
-  background: var(--superficie);
+/* El botón del menú lateral: en móvil abre el cajón y en escritorio pliega la columna. */
+.barra__boton-menu {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 0;
+  border-radius: var(--r-2);
+  background: transparent;
+  color: var(--texto-suave);
   cursor: pointer;
 }
 
-.barra__hamburguesa-marca {
+.barra__boton-menu:hover {
+  background: var(--superficie-3);
+  color: var(--texto);
+}
+
+.barra__filtros {
+  position: relative;
+}
+
+.barra__filtros-marca {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 8px;
-  height: 8px;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--ok);
-  border: 1px solid var(--superficie);
+  background: var(--acento);
 }
 
 .fundido-enter-active,
@@ -423,14 +500,22 @@ html[data-tema='oscuro'] .marca__icono {
 }
 
 @media (max-width: 1023px) {
-  .barra {
-    padding: 0 var(--e-4);
+  .barra__area,
+  .barra__sep {
+    display: none;
   }
 }
 
 @media (max-width: 639px) {
+  .barra {
+    gap: var(--e-2);
+    padding: 0 var(--e-3);
+  }
+
   .barra__datos,
-  .barra__nombre {
+  .barra__nombre,
+  .marca__texto,
+  .barra__filtros-texto {
     display: none;
   }
 
@@ -438,12 +523,14 @@ html[data-tema='oscuro'] .marca__icono {
     padding: 0.25rem;
   }
 
-  .marca__texto small {
-    display: none;
+  .barra__titulo {
+    padding-left: var(--e-2);
+    margin-left: 0;
+    font-size: var(--t-sm);
   }
 
-  .marca__texto {
-    font-size: var(--t-sm);
+  .barra__acciones {
+    gap: var(--e-1);
   }
 }
 </style>

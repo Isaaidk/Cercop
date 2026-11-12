@@ -1,6 +1,11 @@
 <script setup>
 /**
- * El panel: barra superior, filtros a un lado y el contenido al otro.
+ * El panel: barra superior, menú lateral a la izquierda, filtros donde aplican y el contenido.
+ *
+ * La navegación vive en `MenuLateral` (rediseño 2026-11, ver `docs/35-guia-de-diseno-del-panel.md`):
+ * sustituyó a la fila de pastillas de áreas y a las pestañas de encima del contenido. Los ids de las
+ * pantallas, los permisos por rol, el montaje perezoso y los cierres por plazo siguen aquí, igual que
+ * antes; el menú solo los pinta.
  *
  * Aquí vive la única pieza de lógica que no es de presentación: **una sola recarga por cambio de
  * filtro**, retrasada unos milisegundos.
@@ -19,22 +24,33 @@
  * provocaría cuatro peticiones casi simultáneas, que además competirían por el mismo servidor y
  * podrían pintar estados intermedios distintos en la tabla y en el gráfico.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import BarraSuperior from '@/components/BarraSuperior.vue'
+import IconoPanel from '@/components/IconoPanel.vue'
+import MenuLateral from '@/components/MenuLateral.vue'
+const InicioPanel = defineAsyncComponent(() => import('@/components/InicioPanel.vue'))
+const AsistentePanel = defineAsyncComponent(() => import('@/components/AsistentePanel.vue'))
 import CambiarContrasena from '@/components/CambiarContrasena.vue'
-import GestionUsuarios from '@/components/GestionUsuarios.vue'
+const GestionUsuarios = defineAsyncComponent(() => import('@/components/GestionUsuarios.vue'))
+const PerfilEmpresa = defineAsyncComponent(() => import('@/components/PerfilEmpresa.vue'))
+const Documentos = defineAsyncComponent(() => import('@/components/Documentos.vue'))
+const Mercado = defineAsyncComponent(() => import('@/components/Mercado.vue'))
+const RadarOportunidades = defineAsyncComponent(() => import('@/components/RadarOportunidades.vue'))
+const PropuestasParaTi = defineAsyncComponent(() => import('@/components/PropuestasParaTi.vue'))
 import GraficaFuentes from '@/components/GraficaFuentes.vue'
 import GraficaDistribucion from '@/components/GraficaDistribucion.vue'
 import GraficaProvincias from '@/components/GraficaProvincias.vue'
 import GraficaSerie from '@/components/GraficaSerie.vue'
 import ListaProvincia from '@/components/ListaProvincia.vue'
 import MapaEcuador from '@/components/MapaEcuador.vue'
-import OfertasTab from '@/components/OfertasTab.vue'
-import PanelEmpresas from '@/components/PanelEmpresas.vue'
+const OfertasTab = defineAsyncComponent(() => import('@/components/OfertasTab.vue'))
+const PanelEmpresas = defineAsyncComponent(() => import('@/components/PanelEmpresas.vue'))
+const ComprasIa = defineAsyncComponent(() => import('@/components/ComprasIa.vue'))
 import Paginacion from '@/components/Paginacion.vue'
 import PanelFiltros from '@/components/PanelFiltros.vue'
-import PlantillaExcel from '@/components/PlantillaExcel.vue'
+const MisOfertas = defineAsyncComponent(() => import('@/components/MisOfertas.vue'))
+const PlantillaExcel = defineAsyncComponent(() => import('@/components/PlantillaExcel.vue'))
 import TablaRegistros from '@/components/TablaRegistros.vue'
 import { usePresencia } from '@/composables/usePresencia'
 import { useEsMovil } from '@/composables/useEsMovil'
@@ -43,7 +59,8 @@ import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
 import { FAMILIAS } from '@/utils/familias'
-import { fechaCorta, haceCuanto, numero } from '@/utils/formato'
+import { fechaCorta, haceCuanto } from '@/utils/formato'
+import { pestanaDelAsistente } from '@/utils/asistente'
 
 const props = defineProps({
   tema: { type: String, default: 'claro' },
@@ -107,62 +124,240 @@ function alternarFiltros() {
   filtrosVisibles.value = !filtrosVisibles.value
   guardarFiltrosVisibles(filtrosVisibles.value)
 }
+
+// ------------------------------------------------------------------------------- menú lateral
+
+/** Cajón del menú en móvil. No se recuerda: como el de filtros, tapar el contenido es del momento. */
+const menuAbierto = ref(false)
+
+const CLAVE_MENU_PLEGADO = 'panel:menu-plegado'
+
 /**
- * Pestaña con la que se abre el panel.
+ * Si el menú está plegado a solo iconos en escritorio.
+ *
+ * Se recuerda entre visitas por el mismo motivo que la columna de filtros: quien lo pliega quiere
+ * más ancho para la tabla, y desplegárselo en cada recarga sería deshacer su decisión.
+ */
+const menuPlegado = ref(leerMenuPlegado())
+
+function leerMenuPlegado() {
+  try {
+    return localStorage.getItem(CLAVE_MENU_PLEGADO) === '1'
+  } catch {
+    // Sin almacén se arranca desplegado: es la forma en que el menú se explica solo.
+    return false
+  }
+}
+
+/** El botón del menú de la barra: en móvil abre o cierra el cajón; en escritorio pliega la columna. */
+function alternarMenu() {
+  if (esMovil.value) {
+    menuAbierto.value = !menuAbierto.value
+    return
+  }
+  alternarPlegado()
+}
+
+function alternarPlegado() {
+  menuPlegado.value = !menuPlegado.value
+  try {
+    localStorage.setItem(CLAVE_MENU_PLEGADO, menuPlegado.value ? '1' : '0')
+  } catch {
+    /* sin almacén, la preferencia vale solo para esta sesión */
+  }
+}
+
+// Al cruzar el ancho de móvil los cajones dejan de existir; se cierran para no reaparecer abiertos.
+watch(esMovil, () => {
+  menuAbierto.value = false
+  filtrosAbiertos.value = false
+})
+/**
+ * Pestaña con la que se abre el panel: el **Asistente** (desde 2026-11).
+ *
+ * Se abre en el chat porque es la forma más directa de pedir algo —«¿qué ínfimas hay para mí?»—
+ * sin saber dónde está cada pantalla, que era lo que más costaba a quien usa poco el ordenador. Lo
+ * que sigue explica por qué antes se abría en la lista de ínfimas, que sigue siendo la primera
+ * pantalla de datos:
  *
  * Es la primera, y no el resumen de gráficas. El panel se abre casi siempre para **mirar las
  * contrataciones** —qué ha salido, de qué entidad, por cuánto— y el resumen es lo que se consulta
  * después. Abrir en la primera pestaña también evita una rareza visible: con otra seleccionada, la
  * pestaña de más a la izquierda aparece apagada y parece que falta algo.
  */
-const pestana = ref('infimas')
+const pestana = ref('asistente')
+
+/**
+ * Pestañas que ya se abrieron alguna vez. Cada pestaña se monta **la primera vez que se abre** y
+ * después se queda montada (con `v-show`) para no perder lo escrito. Antes se montaban todas al
+ * entrar, y cada inicio de sesión disparaba a la vez el radar, el mercado, el perfil y los
+ * documentos aunque nadie fuera a mirarlos: con cientos de personas entrando, era trabajo del
+ * servidor tirado. Su código, además, se baja aparte (`defineAsyncComponent`).
+ */
+const visitadas = reactive(new Set(['infimas']))
+watch(pestana, (id) => visitadas.add(id), { immediate: true })
+const visitada = (id) => visitadas.has(id)
+const pedidoOferta = ref({ codigo: '', marca: 0 })
 const cambiandoContrasena = ref(false)
 const exito = ref('')
 
-/** Pestañas del contenido. En móvil evitan apilar mapa, cuatro gráficas y una tabla. */
+/**
+ * Las pantallas del panel, con su nombre en el menú y la frase de una línea que dice para qué sirven.
+ *
+ * Los ids son los de siempre —otros componentes y la lógica de plazos los usan— aunque el nombre que
+ * se lee haya cambiado: «Ofertas» pasó a «Procesos con oferta», «Radar» a «Recomendadas»… El id es
+ * el contrato; la etiqueta, la presentación.
+ */
+const PANTALLAS = {
+  asistente: {
+    etiqueta: 'Asistente',
+    pista: 'Pregunta lo que necesites: ínfimas, procesos, alertas o tu proforma.',
+  },
+  inicio: { etiqueta: 'Inicio', pista: 'Lo que tienes hoy: ínfimas, cierres próximos y avisos.' },
+  // El listado de ínfimas cuantías **fija la familia**: aquí se ven ínfimas y solo ínfimas. Tener la
+  // familia en la pantalla y no en un desplegable del lateral es lo que permite que cada una
+  // responda a una pregunta concreta: «qué necesidades de compra han salido».
+  infimas: {
+    etiqueta: 'Ínfimas cuantías',
+    pista: 'Compras pequeñas publicadas por las entidades. Abre una para ver la ficha y llenar el TDR.',
+  },
+  // El listado del portal de procesos, que consulta la fuente OCDS por su cuenta.
+  ofertas: {
+    etiqueta: 'Procesos con oferta',
+    pista: 'Subastas, licitaciones y demás procesos publicados en el portal.',
+  },
+  // El mapa sí deja elegir familia, porque su pregunta es otra: «dónde».
+  mapa: { etiqueta: 'Mapa', pista: 'Dónde se está comprando. Pulsa una provincia para filtrar.' },
+  resumen: { etiqueta: 'Estadísticas', pista: 'Gráficas de lo publicado con los filtros puestos.' },
+  // Todas las ínfimas abiertas que la empresa puede ofertar según su perfil. Va antes que el radar
+  // porque responde a la pregunta más directa: «¿a qué puedo aplicar hoy?».
+  propuestas: {
+    etiqueta: 'Propuestas para ti',
+    pista: 'Ínfimas abiertas que tu empresa puede ofertar, según tus CPC, ubicación y presupuesto.',
+  },
+  radar: {
+    etiqueta: 'Recomendadas',
+    pista: 'Procesos que encajan con tu empresa, tus alertas y sus avisos.',
+  },
+  mercado: {
+    etiqueta: 'Precios y competencia',
+    pista: 'Cuánto se adjudicó y a quién, para poner tu precio.',
+  },
+  documentos: { etiqueta: 'Preparar oferta', pista: 'Del TDR a la proforma firmada, paso a paso.' },
+  // El CRM de las proformas hechas: tablero por etapa, calendario de cierres y tasa de éxito.
+  misofertas: {
+    etiqueta: 'Mis ofertas',
+    pista: 'El seguimiento de tus proformas: etapas, cierres y resultados.',
+  },
+  perfil: { etiqueta: 'Perfil y RUP', pista: 'Los datos de tu empresa que se autollenan en cada oferta.' },
+  plantilla: { etiqueta: 'Plantilla de Excel', pista: 'Qué columnas lleva lo que tu empresa descarga.' },
+  usuarios: { etiqueta: 'Usuarios', pista: 'Quién de tu equipo entra al panel y con qué permisos.' },
+  empresas: { etiqueta: 'Empresas', pista: 'Las empresas de la plataforma y sus plazos de acceso.' },
+}
+
 const PESTANAS_BASE = [
-  // El listado de ínfimas cuantías va primero, y la pestaña **fija la familia**: aquí se ven ínfimas
-  // y solo ínfimas. Tener la familia en la pestaña y no en un desplegable del lateral es lo que
-  // permite que cada pestaña responda a una pregunta concreta: «qué necesidades de compra han salido»
-  // frente a «qué procesos con oferta se han publicado».
-  { id: 'infimas', etiqueta: 'Ínfimas cuantías', icono: '≡' },
-  // El listado del portal de procesos, que consulta la fuente OCDS por su cuenta: por eso esta
-  // pestaña no necesita que nadie le diga qué familia mostrar.
-  { id: 'ofertas', etiqueta: 'Ofertas', icono: '▤' },
-  // El mapa sí deja elegir familia, porque su pregunta es otra: «dónde». Ver el selector en el
-  // propio panel, con la opción de las dos a la vez.
-  { id: 'mapa', etiqueta: 'Mapa', icono: '▣' },
-  { id: 'resumen', etiqueta: 'Resumen', icono: '◎' },
+  'asistente',
+  'inicio',
+  'infimas',
+  'ofertas',
+  'mapa',
+  'resumen',
+  'propuestas',
+  'radar',
+  'mercado',
+  'documentos',
+  'misofertas',
 ]
 
 /**
- * Las pestañas que existen para quien está delante.
+ * Las pantallas que existen para quien está delante.
  *
- * La plantilla y los usuarios solo aparecen a un rol administrativo, y las empresas solo al dueño
- * del sistema. Se ocultan en lugar de mostrarlas y que fallen: un consultor que pulse «Usuarios» y
- * reciba un error de permisos entendería que el sistema está roto, no que él no tiene esa capacidad.
- * El servidor lo rechazaría igualmente —ahí está la barrera de verdad—, pero no hay motivo para
- * ofrecer a nadie un botón que solo puede llevarle a un rechazo.
+ * La plantilla, los usuarios y el perfil solo aparecen a un rol administrativo, y las empresas solo
+ * al dueño del sistema. Se ocultan en lugar de mostrarlas y que fallen: un consultor que pulse
+ * «Usuarios» y reciba un error de permisos entendería que el sistema está roto, no que él no tiene
+ * esa capacidad. El servidor lo rechazaría igualmente —ahí está la barrera de verdad—, pero no hay
+ * motivo para ofrecer a nadie un botón que solo puede llevarle a un rechazo.
  */
 const PESTANAS = computed(() => {
-  const deEmpresas = { id: 'empresas', etiqueta: 'Empresas', icono: '⌂' }
+  let ids
   if (!sesion.esAdministrativo.value) {
     // El dueño del sistema ve además el censo de empresas, que es la única pantalla que mira a
     // todas a la vez. Un administrador de negocio no la ve porque no hay nada suyo ahí.
-    return sesion.esDePlataforma.value ? [...PESTANAS_BASE, deEmpresas] : PESTANAS_BASE
+    ids = sesion.esDePlataforma.value ? [...PESTANAS_BASE, 'empresas'] : PESTANAS_BASE
+  } else {
+    ids = [
+      ...PESTANAS_BASE,
+      'perfil',
+      'plantilla',
+      'usuarios',
+      ...(sesion.estado.rol === 'super_admin' ? ['empresas'] : []),
+    ]
   }
-  return [
-    PESTANAS_BASE[0],
-    PESTANAS_BASE[1],
-    PESTANAS_BASE[2],
-    // La plantilla decide cómo se ve **todo** lo que la empresa exporta, así que va junto a lo que
-    // se exporta y antes del resumen, que es lo último que se consulta.
-    { id: 'plantilla', etiqueta: 'Plantilla', icono: '⬓' },
-    PESTANAS_BASE[3],
-    { id: 'usuarios', etiqueta: 'Usuarios', icono: '⬢' },
-    ...(sesion.estado.rol === 'super_admin' ? [deEmpresas] : []),
-  ]
+  // Las pantallas de una vista que el superadministrador ocultó (o cuyo plazo venció) **no salen
+  // en el menú**: ofrecer un botón que solo lleva a «sin acceso» invita a pulsarlo. El servidor
+  // sigue negando los datos en cada petición; esto solo evita enseñarlo.
+  return ids.filter((id) => !pestanaCerrada(id)).map((id) => ({ id, ...PANTALLAS[id] }))
 })
+
+/**
+ * Las pantallas agrupadas por la tarea del proveedor, en el orden de la guía de diseño. Una lista de
+ * doce botones obliga a leerlos todos; cinco áreas con su frase dejan elegir primero qué se quiere
+ * hacer.
+ */
+const AREAS = [
+  // El asistente va arriba del todo: es la pantalla con la que se abre el panel.
+  { id: 'asistente', etiqueta: 'Asistente', pista: '', pestanas: ['asistente'] },
+  { id: 'inicio', etiqueta: 'Inicio', pista: '', pestanas: ['inicio'] },
+  {
+    id: 'buscar',
+    etiqueta: 'Buscar oportunidades',
+    pista: 'Qué compras públicas han salido',
+    pestanas: ['infimas', 'ofertas', 'mapa', 'resumen'],
+  },
+  {
+    id: 'parati',
+    etiqueta: 'Oportunidades para ti',
+    pista: 'Lo que encaja con tu empresa',
+    pestanas: ['propuestas', 'radar', 'mercado'],
+  },
+  {
+    id: 'ofertar',
+    etiqueta: 'Ofertar',
+    pista: 'Prepara la proforma y síguela',
+    pestanas: ['documentos', 'misofertas'],
+  },
+  {
+    id: 'empresa',
+    etiqueta: 'Mi empresa',
+    pista: 'Tus datos, tu equipo y tu Excel',
+    pestanas: ['perfil', 'plantilla', 'usuarios', 'empresas'],
+  },
+]
+
+const areasVisibles = computed(() => {
+  const porId = Object.fromEntries(PESTANAS.value.map((opcion) => [opcion.id, opcion]))
+  return AREAS.map((area) => ({
+    ...area,
+    opciones: area.pestanas.map((id) => porId[id]).filter(Boolean),
+  })).filter((area) => area.opciones.length)
+})
+
+/** El área de la pantalla abierta, para la miga de la barra superior. Inicio no lleva área. */
+const areaActiva = computed(() => {
+  const area = AREAS.find((candidata) => candidata.pestanas.includes(pestana.value))
+  return area && !['inicio', 'asistente'].includes(area.id) ? area.etiqueta : ''
+})
+
+const pantallaActual = computed(() => PANTALLAS[pestana.value] || { etiqueta: '', pista: '' })
+
+// Pantallas que traen su propia cabecera, con más que un título (pestañas, contadores, acciones).
+// En ellas el título del panel sobra: saldría el mismo nombre dos veces, uno encima del otro.
+const CON_CABECERA_PROPIA = new Set(['asistente', 'propuestas', 'radar', 'mercado', 'documentos', 'misofertas'])
+
+/** El motivo del cierre para el menú: vacío si la pantalla está abierta. */
+function motivoCierre(id) {
+  return pestanaCerrada(id) ? textoCierre(id) : ''
+}
 
 /**
  * Qué vista del catálogo hace falta para cada pestaña de datos.
@@ -172,6 +367,8 @@ const PESTANAS = computed(() => {
  */
 const VISTA_DE_PESTANA = {
   infimas: 'necesidades',
+  // Las propuestas son ínfimas: sin la vista de necesidades, el servidor las negaría.
+  propuestas: 'necesidades',
   ofertas: 'ofertas',
   mapa: 'graficas',
   resumen: 'graficas',
@@ -187,9 +384,26 @@ function vistaPropia(codigo) {
  * Mientras no se sepa —o para el dueño de la plataforma, que se concede los plazos a sí mismo— no se
  * cierra nada: el servidor sigue comprobando el plazo en cada petición de datos.
  */
+function usarBusqueda(parametros) {
+  filtros.cargarCriterios(parametros)
+  pestana.value = parametros?.categoria === 'ofertas' ? 'ofertas' : 'infimas'
+}
+
+/**
+ * Pestañas que valen con **cualquier** vista de datos: el radar y «Precios y competencia» leen las
+ * fuentes que la persona tenga (ínfimas, ofertas o las dos). Sin ninguna, el servidor las niega.
+ */
+const VISTAS_DE_DATOS_DE_PESTANA = {
+  radar: ['necesidades', 'ofertas'],
+  mercado: ['necesidades', 'ofertas'],
+}
+
 function pestanaCerrada(id) {
+  if (!sesion.estado.vistasCargadas || sesion.esDePlataforma.value) return false
+  const alguna = VISTAS_DE_DATOS_DE_PESTANA[id]
+  if (alguna) return !alguna.some((codigo) => vistaPropia(codigo)?.vigente)
   const codigo = VISTA_DE_PESTANA[id]
-  if (!codigo || !sesion.estado.vistasCargadas || sesion.esDePlataforma.value) return false
+  if (!codigo) return false
   return !vistaPropia(codigo)?.vigente
 }
 
@@ -253,6 +467,25 @@ function ajustarPestana() {
  * que se recargue nada: el vigilante de los filtros ya se encarga de pedir los datos nuevos, y
  * fijarla después lanzaría una consulta con la familia vieja y otra con la nueva.
  */
+function prepararOferta(fila) {
+  const codigo = String(fila?.codigo || '').trim()
+  if (!codigo) return
+  pedidoOferta.value = { codigo, marca: Date.now() }
+  abrirPestana('documentos')
+}
+
+/**
+ * El asistente pide abrir una pantalla por su nombre («alertas», «mis-ofertas», «empresa»…). Se
+ * traduce al id real y solo se abre si existe para este rol; si no, no se mueve nada.
+ */
+function irDesdeAsistente(nombre) {
+  const id = pestanaDelAsistente(
+    nombre,
+    PESTANAS.value.map((opcion) => opcion.id),
+  )
+  if (id) abrirPestana(id)
+}
+
 function abrirPestana(id) {
   pestana.value = id
   if (id === 'infimas' || id === 'ofertas') filtros.elegirCategoria(id)
@@ -261,7 +494,10 @@ function abrirPestana(id) {
 /**
  * ¿Se pinta la columna de filtros del panel?
  *
- * Con la pestaña de **ofertas** abierta, no. Sus filtros son los de la pestaña —entidad, tipo,
+ * Solo en las vistas que leen esos filtros. Documentos, mercado, perfil y usuarios tienen su propio
+ * formulario, y la columna les quitaba un tercio del ancho sin cambiar nada de lo que muestran.
+ *
+ * Con la pestaña de **ofertas** abierta, tampoco. Sus filtros son los de la pestaña —entidad, tipo,
  * código, estado, fechas— y se aplican con su propio botón; la columna lateral es la de las ínfimas
  * cuantías (el NIC, el estado de la contratación, la fuente) y dejarla a la vista con la pestaña de
  * ofertas delante mezclaba dos juegos de filtros homónimos: se veían los dos «estado de la
@@ -270,7 +506,8 @@ function abrirPestana(id) {
  * Se oculta solo la columna **de este panel**; el botón de la barra que la abre o la cierra también
  * desaparece con ella, porque un botón que no hace nada se lee como un fallo.
  */
-const sinFiltrosDelPanel = computed(() => pestana.value === 'ofertas')
+const CON_FILTROS = new Set(['infimas', 'mapa', 'resumen'])
+const sinFiltrosDelPanel = computed(() => !CON_FILTROS.has(pestana.value))
 
 // Las etiquetas del selector de familia del mapa y del titular de la tabla salen de `utils/familias`:
 // el mismo nombre en los dos sitios y en la pista de cada gráfica.
@@ -499,7 +736,10 @@ const ultimaActualizacion = computed(() =>
 </script>
 
 <template>
-  <div class="panel">
+  <div
+    class="panel"
+    :class="{ 'panel--menu-plegado': menuPlegado && !esMovil, 'panel--asistente': pestana === 'asistente' }"
+  >
     <BarraSuperior
       :tema="props.tema"
       :nombre="sesion.estado.nombre"
@@ -512,6 +752,9 @@ const ultimaActualizacion = computed(() =>
       :alcance="presencia.alcance.value"
       :en-vivo="presencia.enVivo.value"
       :panel-abierto="panelCuentaAbierto"
+      :titulo="pantallaActual.etiqueta"
+      :area="areaActiva"
+      :menu-abierto="esMovil ? menuAbierto : !menuPlegado"
       :filtros-abiertos="esMovil ? filtrosAbiertos : filtrosVisibles"
       :filtros-activos="filtros.hayFiltros.value"
       :con-filtros="!sinFiltrosDelPanel"
@@ -523,283 +766,348 @@ const ultimaActualizacion = computed(() =>
       @alternar-panel="panelCuentaAbierto = !panelCuentaAbierto"
       @cambiar-contrasena="cambiandoContrasena = true"
       @alternar-filtros="alternarFiltros"
+      @alternar-menu="alternarMenu"
     />
 
-    <p v-if="exito" class="panel__exito aparece" role="status">
-      {{ exito }}
-      <button type="button" class="boton boton--fantasma boton--pequeno" aria-label="Ocultar" @click="exito = ''">
-        ✕
-      </button>
-    </p>
-
-    <!-- Aviso de datos de ejemplo. No se puede cerrar de forma permanente a propósito: si se
-         recordara la elección, alguien podría volver al panel semanas después, con datos reales ya
-         cargados, y seguir con el cartel oculto sin darse cuenta de que ahora sí son reales. -->
-    <Transition name="deslizar">
-      <div v-if="mostrarAvisoEjemplo" class="aviso-ejemplo" role="status">
-        <span class="aviso-ejemplo__icono" aria-hidden="true">⚗</span>
-        <p>
-          <strong>Estás viendo datos de ejemplo.</strong>
-          No hay contrataciones ingestadas para estos filtros todavía, así que las cifras son
-          inventadas para poder revisar el diseño. Aparecerán datos reales cuando el proceso de
-          ingesta complete un ciclo.
-        </p>
-        <button
-          type="button"
-          class="boton boton--fantasma boton--pequeno"
-          aria-label="Ocultar el aviso de datos de ejemplo"
-          @click="ejemploOculto = true"
-        >
-          ✕
-        </button>
-      </div>
-    </Transition>
-
-    <p v-if="aviso" class="panel__aviso" role="alert">{{ aviso }}</p>
-
-    <div
-      class="panel__cuerpo"
-      :class="{
-        'panel__cuerpo--sin-filtros':
-          sinFiltrosDelPanel || (!esMovil && !filtrosVisibles),
-      }"
-    >
-      <!-- Filtros: columna fija en escritorio, cajón deslizante en móvil. -->
-      <aside
-        v-if="!sinFiltrosDelPanel"
-        id="panel-filtros"
-        class="panel__lateral superficie"
-        :class="{ 'panel__lateral--abierto': filtrosAbiertos }"
-      >
-        <div class="panel__lateral-cabecera">
-          <p class="panel__lateral-titulo">Filtros</p>
-          <button
-            type="button"
-            class="boton boton--fantasma boton--icono panel__lateral-cerrar"
-            aria-label="Cerrar los filtros"
-            @click="filtrosAbiertos = false"
-          >
-            ✕
-          </button>
-        </div>
-        <PanelFiltros />
-      </aside>
-
-      <!-- Velo que cierra el cajón al tocarlo. Solo se pinta cuando el cajón está abierto. -->
-      <div
-        v-if="filtrosAbiertos && !sinFiltrosDelPanel"
-        class="panel__velo"
-        aria-hidden="true"
-        @click="filtrosAbiertos = false"
+    <div class="panel__marco">
+      <MenuLateral
+        :areas="areasVisibles"
+        :activa="pestana"
+        :plegado="menuPlegado"
+        :abierto="menuAbierto"
+        :es-movil="esMovil"
+        :cuentas="datos.estado.totalesPorCategoria"
+        :motivo-cierre="motivoCierre"
+        @elegir="abrirPestana"
+        @alternar-plegado="alternarPlegado"
+        @cerrar="menuAbierto = false"
       />
 
-      <main class="panel__principal">
-        <nav class="pestanas" aria-label="Secciones del panel">
-          <button
-            v-for="opcion in PESTANAS"
-            :key="opcion.id"
-            type="button"
-            class="pestanas__boton"
-            :class="{
-              'pestanas__boton--activa': pestana === opcion.id,
-              'pestanas__boton--cerrada': pestanaCerrada(opcion.id),
-            }"
-            :aria-selected="pestana === opcion.id"
-            :title="pestanaCerrada(opcion.id) ? textoCierre(opcion.id) : undefined"
-            role="tab"
-            @click="abrirPestana(opcion.id)"
-          >
-            <span aria-hidden="true">{{ pestanaCerrada(opcion.id) ? '🔒' : opcion.icono }}</span>
-            {{ opcion.etiqueta }}
-            <!--
-              El número de cada pestaña es el de **su** familia, no el de la consulta en curso.
-
-              Antes las dos leían `datos.estado.total`, que es el total de la última búsqueda: como
-              abrir la pestaña de ofertas cambia la familia que se consulta, el número de las ínfimas
-              pasaba a mostrar el de las ofertas sin que nada hubiera cambiado fuera de la pestaña.
-              Los totales por familia vienen del servidor con los mismos filtros que la tabla, así
-              que solo cambian al aplicar filtros o cuando la ingesta trae datos nuevos. Las pestañas
-              que no son de una familia —mapa, resumen, plantilla— no llevan número y no lo llevaban.
-            -->
-            <span
-              v-if="datos.estado.totalesPorCategoria[opcion.id]"
-              class="pestanas__cuenta"
-            >
-              {{ numero(datos.estado.totalesPorCategoria[opcion.id]) }}
-            </span>
+      <div class="panel__area">
+        <p v-if="exito" class="panel__exito aparece" role="status">
+          {{ exito }}
+          <button type="button" class="boton boton--fantasma boton--pequeno" aria-label="Ocultar" @click="exito = ''">
+            ✕
           </button>
-        </nav>
+        </p>
 
-        <p v-if="avisoPlazo" class="panel__vencimiento" role="status">{{ avisoPlazo }}</p>
+        <!-- Aviso de datos de ejemplo. No se puede cerrar de forma permanente a propósito: si se
+             recordara la elección, alguien podría volver al panel semanas después, con datos reales
+             ya cargados, y seguir con el cartel oculto sin darse cuenta de que ahora sí son reales. -->
+        <Transition name="deslizar">
+          <div v-if="mostrarAvisoEjemplo" class="aviso-ejemplo" role="status">
+            <span class="etiqueta etiqueta--aviso">Ejemplo</span>
+            <p>
+              <strong>Estás viendo datos de ejemplo.</strong>
+              No hay contrataciones ingestadas para estos filtros todavía, así que las cifras son
+              inventadas para poder revisar el diseño. Aparecerán datos reales cuando el proceso de
+              ingesta complete un ciclo.
+            </p>
+            <button
+              type="button"
+              class="boton boton--fantasma boton--pequeno"
+              aria-label="Ocultar el aviso de datos de ejemplo"
+              @click="ejemploOculto = true"
+            >
+              ✕
+            </button>
+          </div>
+        </Transition>
 
-        <section v-if="pestanaCerrada(pestana)" class="panel__cerrada superficie" role="status">
-          <span class="panel__cerrada-icono" aria-hidden="true">🔒</span>
-          <p>{{ textoCierre(pestana) }}</p>
-        </section>
+        <p v-if="aviso" class="panel__aviso" role="alert">{{ aviso }}</p>
 
-        <!-- `v-show` y no `v-if`: al renovar el plazo las gráficas vuelven sin reconstruirse. -->
-        <section v-show="pestana === 'resumen' && !pestanaCerrada('resumen')" class="resumen">
-          <!-- El selector de gráficas. Va aquí arriba y no escondido en un menú porque lo que
-               decide es qué hay debajo; un ajuste que cambia la pantalla tiene que verse en la
-               pantalla que cambia. -->
-          <div class="selector superficie">
-            <span class="selector__etiqueta">Gráficas</span>
-            <div class="selector__botones" role="group" aria-label="Gráficas del resumen">
+        <div
+          class="panel__cuerpo"
+          :class="{
+            'panel__cuerpo--sin-filtros': sinFiltrosDelPanel || (!esMovil && !filtrosVisibles),
+          }"
+        >
+          <!-- Filtros: columna fija en escritorio, cajón deslizante en móvil. -->
+          <aside
+            v-if="!sinFiltrosDelPanel"
+            id="panel-filtros"
+            class="panel__lateral superficie"
+            :class="{ 'panel__lateral--abierto': filtrosAbiertos }"
+          >
+            <div class="panel__lateral-cabecera">
+              <p class="panel__lateral-titulo">Filtros</p>
               <button
-                v-for="grafica in GRAFICAS"
-                :key="grafica.id"
                 type="button"
-                class="boton boton--pequeno"
-                :class="verGrafica(grafica.id) ? 'boton--principal' : 'boton--secundario'"
-                :aria-pressed="verGrafica(grafica.id)"
-                :disabled="esLaUnica(grafica.id)"
-                :title="
-                  esLaUnica(grafica.id)
-                    ? 'Al menos una gráfica tiene que quedar a la vista'
-                    : ''
-                "
-                @click="alternarGrafica(grafica.id)"
+                class="boton boton--fantasma boton--icono panel__lateral-cerrar"
+                aria-label="Cerrar los filtros"
+                @click="filtrosAbiertos = false"
               >
-                <span aria-hidden="true">{{ verGrafica(grafica.id) ? '◉' : '○' }}</span>
-                {{ grafica.etiqueta }}
+                ✕
               </button>
             </div>
-          </div>
+            <PanelFiltros />
+          </aside>
 
-          <div class="rejilla">
-            <!-- `v-show` y no `v-if`: la gráfica que se oculta y se vuelve a mostrar **no** se
-                 reconstruye, y el envoltorio sabe redibujarla si nació sin tamaño. -->
-            <GraficaProvincias v-show="verGrafica('provincias')" />
-            <GraficaSerie v-show="verGrafica('serie')" />
-            <GraficaDistribucion
-              v-show="verGrafica('tipos')"
-              titulo="Tipo de procedimiento"
-              pista="subasta inversa, licitación, catálogo electrónico…"
-              :filas="porTipoDeProceso"
-            />
-            <GraficaFuentes v-show="verGrafica('fuentes')" />
-          </div>
-        </section>
+          <!-- Velo que cierra el cajón al tocarlo. Solo se pinta cuando el cajón está abierto. -->
+          <div
+            v-if="filtrosAbiertos && !sinFiltrosDelPanel"
+            class="panel__velo"
+            aria-hidden="true"
+            @click="filtrosAbiertos = false"
+          />
 
-        <section v-show="pestana === 'mapa' && !pestanaCerrada('mapa')" class="panel__pila">
-          <!--
-            El selector de familia, dentro del mapa.
+          <main class="panel__principal">
+            <!-- Título de la pantalla y la frase que dice para qué sirve: una línea, no un párrafo. -->
+            <header v-if="!CON_CABECERA_PROPIA.has(pestana)" class="pantalla">
+              <h1 class="pantalla__titulo">{{ pantallaActual.etiqueta }}</h1>
+              <p v-if="pantallaActual.pista" class="pantalla__pista">{{ pantallaActual.pista }}</p>
+            </header>
 
-            El mapa responde a «dónde», y esa pregunta se hace igual sobre las dos familias: «dónde
-            se están comprando medicamentos» vale tanto para las necesidades de compra como para los
-            procesos con oferta. Tenerlas juntas en una sola vista es lo que permite ver si las dos
-            coinciden en la misma provincia.
-
-            Se escribe en el filtro de verdad —el mismo que leen la tabla y las gráficas de debajo—
-            y no en un estado propio del mapa. Si el mapa tuviera el suyo, el mapa y la tabla que
-            tiene justo al lado podrían estar mostrando familias distintas y las cifras no cuadrarían
-            sin que nada explicara por qué.
-          -->
-          <div class="selector superficie">
-            <span class="selector__etiqueta">Familia</span>
-            <div class="selector__botones" role="group" aria-label="Familia de contratación">
-              <button
-                v-for="opcion in FAMILIAS"
-                :key="opcion.id || 'todas'"
-                type="button"
-                class="boton boton--pequeno"
-                :class="
-                  filtros.estado.categoria === opcion.id ? 'boton--principal' : 'boton--secundario'
-                "
-                :aria-pressed="filtros.estado.categoria === opcion.id"
-                @click="filtros.elegirCategoria(opcion.id)"
-              >
-                {{ opcion.etiqueta }}
+            <!-- El plazo ya está en la barra de arriba. Solo se vuelve un aviso aparte cuando queda poco. -->
+            <p v-if="avisoPlazo && (diasDePlataforma ?? 99) <= 30" class="panel__vencimiento" role="status">
+              <span class="etiqueta etiqueta--aviso">Plazo</span>
+              <span class="panel__vencimiento-texto">{{ avisoPlazo }}</span>
+              <button type="button" class="boton boton--secundario boton--pequeno" @click="pedirMasTiempo">
+                Pedir más tiempo
               </button>
-            </div>
-          </div>
+            </p>
 
-          <div class="rejilla rejilla--mapa">
-            <div class="tarjeta aparece">
-              <header class="tarjeta__cabecera">
-                <div>
-                  <p class="tarjeta__titulo">Mapa de provincias</p>
-                  <p class="tarjeta__pista">
-                    Pulsa una provincia para sumarla al filtro y vuelve a pulsarla para quitarla.
-                    Aplica los filtros para que la tabla y las gráficas la sigan.
-                  </p>
+            <section v-if="pestanaCerrada(pestana)" class="panel__cerrada superficie" role="status">
+              <span class="panel__cerrada-icono" aria-hidden="true">🔒</span>
+              <p>{{ textoCierre(pestana) }}</p>
+            </section>
+
+            <!-- El chat ocupa el alto que queda: los mensajes se desplazan y el campo de escribir
+                 se queda siempre a la vista. -->
+            <section v-if="visitada('asistente')" v-show="pestana === 'asistente'" class="panel__asistente">
+              <AsistentePanel
+                :activa="pestana === 'asistente'"
+                @preparar="prepararOferta"
+                @ir="irDesdeAsistente"
+              />
+            </section>
+
+            <section v-if="visitada('inicio')" v-show="pestana === 'inicio'">
+              <InicioPanel :activa="pestana === 'inicio'" @ir="abrirPestana" />
+            </section>
+
+            <!-- `v-show` y no `v-if`: al renovar el plazo las gráficas vuelven sin reconstruirse. -->
+            <section v-show="pestana === 'resumen' && !pestanaCerrada('resumen')" class="resumen">
+              <!-- El selector de gráficas. Va aquí arriba y no escondido en un menú porque lo que
+                   decide es qué hay debajo; un ajuste que cambia la pantalla tiene que verse en la
+                   pantalla que cambia. -->
+              <div class="selector superficie">
+                <span class="selector__etiqueta">Gráficas</span>
+                <div class="selector__botones" role="group" aria-label="Gráficas del resumen">
+                  <button
+                    v-for="grafica in GRAFICAS"
+                    :key="grafica.id"
+                    type="button"
+                    class="boton boton--pequeno"
+                    :class="verGrafica(grafica.id) ? 'boton--principal' : 'boton--secundario'"
+                    :aria-pressed="verGrafica(grafica.id)"
+                    :disabled="esLaUnica(grafica.id)"
+                    :title="
+                      esLaUnica(grafica.id)
+                        ? 'Al menos una gráfica tiene que quedar a la vista'
+                        : ''
+                    "
+                    @click="alternarGrafica(grafica.id)"
+                  >
+                    <span aria-hidden="true">{{ verGrafica(grafica.id) ? '◉' : '○' }}</span>
+                    {{ grafica.etiqueta }}
+                  </button>
                 </div>
-              </header>
-              <div class="tarjeta__cuerpo">
-                <MapaEcuador />
               </div>
-            </div>
-            <GraficaProvincias />
-          </div>
 
-          <ListaProvincia @ver-todos="abrirPestana('infimas')" />
+              <div class="rejilla">
+                <!-- `v-show` y no `v-if`: la gráfica que se oculta y se vuelve a mostrar **no** se
+                     reconstruye, y el envoltorio sabe redibujarla si nació sin tamaño. -->
+                <GraficaProvincias v-show="verGrafica('provincias')" />
+                <GraficaSerie v-show="verGrafica('serie')" />
+                <GraficaDistribucion
+                  v-show="verGrafica('tipos')"
+                  titulo="Tipo de procedimiento"
+                  pista="subasta inversa, licitación, catálogo electrónico…"
+                  :filas="porTipoDeProceso"
+                />
+                <GraficaFuentes v-show="verGrafica('fuentes')" />
+              </div>
+            </section>
 
-          <!-- La misma tabla que la pestaña de ínfimas cuantías, con su detalle desplegable y su
-               paginación. Es lo que responde a «ver todas las contrataciones de la región con los
-               filtros aplicados» sin cambiar de pestaña: el listado propio que había aquí recortaba
-               el objeto y la entidad, no dejaba abrir el detalle de una ínfima cuantía y no
-               paginaba. -->
-          <TablaRegistros :titulo="tituloDeLaFamilia">
-            <template #paginacion>
-              <Paginacion
-                :pagina="filtros.estado.pagina"
-                :paginas="datos.estado.paginas"
-                :total="datos.estado.total"
-                :tamano="filtros.estado.tamano"
-                @cambiar="filtros.cambiarPagina"
-              />
-            </template>
-          </TablaRegistros>
-        </section>
+            <section v-show="pestana === 'mapa' && !pestanaCerrada('mapa')" class="panel__pila">
+              <!--
+                El selector de familia, dentro del mapa.
 
-        <!--
-          El panel de empresas se pide solo al dueño de la plataforma, y se pide de verdad (`v-if`, no
-          solo `v-show`): la pestaña no existe para los demás, así que con `v-show` el componente se
-          montaba igual y disparaba en cada carga un petición que el servidor rechazaba con 403. El
-          error no se veía —va dentro de una sección oculta—, pero era una petición inútil y un fallo
-          en el registro del navegador que parecía un defecto del panel.
-        -->
-        <section v-if="sesion.esDePlataforma.value" v-show="pestana === 'empresas'">
-          <PanelEmpresas />
-        </section>
+                El mapa responde a «dónde», y esa pregunta se hace igual sobre las dos familias:
+                «dónde se están comprando medicamentos» vale tanto para las necesidades de compra
+                como para los procesos con oferta. Tenerlas juntas en una sola vista es lo que permite
+                ver si las dos coinciden en la misma provincia.
 
-        <section v-show="pestana === 'infimas' && !pestanaCerrada('infimas')">
-          <TablaRegistros :titulo="TITULO_INFIMAS">
-            <template #paginacion>
-              <Paginacion
-                :pagina="filtros.estado.pagina"
-                :paginas="datos.estado.paginas"
-                :total="datos.estado.total"
-                :tamano="filtros.estado.tamano"
-                @cambiar="filtros.cambiarPagina"
-              />
-            </template>
-          </TablaRegistros>
-        </section>
+                Se escribe en el filtro de verdad —el mismo que leen la tabla y las gráficas de
+                debajo— y no en un estado propio del mapa. Si el mapa tuviera el suyo, el mapa y la
+                tabla que tiene justo al lado podrían estar mostrando familias distintas y las cifras
+                no cuadrarían sin que nada explicara por qué.
+              -->
+              <div class="selector superficie">
+                <span class="selector__etiqueta">Familia</span>
+                <div class="selector__botones" role="group" aria-label="Familia de contratación">
+                  <button
+                    v-for="opcion in FAMILIAS"
+                    :key="opcion.id || 'todas'"
+                    type="button"
+                    class="boton boton--pequeno"
+                    :class="
+                      filtros.estado.categoria === opcion.id ? 'boton--principal' : 'boton--secundario'
+                    "
+                    :aria-pressed="filtros.estado.categoria === opcion.id"
+                    @click="filtros.elegirCategoria(opcion.id)"
+                  >
+                    {{ opcion.etiqueta }}
+                  </button>
+                </div>
+              </div>
 
-        <section v-show="pestana === 'ofertas' && !pestanaCerrada('ofertas')">
-          <OfertasTab />
-        </section>
+              <div class="rejilla rejilla--mapa">
+                <div class="tarjeta aparece">
+                  <header class="tarjeta__cabecera">
+                    <div>
+                      <p class="tarjeta__titulo">Mapa de provincias</p>
+                      <p class="tarjeta__pista">
+                        Pulsa una provincia para sumarla al filtro y vuelve a pulsarla para quitarla.
+                        Aplica los filtros para que la tabla y las gráficas la sigan.
+                      </p>
+                    </div>
+                  </header>
+                  <div class="tarjeta__cuerpo">
+                    <MapaEcuador />
+                  </div>
+                </div>
+                <GraficaProvincias />
+              </div>
 
-        <section v-show="pestana === 'plantilla'">
-          <PlantillaExcel />
-        </section>
+              <ListaProvincia @ver-todos="abrirPestana('infimas')" />
 
-        <section v-show="pestana === 'usuarios'" class="tarjeta aparece">
-          <div class="tarjeta__cuerpo">
-            <GestionUsuarios />
-          </div>
-        </section>
+              <!-- La misma tabla que la pantalla de ínfimas cuantías, con su detalle desplegable y su
+                   paginación. Es lo que responde a «ver todas las contrataciones de la región con los
+                   filtros aplicados» sin cambiar de pantalla. -->
+              <TablaRegistros :titulo="tituloDeLaFamilia" @preparar="prepararOferta">
+                <template #paginacion>
+                  <Paginacion
+                    :pagina="filtros.estado.pagina"
+                    :paginas="datos.estado.paginas"
+                    :total="datos.estado.total"
+                    :tamano="filtros.estado.tamano"
+                    @cambiar="filtros.cambiarPagina"
+                  />
+                </template>
+              </TablaRegistros>
+            </section>
 
-        <footer class="panel__pie">
-          <span>{{ ultimaActualizacion }}</span>
-          <span v-if="datos.estado.desdeCache">· respuesta servida desde la memoria intermedia</span>
-          <span v-if="presencia.enVivo.value">· presencia en vivo</span>
-          <span v-else-if="presencia.error.value" :title="presencia.error.value">
-            · presencia sin conexión
-          </span>
-        </footer>
-      </main>
+            <!--
+              El panel de empresas se pide solo al dueño de la plataforma, y se pide de verdad (`v-if`,
+              no solo `v-show`): la pantalla no existe para los demás, así que con `v-show` el
+              componente se montaba igual y disparaba en cada carga un petición que el servidor
+              rechazaba con 403.
+            -->
+            <section v-if="sesion.esDePlataforma.value && visitada('empresas')" v-show="pestana === 'empresas'">
+              <PanelEmpresas />
+              <ComprasIa />
+            </section>
+
+            <section v-show="pestana === 'infimas' && !pestanaCerrada('infimas')">
+              <TablaRegistros :titulo="TITULO_INFIMAS" @preparar="prepararOferta">
+                <template #paginacion>
+                  <Paginacion
+                    :pagina="filtros.estado.pagina"
+                    :paginas="datos.estado.paginas"
+                    :total="datos.estado.total"
+                    :tamano="filtros.estado.tamano"
+                    @cambiar="filtros.cambiarPagina"
+                  />
+                </template>
+              </TablaRegistros>
+            </section>
+
+            <section v-if="visitada('ofertas')" v-show="pestana === 'ofertas' && !pestanaCerrada('ofertas')">
+              <OfertasTab @preparar="prepararOferta" />
+            </section>
+
+            <section v-if="visitada('plantilla')" v-show="pestana === 'plantilla'">
+              <PlantillaExcel />
+            </section>
+
+            <!-- Solo se monta para quien administra: la lista de usuarios es una petición que a los
+                 demás roles el servidor les niega (403), y montarla oculta solo producía ese error. -->
+            <section
+              v-if="sesion.esAdministrativo.value && visitada('usuarios')"
+              v-show="pestana === 'usuarios'"
+              class="tarjeta aparece"
+            >
+              <div class="tarjeta__cuerpo">
+                <GestionUsuarios />
+              </div>
+            </section>
+
+            <section v-if="visitada('perfil')" v-show="pestana === 'perfil'" class="tarjeta aparece">
+              <div class="tarjeta__cuerpo">
+                <PerfilEmpresa />
+              </div>
+            </section>
+
+            <section
+              v-if="visitada('propuestas')"
+              v-show="pestana === 'propuestas' && !pestanaCerrada('propuestas')"
+              class="tarjeta aparece"
+            >
+              <div class="tarjeta__cuerpo">
+                <!-- `ir-perfil` solo se escucha si el rol tiene la pestaña de perfil: así la pantalla
+                     sabe que no hay botón que ofrecer y dice en texto dónde está. -->
+                <PropuestasParaTi
+                  @preparar="prepararOferta"
+                  v-on="PESTANAS.some((opcion) => opcion.id === 'perfil') ? { irPerfil: () => abrirPestana('perfil') } : {}"
+                />
+              </div>
+            </section>
+
+            <section v-if="visitada('radar')" v-show="pestana === 'radar' && !pestanaCerrada('radar')" class="tarjeta aparece">
+              <div class="tarjeta__cuerpo">
+                <RadarOportunidades
+                  @usar-busqueda="usarBusqueda"
+                  @preparar="prepararOferta"
+                  @ir-perfil="PESTANAS.some((opcion) => opcion.id === 'perfil') && abrirPestana('perfil')"
+                />
+              </div>
+            </section>
+
+            <section v-if="visitada('mercado')" v-show="pestana === 'mercado' && !pestanaCerrada('mercado')" class="tarjeta aparece">
+              <div class="tarjeta__cuerpo">
+                <Mercado />
+              </div>
+            </section>
+
+            <section v-if="visitada('documentos')" v-show="pestana === 'documentos'" class="tarjeta aparece">
+              <div class="tarjeta__cuerpo">
+                <Documentos
+                  :codigo-inicial="pedidoOferta.codigo"
+                  :marca="pedidoOferta.marca"
+                  @perfil="abrirPestana('perfil')"
+                />
+              </div>
+            </section>
+
+            <section v-if="visitada('misofertas')" v-show="pestana === 'misofertas'" class="tarjeta aparece">
+              <div class="tarjeta__cuerpo">
+                <MisOfertas @preparar="prepararOferta" />
+              </div>
+            </section>
+
+            <footer v-show="pestana !== 'asistente'" class="panel__pie">
+              <span>{{ ultimaActualizacion }}</span>
+              <span v-if="datos.estado.desdeCache">· respuesta servida desde la memoria intermedia</span>
+              <span v-if="presencia.enVivo.value">· presencia en vivo</span>
+              <span v-else-if="presencia.error.value" :title="presencia.error.value">
+                · presencia sin conexión
+              </span>
+            </footer>
+          </main>
+        </div>
+      </div>
     </div>
 
     <CambiarContrasena
@@ -809,14 +1117,15 @@ const ultimaActualizacion = computed(() =>
     />
 
     <!-- Botón flotante para abrir los filtros en móvil: la barra superior ya tiene el suyo, pero
-         queda lejos del pulgar cuando la lista es larga. -->
+         queda lejos del pulgar cuando la lista es larga. Solo donde hay filtros que abrir. -->
     <button
+      v-if="!sinFiltrosDelPanel"
       type="button"
       class="panel__flotante"
       :aria-label="filtros.hayFiltros.value ? 'Abrir los filtros (hay filtros activos)' : 'Abrir los filtros'"
       @click="filtrosAbiertos = true"
     >
-      <span aria-hidden="true">⚙</span>
+      <IconoPanel nombre="filtros" :tamano="20" />
       <span v-if="filtros.hayFiltros.value" class="panel__flotante-marca" aria-hidden="true" />
     </button>
   </div>
@@ -825,15 +1134,65 @@ const ultimaActualizacion = computed(() =>
 <style scoped>
 .panel {
   min-height: 100vh;
+}
+
+/*
+ * El armazón: menú a la izquierda y el área de trabajo a la derecha. El ancho del menú es una
+ * variable para que plegarlo sea cambiar un número y no reescribir la rejilla.
+ */
+.panel__marco {
+  --ancho-menu: 248px;
+  display: grid;
+  grid-template-columns: var(--ancho-menu) minmax(0, 1fr);
+  align-items: start;
+}
+
+.panel--menu-plegado .panel__marco {
+  --ancho-menu: 64px;
+}
+
+.panel__area {
+  min-width: 0;
   padding-bottom: var(--e-6);
+}
+
+/*
+ * El asistente necesita un alto fijo —la ventana menos la barra y el margen de arriba— para que
+ * desplacen los mensajes y no la página, y el campo de escribir quede siempre abajo a la vista.
+ */
+.panel--asistente .panel__area {
+  padding-bottom: var(--e-4);
+}
+
+.panel__asistente {
+  --margen-asistente: calc(var(--e-5) + var(--e-4));
+  height: calc(100vh - var(--altura-cabecera) - var(--margen-asistente));
+  height: calc(100dvh - var(--altura-cabecera) - var(--margen-asistente));
+  min-height: 420px;
+}
+
+/* Cabecera de cada pantalla: título y una línea de para qué sirve. */
+.pantalla {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-1);
+}
+
+.pantalla__titulo {
+  font-size: var(--t-xl);
+}
+
+.pantalla__pista {
+  font-size: var(--t-sm);
+  color: var(--texto-suave);
 }
 
 .panel__cuerpo {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
-  gap: var(--e-4);
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: var(--e-5);
   align-items: start;
-  padding: var(--e-5);
+  padding: var(--e-5) var(--e-5) 0;
   max-width: 1600px;
   margin: 0 auto;
   width: 100%;
@@ -949,56 +1308,24 @@ const ultimaActualizacion = computed(() =>
   gap: var(--e-4);
 }
 
-.pestanas {
-  display: flex;
-  gap: var(--e-1);
-  padding: var(--e-1);
-  border-radius: var(--r-2);
-  background: var(--superficie-2);
-  border: 1px solid var(--borde);
-  align-self: flex-start;
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.pestanas__boton {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--e-2);
-  padding: 0.4rem 0.9rem;
-  border: 0;
-  border-radius: var(--r-1);
-  background: transparent;
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--texto-tenue);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color var(--rapido) var(--curva), color var(--rapido) var(--curva);
-}
-
-.pestanas__boton:hover {
-  color: var(--texto);
-}
-
-.pestanas__boton--activa {
-  background: var(--superficie);
-  color: var(--texto);
-  box-shadow: var(--sombra-1);
-}
-
-.pestanas__boton--cerrada {
-  opacity: 0.6;
-}
-
+/* Avisos en base neutra: el color va solo en la insignia pequeña, no en el bloque entero. */
 .panel__vencimiento {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--e-3);
   padding: var(--e-3) var(--e-4);
   border-radius: var(--r-2);
-  border-left: 3px solid var(--aviso);
-  background: var(--aviso-suave);
-  color: var(--aviso);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-suave);
   font-size: var(--t-sm);
   line-height: 1.5;
+}
+
+.panel__vencimiento-texto {
+  flex: 1;
+  min-width: 12rem;
 }
 
 .panel__cerrada {
@@ -1016,20 +1343,11 @@ const ultimaActualizacion = computed(() =>
   font-size: var(--t-lg);
 }
 
-.pestanas__cuenta {
-  padding: 0 0.35rem;
-  border-radius: var(--r-redondo);
-  background: var(--acento-tenue);
-  color: var(--acento-fuerte);
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-
 .panel__aviso {
   margin: var(--e-4) var(--e-5) 0;
   padding: var(--e-3) var(--e-4);
   border-radius: var(--r-2);
-  border-left: 3px solid var(--error);
+  border: 1px solid var(--borde);
   background: var(--error-suave);
   color: var(--error);
   font-size: var(--t-sm);
@@ -1045,7 +1363,7 @@ const ultimaActualizacion = computed(() =>
   margin: var(--e-4) var(--e-5) 0;
   padding: var(--e-3) var(--e-4);
   border-radius: var(--r-2);
-  border-left: 3px solid var(--ok);
+  border: 1px solid var(--borde);
   background: var(--ok-suave);
   color: var(--ok);
   font-size: var(--t-sm);
@@ -1059,16 +1377,11 @@ const ultimaActualizacion = computed(() =>
   margin: var(--e-4) var(--e-5) 0;
   padding: var(--e-3) var(--e-4);
   border-radius: var(--r-2);
-  border: 1px dashed var(--aviso);
-  background: var(--aviso-suave);
-  color: var(--aviso);
+  border: 1px dashed var(--borde-fuerte);
+  background: var(--superficie);
+  color: var(--texto-suave);
   font-size: var(--t-sm);
   line-height: 1.5;
-}
-
-.aviso-ejemplo__icono {
-  font-size: var(--t-md);
-  line-height: 1.2;
 }
 
 .aviso-ejemplo p {
@@ -1111,7 +1424,7 @@ const ultimaActualizacion = computed(() =>
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--ok);
+  background: var(--superficie);
   border: 2px solid var(--acento);
 }
 
@@ -1129,9 +1442,14 @@ const ultimaActualizacion = computed(() =>
 }
 
 @media (max-width: 1023px) {
+  /* En móvil y tableta el menú es un cajón fuera del flujo: el contenido usa todo el ancho. */
+  .panel__marco {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .panel__cuerpo {
     grid-template-columns: minmax(0, 1fr);
-    padding: var(--e-4);
+    padding: var(--e-4) var(--e-4) 0;
     gap: 0;
   }
 
@@ -1141,15 +1459,16 @@ const ultimaActualizacion = computed(() =>
   .panel__lateral {
     position: fixed;
     top: 0;
-    left: 0;
+    right: 0;
     bottom: 0;
     z-index: 50;
     width: min(340px, 88vw);
     max-height: none;
     border-radius: 0;
     border: 0;
-    border-right: 1px solid var(--borde);
-    transform: translateX(-102%);
+    border-left: 1px solid var(--borde);
+    /* Entra por la derecha: el menú entra por la izquierda y así no se confunden los dos cajones. */
+    transform: translateX(102%);
     transition: transform var(--normal) var(--curva);
     overflow-y: auto;
   }
@@ -1187,11 +1506,40 @@ const ultimaActualizacion = computed(() =>
     margin-left: var(--e-4);
     margin-right: var(--e-4);
   }
+
+  .panel__asistente {
+    --margen-asistente: calc(var(--e-4) * 2);
+  }
 }
 
 @media (min-width: 1024px) {
   .panel__flotante {
     display: none;
+  }
+}
+
+@media (max-width: 639px) {
+  .panel__cuerpo {
+    padding: var(--e-3) var(--e-3) 0;
+  }
+
+  .panel--asistente .panel__area {
+    padding-bottom: var(--e-3);
+  }
+
+  .panel__asistente {
+    --margen-asistente: calc(var(--e-3) * 2);
+  }
+
+  .aviso-ejemplo,
+  .panel__aviso,
+  .panel__exito {
+    margin-left: var(--e-3);
+    margin-right: var(--e-3);
+  }
+
+  .pantalla__titulo {
+    font-size: var(--t-lg);
   }
 }
 </style>

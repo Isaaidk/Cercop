@@ -85,12 +85,19 @@ const TIPO_LIBRO =
 
 /** Error de la API con lo que hace falta para decidir qué mostrar. */
 export class ErrorApi extends Error {
-  constructor(mensaje, { estado = 0, codigo = 'error', detalles = null } = {}) {
+  constructor(mensaje, { estado = 0, codigo = 'error', detalles = null, esperaSeg = 0 } = {}) {
     super(mensaje)
     this.name = 'ErrorApi'
     this.estado = estado
     this.codigo = codigo
     this.detalles = detalles
+    // Lo que el servidor pidió esperar (cabecera Retry-After) antes de volver a intentar.
+    this.esperaSeg = esperaSeg
+  }
+
+  /** ¿Pidió demasiado rápido? Es un freno temporal, no un fallo: se espera y se reintenta. */
+  get esLimite() {
+    return this.estado === 429
   }
 
   /** ¿Hay que hacer algo distinto en la interfaz por este error? */
@@ -320,7 +327,8 @@ async function interpretarError(respuesta) {
     : cuerpo?.detail
   const mensaje = detalle || `La API respondió ${respuesta.status}.`
 
-  return new ErrorApi(mensaje, { estado: respuesta.status, codigo, detalles: cuerpo })
+  const esperaSeg = Number(respuesta.headers.get('Retry-After')) || 0
+  return new ErrorApi(mensaje, { estado: respuesta.status, codigo, detalles: cuerpo, esperaSeg })
 }
 
 async function enviar(ruta, { metodo = 'GET', cuerpo, parametros, sinReintento = false } = {}) {
@@ -400,8 +408,8 @@ async function enviar(ruta, { metodo = 'GET', cuerpo, parametros, sinReintento =
  * Se pide con `fetch` y no con un enlace `<a href>`: un enlace no lleva la cabecera del token, y el
  * archivo no es público. Sin sesión no hay descarga.
  */
-async function descargar(ruta, { parametros, sinReintento = false } = {}) {
-  const cabeceras = { Accept: TIPO_LIBRO }
+async function descargar(ruta, { parametros, sinReintento = false, aceptar = TIPO_LIBRO } = {}) {
+  const cabeceras = { Accept: aceptar }
   if (tokenAcceso) cabeceras.Authorization = `Bearer ${tokenAcceso}`
 
   let respuesta
@@ -421,7 +429,7 @@ async function descargar(ruta, { parametros, sinReintento = false } = {}) {
       throw error
     }
     const renovado = await renovarEnSilencio()
-    if (renovado) return descargar(ruta, { parametros, sinReintento: true })
+    if (renovado) return descargar(ruta, { parametros, sinReintento: true, aceptar })
     avisarSesionPerdida('caducada')
     // Mismo reemplazo que en `enviar`, y por el mismo motivo: quien capture este error lo enseña.
     throw new ErrorApi(MENSAJE_SESION_CAIDA, {
@@ -621,11 +629,50 @@ async function enviarArchivo(ruta, archivo, { sinReintento = false } = {}) {
   return texto ? JSON.parse(texto) : null
 }
 
+/**
+ * Formulario con archivos cuya respuesta es otro archivo: la firma electrónica. Mismo trato del
+ * token que `enviarArchivo`; el `FormData` se puede reenviar tras renovar la sesión.
+ */
+async function enviarFormularioYBajar(ruta, formulario, { sinReintento = false } = {}) {
+  const cabeceras = { Accept: '*/*' }
+  if (tokenAcceso) cabeceras.Authorization = `Bearer ${tokenAcceso}`
+  let respuesta
+  try {
+    respuesta = await fetch(construirUrl(ruta), { method: 'POST', headers: cabeceras, body: formulario })
+  } catch (error) {
+    throw new ErrorApi(
+      'No se pudo contactar con el servidor. Comprueba tu conexión e inténtalo de nuevo.',
+      { estado: 0, codigo: 'sin_conexion', detalles: error },
+    )
+  }
+  if (respuesta.status === 401 && !sinReintento) {
+    const error = await interpretarError(respuesta)
+    if (error.codigo === 'sesion_revocada') {
+      avisarSesionPerdida(error.detalles?.motivo || 'revocada', error.message)
+      throw error
+    }
+    if (await renovarEnSilencio()) {
+      return enviarFormularioYBajar(ruta, formulario, { sinReintento: true })
+    }
+    avisarSesionPerdida('caducada')
+    throw new ErrorApi(MENSAJE_SESION_CAIDA, { estado: 401, codigo: 'sesion_caducada' })
+  }
+  if (!respuesta.ok) throw await interpretarError(respuesta)
+  return {
+    contenido: await respuesta.blob(),
+    nombre: nombreDeArchivo(respuesta),
+    firmante: decodeURIComponent(respuesta.headers.get('X-Firmante') || ''),
+    firmas: Number(respuesta.headers.get('X-Firmas') || 0),
+  }
+}
+
 export const http = {
   get: (ruta, parametros) => enviar(ruta, { parametros }),
   post: (ruta, cuerpo, parametros) => enviar(ruta, { metodo: 'POST', cuerpo, parametros }),
   put: (ruta, cuerpo, parametros) => enviar(ruta, { metodo: 'PUT', cuerpo, parametros }),
+  patch: (ruta, cuerpo, parametros) => enviar(ruta, { metodo: 'PATCH', cuerpo, parametros }),
   del: (ruta, parametros) => enviar(ruta, { metodo: 'DELETE', parametros }),
   descargar,
   enviarArchivo,
+  enviarFormularioYBajar,
 }

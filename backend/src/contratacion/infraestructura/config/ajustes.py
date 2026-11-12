@@ -23,6 +23,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LONGITUD_MINIMA_SECRETO = 32
 CAMPOS_SECRETOS = ("jwt_secreto", "clave_cifrado_datos", "clave_pepper_hmac")
+ENTORNOS_PRODUCCION = frozenset({"prod", "produccion", "production"})
+ENTORNOS_CONOCIDOS = ENTORNOS_PRODUCCION | {"dev", "desarrollo", "development", "local", "test"}
 
 # Rutas deterministas: el archivo de entorno no depende del directorio de ejecución.
 RAIZ_BACKEND = Path(__file__).resolve().parents[4]
@@ -51,6 +53,10 @@ class Ajustes(BaseSettings):
     # El caché es OPCIONAL. Vacío significa «desarrollo sin caché»: el sistema funciona leyendo de
     # la base de datos. Al desplegar se configura con el almacén gestionado (`rediss://...`).
     redis_url: str = ""
+    # Segundos de tope para conectar con el almacén y para cada respuesta suya. Sin tope, un Redis
+    # inalcanzable hacía esperar a cada petición lo que tardara el sistema operativo en rendirse.
+    # Ver `cache/redis.py` y `resiliencia.py`.
+    cache_timeout_seg: float = Field(default=2.0, gt=0, le=30)
 
     # --- Base de datos ------------------------------------------------------
     # Dimensiones del pool de conexiones **por proceso**. Cada worker de uvicorn abre el suyo, así
@@ -72,6 +78,26 @@ class Ajustes(BaseSettings):
     # corto** que la inactividad máxima del servidor: si fuera más largo, la conexión moriría antes
     # de reciclarse y volvería a hacer falta la comprobación previa que se quitó por cara.
     bd_pool_recycle_seg: int = Field(default=180, ge=1)
+    # Segundos para abrir una conexión nueva con PostgreSQL antes de rendirse. El valor del
+    # controlador (60 s) convierte una base inalcanzable en un minuto de espera por petición; diez
+    # segundos cubren de sobra un servidor remoto lento y fallan a tiempo cuando no está.
+    bd_conexion_timeout_seg: float = Field(default=10.0, gt=0, le=60)
+    # Tope de cada sentencia, en milisegundos, que PostgreSQL aplica a las conexiones de **este**
+    # proceso. Con 1.000 personas, una consulta que se queda pensando no solo tarda: retiene una
+    # conexión del pool y, con unas pocas así, el resto de peticiones espera turno y acaba en 503.
+    # Treinta segundos están muy por encima de cualquier pantalla (la exportación de 20.000 filas
+    # tarda unos pocos) y cortan lo que ya no va a contestar a nadie. Cero lo desactiva.
+    #
+    # **El worker lo pone a cero por su cuenta** (`tareas/worker.py`): la ingesta y el
+    # mantenimiento tienen consultas largas legítimas. Por eso no se fija por rol en la base.
+    bd_statement_timeout_ms: int = Field(default=30_000, ge=0)
+    # Tope de una transacción abierta **sin hacer nada**. Es la red contra una conexión que se queda
+    # con la transacción a medias (una excepción mal atrapada, un `await` a un servicio ajeno dentro
+    # del bloque): sin él, retiene sus bloqueos de fila y su ranura del pool para siempre. El worker
+    # también lo pone a cero: su bloqueo de ingesta vive en una conexión ociosa durante el ciclo.
+    bd_idle_tx_timeout_ms: int = Field(default=60_000, ge=0)
+    # Cómo se presentan las conexiones en `pg_stat_activity`. El worker usa otro nombre.
+    bd_nombre_aplicacion: str = "cercoapp-api"
 
     # --- Seguridad ----------------------------------------------------------
     jwt_secreto: str
@@ -124,6 +150,25 @@ class Ajustes(BaseSettings):
         """
         return self.sesion_inactividad_min * 60
 
+    # --- Borde HTTP (auditoría de seguridad, doc 38) ------------------------
+    # Cuántos proxys propios hay delante de la API. La IP de quien llama se toma de la dirección
+    # que añade el último de ellos en `X-Forwarded-For`, y no de la primera, que la escribe el
+    # cliente. `0`: sin proxy delante, se usa la conexión directa. **En Railway y detrás de Caddy
+    # tiene que ser `1`**: con `0` todas las peticiones parecen venir del proxy y el freno de inicio
+    # de sesión se reparte entre todos los usuarios. Ver `entrada/http/proteccion.py`.
+    proxy_saltos: int = Field(default=0, ge=0, le=5)
+    # Tamaño máximo del cuerpo de cualquier petición, en MB. El archivo más grande que acepta una
+    # ruta son 8 MB (RUP, PDF a firmar, plantilla de Excel); el tope deja margen para el resto del
+    # formulario. Cero lo desactiva, y no hay motivo para hacerlo.
+    max_cuerpo_mb: int = Field(default=20, ge=0, le=200)
+    # Dominios desde los que el worker puede bajar anexos (TDR, pliegos). Un enlace a cualquier otro
+    # sitio —o una redirección hacia él— se rechaza: sin esta lista, un enlace de la ficha podía
+    # hacer que el worker pidiera direcciones internas de la red del despliegue (SSRF). Se admite
+    # el dominio y sus subdominios.
+    anexos_dominios_permitidos: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["compraspublicas.gob.ec"]
+    )
+
     # --- Presencia ----------------------------------------------------------
     presencia_ttl_seg: int = Field(default=60, ge=5)
     heartbeat_seg: int = Field(default=30, ge=5)
@@ -135,6 +180,13 @@ class Ajustes(BaseSettings):
         default_factory=lambda: ["http://localhost:5173"]
     )
 
+    # Correo de las alertas. Vacío: el aviso queda en el panel y no se intenta enviar.
+    smtp_host: str = ""
+    smtp_puerto: int = 587
+    smtp_usuario: str = ""
+    smtp_clave: str = ""
+    smtp_desde: str = ""
+
     # --- Exportación ---------------------------------------------------------
     # Directorio donde viven las plantillas de Excel que sube cada empresa.
     #
@@ -145,6 +197,23 @@ class Ajustes(BaseSettings):
     # `deploy/copias.sh` copia este directorio además de la base: una plantilla perdida no es
     # irrecuperable —cada empresa tiene su archivo— pero sí es una molestia evitable.
     plantillas_dir: str = "plantillas"
+    # TDR temporales. No es la base: el archivo se borra al día y la carpeta tiene tope.
+    tdr_dir: str = "tdr"
+
+    # --- IA -------------------------------------------------------------------
+    # Cualquier servicio con la API de chat de OpenAI: Groq y Gemini tienen capa gratuita, y Ollama
+    # corre en la misma máquina sin clave. Sin `ia_url` la oferta se arma con la plantilla y los
+    # datos de la empresa, sin modelo.
+    ia_url: str = ""
+    ia_clave: str = ""
+    ia_modelo: str = "llama-3.3-70b-versatile"
+    # Llamadas al modelo a la vez por proceso. Con 4 procesos son 16 en vuelo: el resto espera turno
+    # en vez de tumbar el servicio externo o agotar su cuota por minuto.
+    ia_concurrencia: int = Field(default=4, ge=1, le=32)
+    ia_tiempo_seg: float = Field(default=45.0, ge=5.0, le=120.0)
+    # Vueltas de herramientas que el asistente (chat) puede dar antes de contestar. Cada vuelta es
+    # una llamada al modelo: más vueltas responden preguntas más enrevesadas, pero tardan más.
+    asistente_max_rondas: int = Field(default=4, ge=1, le=6)
 
     # --- Ingesta ------------------------------------------------------------
     intervalo_ingesta_min: int = Field(default=15, ge=1)
@@ -179,6 +248,12 @@ class Ajustes(BaseSettings):
     # a 0,6 s por petición son unos tres minutos, que caben entre dos ciclos sin retrasar el
     # siguiente. Bajarlo a cero desactiva la lectura de fichas.
     fichas_items_por_ciclo: int = Field(default=300, ge=0)
+    # Fichas que la vuelta corta lee **cuando trae necesidades nuevas**, para que la ínfima llegue
+    # al panel con sus CPC y no quince minutos después. A dos en vuelo y 0,6 s entre peticiones,
+    # 60 fichas son menos de un minuto, que cabe de sobra en los 150 s de la vuelta. Cero lo apaga.
+    fichas_por_vigilancia: int = Field(default=60, ge=0)
+    # Proxies de salida de NCO, separados por coma. Vacío: se lee `NCO_PROXY_URL` o se sale directo.
+    nco_proxy_urls: str = ""
     # Días que se recuperan hacia atrás la primera vez que se busca un término. Es lo que decide si
     # un cliente que agrega una palabra clave ve las contrataciones anteriores a su suscripción.
     ventana_inicial_dias: int = Field(default=90, ge=1)
@@ -268,6 +343,28 @@ class Ajustes(BaseSettings):
     log_nivel: str = "INFO"
 
     # --- Validaciones ------------------------------------------------------
+    @field_validator("entorno")
+    @classmethod
+    def _entorno_conocido(cls, valor: str) -> str:
+        """Un entorno mal escrito no puede convertirse en «desarrollo» sin que nadie se entere.
+
+        `ENTORNO=produccion ` o `ENTORNO=prd` se leían como desarrollo: documentación de la API
+        publicada, secretos cortos admitidos y sin HSTS. Ahora un valor desconocido no arranca.
+        """
+        limpio = valor.strip().lower()
+        if limpio not in ENTORNOS_CONOCIDOS:
+            raise ValueError(
+                f"ENTORNO={valor!r} no se reconoce. Usa uno de: {sorted(ENTORNOS_CONOCIDOS)}."
+            )
+        return limpio
+
+    @field_validator("anexos_dominios_permitidos", mode="before")
+    @classmethod
+    def _dominios_por_comas(cls, valor: Any) -> Any:
+        if isinstance(valor, str):
+            return [parte.strip().lower() for parte in valor.split(",") if parte.strip()]
+        return valor
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _separar_por_comas(cls, valor: Any) -> Any:
@@ -308,7 +405,7 @@ class Ajustes(BaseSettings):
     # --- Derivados ---------------------------------------------------------
     @property
     def es_produccion(self) -> bool:
-        return self.entorno.lower() in {"prod", "produccion", "production"}
+        return self.entorno.lower() in ENTORNOS_PRODUCCION
 
     @property
     def cache_habilitada(self) -> bool:

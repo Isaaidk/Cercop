@@ -59,9 +59,9 @@ class AltaDeCuenta(BaseModel):
         ),
     )
     rol: str = Field(
-        default="consultor",
-        description="admin_negocio, consultor o lector. Superadministrador no se asigna aquí.",
-        examples=["consultor"],
+        default="usuario",
+        description="usuario. El dueño y el superadministrador no se asignan aquí.",
+        examples=["usuario"],
     )
     nombre: str | None = Field(default=None, max_length=120)
 

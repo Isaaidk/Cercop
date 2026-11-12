@@ -1,0 +1,110 @@
+{
+  "RE-RA-HEEE-2026-002 (tender.value, budget anidado, adjudicado)": {
+    "version": "1.1",
+    "releases": [
+      {
+        "id": "RE-RA-HEEE-2026-002-52558-2026-09-25T19:10:54.163Z-compiled",
+        "tag": [
+          "planning",
+          "tender",
+          "award",
+          "contract",
+          "implementation"
+        ],
+        "date": "2026-09-25T14:23:37-05:00",
+        "ocid": "ocds-5wno2w-RE-RA-HEEE-2026-002-52558",
+        "buyer": {
+          "id": "EC-RUC-1768033980001-52558",
+          "name": "Hospital Eugenio Espejo"
+        },
+        "tender": {
+          "id": "RE-RA-HEEE-2026-002-52558",
+          "title": "RE-RA-HEEE-2026-002-52558",
+          "status": "complete",
+          "value": {
+            "amount": 15600,
+            "currency": "USD"
+          },
+          "procurementMethodDetails": "Repuestos o Accesorios"
+        },
+        "planning": {
+          "budget": {
+            "id": "2026.320.1420.0000.90.00.000.005.000.1701.530813.000000.002.0000.0000-",
+            "amount": {
+              "amount": 15600,
+              "currency": "USD"
+            }
+          }
+        },
+        "awards": [
+          {
+            "id": "8841064-RE-RA-HEEE-2026-002",
+            "date": "2026-07-01T15:00:42-05:00",
+            "value": {
+              "amount": 15600,
+              "currency": "USD"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "SIE-CCFFAA-2026-004 (subasta: lotes y aclaraciones, sin tender.value)": {
+    "version": "1.1",
+    "releases": [
+      {
+        "id": "SIE-CCFFAA-2026-004-2539-2026-07-16T16:38:06.826Z-compiled",
+        "tag": [
+          "planning",
+          "tender"
+        ],
+        "date": "2026-07-16T11:39:30-05:00",
+        "ocid": "ocds-5wno2w-SIE-CCFFAA-2026-004-2539",
+        "buyer": {
+          "id": "EC-RUC-1768012630001-2539",
+          "name": "COMANDO CONJUNTO"
+        },
+        "tender": {
+          "id": "SIE-CCFFAA-2026-004-2539",
+          "title": "SIE-CCFFAA-2026-004-2539",
+          "status": "active",
+          "lots": [
+            {
+              "id": "470392",
+              "title": "SERVICIOS DE MANTENIMIENTO DE SISTEMAS",
+              "value": {
+                "amount": 17375,
+                "currency": "USD"
+              },
+              "techniques": {
+                "hasElectronicAuction": true
+              }
+            }
+          ],
+          "enquiries": [
+            {
+              "id": "4264816",
+              "date": "2026-07-02T00:00:00-05:00",
+              "dateAnswered": "2026-07-06T00:00:00-05:00",
+              "description": "Estimados miembros de la Comisión Técnica, considerando que la administración de sistemas ",
+              "answer": "Estimado oferente, no se acepta la homologación propuesta, debido a que las certificacione"
+            },
+            {
+              "id": "4264813",
+              "date": "2026-07-02T00:00:00-05:00",
+              "dateAnswered": "2026-07-06T00:00:00-05:00",
+              "description": "Estimados miembros de la Comisión Técnica, a fin de garantizar los principios de concurren",
+              "answer": "Estimado oferente, no se acepta la homologación propuesta, debido a que las  certificacion"
+            }
+          ],
+          "procurementMethodDetails": "Subasta Inversa Electrónica"
+        },
+        "planning": {
+          "budget": {
+            "id": "2026.070.4999.0000.01.00.000.001.000.1701.530704.000000.002.0000.0000"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -29,6 +29,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
@@ -36,6 +37,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from contratacion.aplicacion.hilos import en_hilo
 from contratacion.aplicacion.plantillas import HOJA_DE_DATOS
 from contratacion.aplicacion.puertos.consultas import RepositorioConsultas
 from contratacion.dominio.acceso import momento_local
@@ -197,6 +199,8 @@ CLAVES_INTERNAS = frozenset(
         CLAVE_ENLACE,
         "cpc_codigos",
         "items",
+        # Marca de si la ficha ya se leyó: le sirve al panel, no a quien abre el Excel.
+        "items_leidos",
     }
 )
 
@@ -349,12 +353,17 @@ async def exportar(
             "intentarlo."
         )
 
-    contenido = construir_libro(
-        filas,
-        filtros=filtros,
-        generado_en=instante,
-        plantilla=plantilla,
-        columnas=columnas,
+    # Armar un libro de hasta 20.000 filas son segundos de CPU de corrido: en el bucle de eventos
+    # congelaban a todas las demás peticiones del proceso mientras tanto. Va a un hilo, con tope.
+    contenido = await en_hilo(
+        partial(
+            construir_libro,
+            filas,
+            filtros=filtros,
+            generado_en=instante,
+            plantilla=plantilla,
+            columnas=columnas,
+        )
     )
     etiqueta = momento_local(instante).strftime("%Y%m%d-%H%M")
     return ResultadoExportacion(

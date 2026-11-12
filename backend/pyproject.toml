@@ -25,6 +25,14 @@ dependencies = [
     # dependencias y falla al arrancar si falta: el error —«Form data requires python-multipart»—
     # aparece al declarar la ruta, no al usarla, así que sin él no arrancaría la aplicación entera.
     "python-multipart>=0.0.9",
+    # Texto de un PDF subido. No interpreta un escaneo: si el archivo no trae texto, se dice.
+    "pypdf>=5.1",
+    # Firma PAdES de los PDF con el certificado .p12 del usuario (FirmaEC u otra entidad).
+    "pyhanko>=0.25",
+    # El QR del sello de firma, con el mismo formato que FirmaEC (ver `salida/firma.py`).
+    "qrcode>=7.4",
+    # PDF con formato de la proforma que se descarga y se firma.
+    "fpdf2>=2.8",
     # Base de datos horaria para Windows, donde no existe la del sistema: `zoneinfo` la necesita.
     "tzdata>=2024.1",
     # Lectura del `docker-compose.yml` desde `scripts/verificar_despliegue.py`, que comprueba la

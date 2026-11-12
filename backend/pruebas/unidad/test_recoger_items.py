@@ -110,11 +110,13 @@ class RepositorioFalso:
         items: Sequence[Mapping[str, Any]],
         cpc_busqueda: str,
         cpc_codigos: Sequence[str],
+        documentos: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         self.guardados[registro_id] = {
             "items": list(items),
             "cpc_busqueda": cpc_busqueda,
             "cpc_codigos": list(cpc_codigos),
+            "documentos": list(documentos),
         }
 
 

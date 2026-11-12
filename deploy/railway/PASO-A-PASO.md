@@ -271,7 +271,14 @@ PLANTILLAS_DIR=/app/plantillas
 LOG_NIVEL=INFO
 PURGA_PLAZO_DIAS=7
 PURGA_MAX_FILAS_POR_VUELTA=500
+PROXY_SALTOS=1
 ```
+
+`PROXY_SALTOS=1` es obligatorio en Railway: el borde de Railway es el proxy que hay delante de la
+API, y sin esta variable la IP del cliente sale de una cabecera que el propio cliente escribe (ver
+`docs/38-auditoria-seguridad.md`). Antes de abrir el servicio al público, revisa también la lista de
+comprobación de ese documento: en particular, el rol de la base de datos con el que se conecta la
+API **no** puede ser el usuario administrador del servicio `bd`.
 
 Tres cosas que **no** hay que tocar de ese bloque:
 

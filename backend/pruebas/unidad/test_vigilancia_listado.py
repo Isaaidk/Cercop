@@ -332,11 +332,24 @@ class AjustesDePrueba:
     intervalo_mantenimiento_seg: int = 300
     purga_plazo_dias: int = 7
     purga_max_filas_por_vuelta: int = 500
+    tdr_dir: str = "tdr"
+    fichas_por_vigilancia: int = 60
+    ttl_catalogo_seg: int = 3600
 
 
 async def _nadie_pide_nada() -> None:
     """Sin petición pendiente, que es el caso normal: el worker trabaja a su cadencia."""
     return None
+
+
+async def _cola_vacia() -> int:
+    return 0
+
+
+@pytest.fixture(autouse=True)
+def _sin_cola_de_tdr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La cola de TDR va a la base; aquí se mide solo la cadencia del bucle."""
+    monkeypatch.setattr(worker, "_atender_cola", _cola_vacia)
 
 
 async def test_el_ciclo_completo_no_se_queda_sin_correr(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,3 +604,104 @@ async def test_un_fallo_leyendo_fichas_no_sube_la_generacion(
     )
 
     assert subidas == []
+
+
+# --------------------------------------------------------------------------- #
+# La ínfima nueva llega al panel con sus CPC
+# --------------------------------------------------------------------------- #
+
+
+def _resultado_con_nuevos(nuevos: int) -> ResultadoCiclo:
+    return ResultadoCiclo(
+        fuente="NCO",
+        estado="ok",
+        nuevos=nuevos,
+        actualizados=0,
+        iguales=0,
+        sin_mapear=0,
+        peticiones=1,
+        avisos=(),
+    )
+
+
+def _worker_sin_red(monkeypatch: pytest.MonkeyPatch, nuevos: int) -> dict[str, list[Any]]:
+    anotado: dict[str, list[Any]] = {"fichas": [], "catalogos": []}
+
+    async def vigilancias(*_: Any, **__: Any) -> list[ResultadoCiclo]:
+        return [_resultado_con_nuevos(nuevos)]
+
+    async def fichas(*_: Any, **kwargs: Any) -> bool:
+        anotado["fichas"].append(kwargs["fichas"])
+        return True
+
+    async def catalogos(*_: Any, **__: Any) -> dict[str, Any]:
+        anotado["catalogos"].append(True)
+        return {}
+
+    async def sin_efecto() -> None:
+        return None
+
+    monkeypatch.setattr(worker, "ejecutar_vigilancia", vigilancias)
+    monkeypatch.setattr(worker, "leer_fichas_nuevas", fichas)
+    monkeypatch.setattr(worker, "obtener_catalogos", catalogos)
+    monkeypatch.setattr(worker, "obtener_ajustes", lambda: AjustesDePrueba())
+    monkeypatch.setattr(worker, "obtener_motor", lambda: object())
+    monkeypatch.setattr(worker, "RepositorioIngesta", lambda *_: object())
+    monkeypatch.setattr(worker, "RepositorioConsultasBd", lambda *_: object())
+    monkeypatch.setattr(worker, "obtener_cache", CacheEspia)
+    monkeypatch.setattr(worker, "cerrar_cache", sin_efecto)
+    monkeypatch.setattr(worker, "cerrar_bd", sin_efecto)
+    return anotado
+
+
+async def test_la_vuelta_corta_lee_las_fichas_de_lo_nuevo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una ínfima nueva no espera quince minutos a su CPC: se lee en la misma vuelta."""
+    anotado = _worker_sin_red(monkeypatch, nuevos=3)
+
+    await worker.vigilar_listado()
+
+    assert anotado["fichas"] == [AjustesDePrueba.fichas_por_vigilancia]
+    assert anotado["catalogos"] == [True], "si se subió la generación, se recalientan"
+
+
+async def test_sin_novedades_la_vuelta_corta_no_lee_fichas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin nada nuevo, la vuelta sigue sin tocar fichas ni caché: es la mayoría de las vueltas."""
+    anotado = _worker_sin_red(monkeypatch, nuevos=0)
+
+    await worker.vigilar_listado()
+
+    assert anotado["fichas"] == []
+    assert anotado["catalogos"] == []
+
+
+async def test_leer_fichas_nuevas_devuelve_si_escribio_cpc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fichas_leidas(*_: Any, **__: Any) -> ResultadoDetalle:
+        return ResultadoDetalle(revisados=2, con_items=2)
+
+    async def subir_falsa(cache: Cache, fuente: str = "global") -> None:
+        return None
+
+    monkeypatch.setattr(planificador, "bloqueo_de_ingesta", _bloqueo_libre)
+    monkeypatch.setattr(planificador, "recoger_items", fichas_leidas)
+    monkeypatch.setattr(planificador, "subir_generacion", subir_falsa)
+
+    assert await planificador.leer_fichas_nuevas(
+        cast(RepositorioIngesta, RepositorioEspia()),
+        CacheEspia(),
+        intervalo_min=15,
+        ventana_solape_ciclos=2,
+        fichas=10,
+    )
+    assert not await planificador.leer_fichas_nuevas(
+        cast(RepositorioIngesta, RepositorioEspia()),
+        CacheEspia(),
+        intervalo_min=15,
+        ventana_solape_ciclos=2,
+        fichas=0,
+    )

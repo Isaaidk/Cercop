@@ -8,9 +8,11 @@ entrar. Distinguirlos convertiría el inicio de sesión en un buscador de usuari
 mensaje no se delate por el tiempo, cuando la cuenta no existe se comprueba igualmente la contraseña
 contra una huella de descarte.
 
-**El orden sí importa cuando la contraseña es correcta.** Solo entonces se dice que la cuenta está
-bloqueada o desactivada, porque quien ha demostrado conocer la contraseña ya sabía que la cuenta
-existe y merece un mensaje útil en lugar de uno genérico.
+**El bloqueo no se distingue de un fallo.** Una cuenta bloqueada responde el mismo mensaje con
+cualquier contraseña, y el mensaje ya avisa de que el bloqueo existe. Antes se decía «bloqueada»
+solo con la contraseña correcta, y eso le servía a quien probaba contraseñas para saber cuál era la
+buena aunque el bloqueo estuviera puesto. Solo la cuenta **desactivada** recibe un mensaje propio, y
+solo con la contraseña correcta: quien la conoce ya sabía que la cuenta existe.
 
 **El negocio sale del token, nunca de la petición.** Es la regla R-04, y aquí se ve por qué: si el
 cliente pudiera elegir el negocio, podría pedir datos de otro.
@@ -48,12 +50,17 @@ from contratacion.dominio.credenciales import (
     siguiente_bloqueo,
 )
 from contratacion.dominio.errores import SinPermiso
-from contratacion.dominio.ingesta import ZONA_FUENTE
 from contratacion.dominio.sesiones import MotivoRevocacion, sesiones_a_expulsar
 
 registro = logging.getLogger(__name__)
 
-MENSAJE_CREDENCIALES = "El correo o la contraseña no son correctos."
+# Es el mismo texto para el correo que no existe, la contraseña equivocada y la cuenta bloqueada, y
+# por eso menciona el bloqueo: quien lo lee sabe qué puede estar pasando sin que la respuesta diga
+# cuál de las tres cosas es.
+MENSAJE_CREDENCIALES = (
+    "El correo o la contraseña no son correctos. Tras varios intentos fallidos la cuenta se "
+    "bloquea unos minutos: espera o pide al administrador de tu empresa que la desbloquee."
+)
 MENSAJE_SIN_SESION = "La sesión ya no está activa. Vuelve a iniciar sesión."
 MENSAJE_SIN_ENTRADA = "Esta cuenta no tiene acceso al sistema. Contacta con el administrador."
 
@@ -184,21 +191,23 @@ async def iniciar_sesion(
         registro.error("La cuenta %s se resolvió pero no se pudo leer", usuario_id)
         raise SinPermiso(MENSAJE_CREDENCIALES)
 
+    if esta_bloqueada(cuenta.bloqueado_hasta, instante):
+        # Durante el bloqueo la respuesta **no depende de la contraseña**. Antes se contestaba «la
+        # cuenta está bloqueada» solo cuando la contraseña era correcta, y eso convertía el bloqueo
+        # en un oráculo: quien probaba contraseñas seguía probándolas durante el bloqueo y el cambio
+        # de mensaje le decía cuál era la buena. Ahora sale el mismo texto que cualquier otro fallo,
+        # que ya avisa del bloqueo, y se comprueba la huella igualmente para que el tiempo tampoco
+        # lo delate (auditoría de seguridad, doc 38).
+        contrasenas.verificar(cuenta.hash_password, contrasena)
+        await _auditar_fallo(cuentas, cuenta, correo, ip, user_agent)
+        raise SinPermiso(MENSAJE_CREDENCIALES)
+
     if not contrasenas.verificar(cuenta.hash_password, contrasena):
         await _registrar_fallo(cuentas, cuenta, instante)
         await _auditar_fallo(cuentas, cuenta, correo, ip, user_agent)
         raise SinPermiso(MENSAJE_CREDENCIALES)
 
     # A partir de aquí la contraseña es correcta, así que se puede ser concreto sin revelar nada.
-    if esta_bloqueada(cuenta.bloqueado_hasta, instante):
-        restante = cuenta.bloqueado_hasta
-        assert restante is not None  # lo garantiza `esta_bloqueada`
-        raise SinPermiso(
-            "La cuenta está bloqueada temporalmente por intentos fallidos. "
-            "Vuelve a intentarlo después de las "
-            f"{restante.astimezone(ZONA_FUENTE).strftime('%H:%M')}, o pide al administrador que "
-            "la desbloquee."
-        )
 
     if not cuenta.puede_iniciar_sesion:
         registro.warning("Intento de acceso de una cuenta no habilitada: %s", cuenta.usuario_id)

@@ -1,0 +1,286 @@
+{
+ "_nota": "Casos compartidos: los leen backend/pruebas/unidad/test_reglas_compartidas.py y frontend/tests/reglasCompartidas.test.mjs. Si una regla cambia en Python o en JavaScript, estos casos obligan a cambiar la otra.",
+ "termino_de_busqueda": [
+  [
+   "Suministros Andinos S.A.",
+   "SUMINISTROS ANDINOS"
+  ],
+  [
+   "ÁNDES CIA. LTDA.",
+   "ÁNDES"
+  ],
+  [
+   "ASOCIACION LA CANASTA \"ASOCANASTA\"",
+   "ASOCIACION LA CANASTA"
+  ],
+  [
+   "Comercial S.A. del Sur",
+   "COMERCIAL S.A. DEL SUR"
+  ],
+  [
+   "ASOCIACION DE CONSUMO DE BIENES Y PRODUCTOS LA CANASTA BASICA \"ASOCANASTA\"",
+   "ASOCIACION DE CONSUMO DE BIENES Y PRODUCTOS LA CANASTA BASICA"
+  ]
+ ],
+ "sri": {
+  "contribuyente": {
+   "numeroRuc": "1792146739001",
+   "razonSocial": "SUMINISTROS ANDINOS S.A.",
+   "estadoContribuyenteRuc": "ACTIVO",
+   "actividadEconomicaPrincipal": "VENTA AL POR MAYOR DE MAQUINARIA.",
+   "tipoContribuyente": "SOCIEDAD",
+   "regimen": "GENERAL",
+   "categoria": null,
+   "obligadoLlevarContabilidad": "SI",
+   "informacionFechasContribuyente": {
+    "fechaInicioActividades": "2016-03-14 00:00:00.0"
+   },
+   "representantesLegales": [
+    {
+     "identificacion": "1712345678",
+     "nombre": "PEREZ ANDRADE ISAAC"
+    }
+   ],
+   "contribuyenteFantasma": "NO",
+   "transaccionesInexistente": "NO"
+  },
+  "establecimientos": [
+   {
+    "nombreFantasiaComercial": "ANDINOS OFICINA",
+    "direccionCompleta": "PICHINCHA / QUITO / IÑAQUITO / AV. AMAZONAS N31-120",
+    "estado": "ABIERTO",
+    "matriz": "SI"
+   },
+   {
+    "direccionCompleta": "MANABI / PORTOVIEJO / X / CALLE 1",
+    "estado": "ABIERTO",
+    "matriz": "NO"
+   },
+   {
+    "direccionCompleta": "SANTO DOMINGO DE LOS TSACHILAS / SANTO DOMINGO / X / Y",
+    "estado": "ABIERTO",
+    "matriz": "NO"
+   },
+   {
+    "direccionCompleta": "AZUAY / CUENCA / SUCRE / CALLE LARGA 5",
+    "estado": "CERRADO",
+    "matriz": "NO"
+   }
+  ],
+  "esperado": {
+   "identidad": {
+    "razon_social": "SUMINISTROS ANDINOS S.A.",
+    "nombre_comercial": "Andinos Oficina",
+    "tipo_persona": "juridica",
+    "regimen_tributario": "General",
+    "obligado_contabilidad": true,
+    "fecha_inicio_actividades": "2016-03-14",
+    "ciudad": "Quito"
+   },
+   "direccion_empieza": "Av. Amazonas",
+   "representante": {
+    "tipo": "representante_legal",
+    "nombre": "Perez Andrade Isaac",
+    "cedula": "1712345678",
+    "cargo": "Representante legal",
+    "principal": true
+   },
+   "cobertura": [
+    {
+     "provincia": "Pichincha",
+     "canton": "Quito"
+    },
+    {
+     "provincia": "Manabí",
+     "canton": "Portoviejo"
+    },
+    {
+     "provincia": "Santo Domingo de los Tsáchilas",
+     "canton": "Santo Domingo"
+    }
+   ],
+   "avisos": []
+  }
+ },
+ "sri_natural_rimpe": {
+  "contribuyente": {
+   "numeroRuc": "1712345678001",
+   "razonSocial": "SUMINISTROS ANDINOS S.A.",
+   "estadoContribuyenteRuc": "ACTIVO",
+   "actividadEconomicaPrincipal": "VENTA AL POR MAYOR DE MAQUINARIA.",
+   "tipoContribuyente": "PERSONAS NATURALES",
+   "regimen": "RIMPE",
+   "categoria": "NEGOCIO POPULAR",
+   "obligadoLlevarContabilidad": "NO",
+   "informacionFechasContribuyente": {
+    "fechaInicioActividades": "2016-03-14 00:00:00.0"
+   },
+   "representantesLegales": [
+    {
+     "identificacion": "1712345678",
+     "nombre": "PEREZ ANDRADE ISAAC"
+    }
+   ],
+   "contribuyenteFantasma": "NO",
+   "transaccionesInexistente": "NO"
+  },
+  "establecimientos": [],
+  "esperado": {
+   "tipo_persona": "natural",
+   "regimen_tributario": "RIMPE · Negocio Popular",
+   "obligado_contabilidad": false
+  }
+ },
+ "ocds": {
+  "ruc": "2390030234001",
+  "record": {
+   "releases": [
+    {
+     "ocid": "ocds-134929123-2026-01-06",
+     "date": "2026-01-06T00:00:00-05:00",
+     "buyer": {
+      "id": "EC-RUC-1791825314001",
+      "name": "FUNDACION CALASANZ"
+     },
+     "tender": {
+      "title": "Orden de compra",
+      "description": "Orden de compra para adquirir los siguientes productos",
+      "value": {
+       "amount": 222.01
+      }
+     },
+     "parties": [
+      {
+       "id": "EC-RUC-2390030234001-821234",
+       "roles": [
+        "supplier"
+       ]
+      }
+     ],
+     "awards": [
+      {
+       "value": {
+        "amount": 222.01
+       },
+       "suppliers": [
+        {
+         "id": "EC-RUC-2390030234001-821234"
+        }
+       ],
+       "items": [
+        {
+         "description": "CANASTA FRUTAS",
+         "classification": {
+          "id": "134929123",
+          "scheme": "CPC",
+          "description": "CANASTA DE FRUTAS"
+         }
+        },
+        {
+         "classification": {
+          "id": "99",
+          "scheme": "OTRO"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "record_homonimo": {
+   "releases": [
+    {
+     "ocid": "ocds-134929123-2026-01-06",
+     "date": "2026-01-06T00:00:00-05:00",
+     "buyer": {
+      "id": "EC-RUC-1791825314001",
+      "name": "FUNDACION CALASANZ"
+     },
+     "tender": {
+      "title": "Orden de compra",
+      "description": "Orden de compra para adquirir los siguientes productos",
+      "value": {
+       "amount": 222.01
+      }
+     },
+     "parties": [
+      {
+       "id": "EC-RUC-1790000000001-821234",
+       "roles": [
+        "supplier"
+       ]
+      }
+     ],
+     "awards": [
+      {
+       "value": {
+        "amount": 222.01
+       },
+       "suppliers": [
+        {
+         "id": "EC-RUC-1790000000001-821234"
+        }
+       ],
+       "items": [
+        {
+         "description": "CANASTA FRUTAS",
+         "classification": {
+          "id": "134929123",
+          "scheme": "CPC",
+          "description": "CANASTA DE FRUTAS"
+         }
+        },
+        {
+         "classification": {
+          "id": "99",
+          "scheme": "OTRO"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "esperado_contrato": {
+   "cpc": {
+    "134929123": "CANASTA DE FRUTAS"
+   },
+   "monto": 222.01,
+   "productos": [
+    "CANASTA FRUTAS"
+   ]
+  },
+  "resumen": {
+   "registros": [
+    [
+     "111",
+     "2024-03-01"
+    ],
+    [
+     "111",
+     "2026-02-01"
+    ],
+    [
+     "222",
+     "2025-06-01"
+    ]
+   ],
+   "esperado": {
+    "cpc_primero": {
+     "codigo": "111",
+     "descripcion": "CANASTA DE FRUTAS",
+     "veces": 2
+    },
+    "anios": [
+     2026,
+     2025,
+     2024
+    ],
+    "objeto_primero": "CANASTA FRUTAS",
+    "verificados": 3
+   }
+  }
+ }
+}

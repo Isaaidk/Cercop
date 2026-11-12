@@ -50,17 +50,23 @@ ROL_APLICACION = "app_contratacion_pruebas"
 # cada prueba hace que la conexión reutilizada deje de valer (`password authentication failed`).
 # El motivo completo está explicado en `test_acceso_vistas.py`. El rol es de solo lectura.
 CLAVE_ROL = "pruebas-rol-aplicacion"
+# Las que **tienen** que existir y estar aisladas. La lista antigua nombraba tablas que ya no
+# existen (`conjunto_terminos`, `filtro_guardado`, `exportacion`) y la prueba fallaba por eso, así
+# que no comprobaba nada. Además de estas, la prueba exige RLS forzado en **toda** tabla con
+# `negocio_id` que encuentre en el catálogo (auditoría de seguridad, doc 38).
 TABLAS_CON_NEGOCIO = (
     "usuario",
     "sesion",
     "suscripcion_termino",
-    "conjunto_terminos",
-    "filtro_guardado",
-    "exportacion",
     "consentimiento",
     "solicitud_arco",
     "auditoria",
-    "conjunto_termino",
+    "acceso_vista",
+    "cpc_clave",
+    "alerta",
+    "proforma",
+    "asistente_conversaciones",
+    "asistente_mensajes",
 )
 
 
@@ -167,8 +173,8 @@ async def escenario() -> AsyncIterator[Escenario]:
             )
             await conexion.execute(
                 text(
-                    "INSERT INTO usuario (negocio_id, email, hash_password, estado) "
-                    "VALUES (:negocio, :email, 'x', 'activo')"
+                    "INSERT INTO usuario (negocio_id, email, hash_password, estado, rol) "
+                    "VALUES (:negocio, :email, 'x', 'activo', 'usuario')"
                 ),
                 {
                     "negocio": str(identificador),
@@ -209,12 +215,32 @@ async def test_las_tablas_tienen_rls_activado_y_forzado() -> None:
                 {"tablas": [*TABLAS_CON_NEGOCIO, "negocio"]},
             )
             filas = resultado.all()
+            con_negocio = (
+                await conexion.execute(
+                    text(
+                        """
+                        SELECT c.relname
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+                          AND NOT c.relispartition
+                          AND EXISTS (
+                              SELECT 1 FROM pg_attribute a
+                              WHERE a.attrelid = c.oid AND a.attname = 'negocio_id'
+                                AND NOT a.attisdropped
+                          )
+                          AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+                        """
+                    )
+                )
+            ).all()
     finally:
         await admin.dispose()
 
     assert len(filas) == len(TABLAS_CON_NEGOCIO) + 1, "faltan tablas del plano de negocio"
     sin_forzar = [nombre for nombre, _, forzado in filas if not forzado]
     assert not sin_forzar, f"estas tablas no fuerzan RLS: {sin_forzar}"
+    assert not con_negocio, f"tablas con negocio_id sin RLS forzado: {con_negocio}"
 
 
 async def test_un_negocio_no_ve_los_datos_de_otro(escenario: Escenario) -> None:
@@ -248,8 +274,8 @@ async def test_no_se_puede_insertar_en_otro_negocio(escenario: Escenario) -> Non
                 )
                 await conexion.execute(
                     text(
-                        "INSERT INTO usuario (negocio_id, email, hash_password, estado) "
-                        "VALUES (:negocio, 'intruso@test.test', 'x', 'activo')"
+                        "INSERT INTO usuario (negocio_id, email, hash_password, estado, rol) "
+                        "VALUES (:negocio, 'intruso@test.test', 'x', 'activo', 'usuario')"
                     ),
                     {"negocio": str(escenario.b)},
                 )

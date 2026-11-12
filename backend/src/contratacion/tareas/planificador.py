@@ -20,6 +20,7 @@ Equivocarla cuesta datos de forma irreversible, así que conviene tener presente
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 
 from contratacion.aplicacion.casos_uso.ejecutar_ingesta import (
@@ -44,6 +45,20 @@ from contratacion.infraestructura.adaptadores.salida.fuentes import (
 )
 
 registro = logging.getLogger(__name__)
+
+
+def _concurrencia_fichas() -> int:
+    """Dos fichas a la vez por salida, también sin proxy.
+
+    Con una sola en vuelo, cada ficha pagaba su latencia completa (1-3 s del portal) más el
+    intervalo mínimo, y 300 fichas eran más de diez minutos. El limitador de cada salida ya admite
+    dos en vuelo y sigue imponiendo los 0,6 s entre peticiones, así que la tasa contra la fuente no
+    sube: lo que se aprovecha es el tiempo de espera de la respuesta.
+    """
+    crudas = os.getenv("NCO_PROXY_URLS") or os.getenv("NCO_PROXY_URL") or ""
+    nodos = len([url for url in crudas.split(",") if url.strip()])
+    return max(2, nodos * 2)
+
 
 LIMITE_TERMINOS_POR_CICLO = 20
 
@@ -300,13 +315,79 @@ async def ejecutar_vigilancia(
     return resultados
 
 
+async def leer_fichas_prioritarias(
+    repositorio: RepositorioIngesta,
+    cache: Cache,
+    *,
+    intervalo_min: int,
+    ventana_solape_ciclos: int,
+    fichas: int = 12,
+) -> bool:
+    """Lee ya las fichas de los procesos que alguien está armando. Devuelve si había alguna.
+
+    Quien prepara una proforma necesita los ítems del proceso al momento. Esto corre a un lado del
+    ciclo, con el mismo bloqueo de detalle: si el ciclo grande está leyendo fichas, esta pasada se
+    omite y esas fichas ya van primeras en su cola.
+    """
+    if not await repositorio.hay_items_prioritarios():
+        return False
+    definiciones = await fuentes_por_defecto(
+        repositorio,
+        intervalo_min=intervalo_min,
+        ventana_solape_ciclos=ventana_solape_ciclos,
+        incluir_ocds=False,
+    )
+    await _leer_fichas(repositorio, definiciones, fichas=fichas, cache=cache)
+    return True
+
+
+async def leer_fichas_nuevas(
+    repositorio: RepositorioIngesta,
+    cache: Cache,
+    *,
+    intervalo_min: int,
+    ventana_solape_ciclos: int,
+    fichas: int,
+) -> bool:
+    """Lee las fichas de las necesidades que la vuelta corta acaba de traer. Devuelve si subió la
+    generación.
+
+    Antes la ínfima nueva llegaba al panel **sin CPC** y se quedaba así hasta el siguiente ciclo
+    completo —quince minutos, más lo que tardara OCDS—. Ahora la vuelta corta, cuando trae algo
+    nuevo, lee sus fichas en la misma pasada (las pendientes salen de la más reciente a la más
+    antigua, así que las nuevas van primero) y solo entonces sube la generación: el panel ve la
+    ínfima ya con sus CPC.
+
+    Solo se llama cuando hubo nuevas, así que la caché no se invalida en cada vuelta: las vueltas
+    sin novedades siguen sin tocarla.
+    """
+    if fichas <= 0:
+        return False
+    definiciones = await fuentes_por_defecto(
+        repositorio,
+        intervalo_min=intervalo_min,
+        ventana_solape_ciclos=ventana_solape_ciclos,
+        incluir_ocds=False,
+    )
+    try:
+        return await _leer_fichas(repositorio, definiciones, fichas=fichas, cache=cache) > 0
+    finally:
+        for definicion in definiciones:
+            cerrar = getattr(definicion.adaptador, "cerrar", None)
+            if cerrar is not None:
+                try:
+                    await cerrar()
+                except Exception:  # noqa: BLE001 - cerrar un cliente no puede tumbar la vuelta
+                    registro.debug("No se pudo cerrar el adaptador de fichas", exc_info=True)
+
+
 async def _leer_fichas(
     repositorio: RepositorioIngesta,
     definiciones: list[DefinicionFuente],
     *,
     fichas: int,
     cache: Cache,
-) -> None:
+) -> int:
     """Lee, por tandas, las fichas de las que aún no se tienen los ítems con CPC.
 
     Un fallo aquí **no puede tumbar el ciclo**. Para cuando esto se ejecuta, el listado ya está
@@ -322,23 +403,25 @@ async def _leer_fichas(
     detalle» no cambia nada de lo que se puede buscar.
     """
     if fichas <= 0:
-        return
+        return 0
     con_cpc = 0
     try:
         async with bloqueo_de_ingesta(BLOQUEO_DETALLE) as conexion:
             if conexion is None:
                 registro.info("Otra réplica ya está leyendo fichas: se omite.")
-                return
+                return 0
             resultado = await recoger_items(
                 repositorio,
                 definiciones,
                 presupuesto_peticiones=fichas,
                 limite=fichas,
+                concurrencia=_concurrencia_fichas(),
             )
             con_cpc = resultado.con_items
     except Exception:  # noqa: BLE001 - el enriquecimiento no puede tumbar el ciclo
         registro.exception("Fallo leyendo las fichas de CPC; el ciclo ya está guardado.")
-        return
+        return 0
 
     if con_cpc:
         await subir_generacion(cache)
+    return con_cpc

@@ -10,12 +10,12 @@ dependa de FastAPI o de cualquier framework web.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from contratacion.dominio.acceso import puede_gestionar
 from contratacion.dominio.errores import SinPermiso
-from contratacion.dominio.roles import puede_exportar
+from contratacion.dominio.roles import puede_exportar, tiene_permiso
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +25,11 @@ class Actor:
     usuario_id: UUID
     negocio_id: UUID
     rol: str
+    # Sesión del token con el que se llama. Solo la conocen las peticiones con token (el atajo de
+    # desarrollo y los procesos internos no tienen sesión). Sirve para que una operación sobre «mi
+    # sesión» —conservarla al cambiar la contraseña— la tome del token y no de lo que diga el
+    # cliente. No cuenta al comparar actores: dos peticiones de la misma persona son el mismo actor.
+    sesion_id: UUID | None = field(default=None, compare=False)
 
     def exigir_administrativo(self) -> None:
         """Comprueba que el actor puede gestionar accesos de otros usuarios."""
@@ -34,13 +39,17 @@ class Actor:
     def exigir_exportador(self) -> None:
         """Comprueba que el actor puede descargar el histórico.
 
-        Va aparte de `exigir_administrativo` porque no es lo mismo: un consultor exporta y no
-        administra cuentas, y un lector administra nada y tampoco exporta. Se pregunta por la
-        capacidad concreta y no por el rol, para que la lista de quién puede hacer qué siga viviendo
-        en un solo sitio.
+        Va aparte de `exigir_administrativo` porque no es lo mismo: un usuario regular exporta y no
+        administra cuentas. Se pregunta por la capacidad concreta y no por el rol, para que la lista
+        de quién puede hacer qué siga viviendo en un solo sitio.
         """
         if not puede_exportar(self.rol):
             raise SinPermiso(
                 "Tu rol puede consultar las contrataciones en pantalla, pero no descargarlas. "
                 "Pídele al administrador de tu empresa un rol con permiso de exportación."
             )
+
+    def exigir_permiso(self, permiso: str) -> None:
+        """Comprueba un permiso de la matriz. Un rol desconocido no lo tiene."""
+        if not tiene_permiso(self.rol, permiso):
+            raise SinPermiso("No tienes permiso para esta operación.")

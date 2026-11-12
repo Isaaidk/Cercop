@@ -68,7 +68,7 @@ async def escenario() -> AsyncIterator[Escenario]:
             await conexion.execute(
                 text(
                     "INSERT INTO usuario (id, negocio_id, email, hash_password, nombre, rol, "
-                    "estado) VALUES (:id, :negocio, :email, 'x', 'Ana', 'admin_negocio', 'activo')"
+                    "estado) VALUES (:id, :negocio, :email, 'x', 'Ana', 'dueno_empresa', 'activo')"
                 ),
                 {
                     "id": str(usuario_id if negocio == negocio_id else uuid.uuid4()),

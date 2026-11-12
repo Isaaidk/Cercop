@@ -12,6 +12,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
+
 from contratacion.dominio.presencia import (
     EstadoPresencia,
     EventoPresencia,
@@ -38,6 +40,15 @@ from contratacion.infraestructura.adaptadores.salida.presencia.redis import dese
 # Se ancla al reloj, igual que las otras pruebas de este archivo que ya lo hacían.
 AHORA = datetime.now(UTC)
 TTL = 60
+
+
+@pytest.fixture(autouse=True)
+def _reloj_al_dia() -> None:
+    """`AHORA` se renueva antes de cada prueba: con TTL de 60 s, una hora tomada al importar el
+    módulo caducaba si antes corrían pruebas largas (las de integración) y estas fallaban solas."""
+    global AHORA
+    AHORA = datetime.now(UTC)
+
 
 NEGOCIO = UUID("22222222-2222-2222-2222-222222222222")
 OTRO_NEGOCIO = UUID("33333333-3333-3333-3333-333333333333")

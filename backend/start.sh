@@ -35,15 +35,91 @@ set -eu
 ESTADO=/tmp/tailscaled.state
 SOCKET=/tmp/tailscaled.sock
 PROXY=localhost:1055
+BASE_PROXY=1055
 
 # Las rutas no son las de por defecto a propósito. `tailscaled` guarda su estado en
 # `/var/lib/tailscale` y abre el socket en `/var/run/tailscale`, y ninguna de las dos es escribible
 # por el usuario `app` con el que corre el contenedor. Sin esto, el demonio no arranca y el fallo
 # aparece como un problema de permisos que no tiene nada que ver con el portal.
 
+_un_nodo() {
+    # $1 índice, $2 IP del exit node. Cada tailscaled solo admite un exit node, así que hay uno
+    # por dispositivo de salida.
+    indice="$1"
+    nodo="$2"
+    estado="/tmp/ts${indice}.state"
+    socket="/tmp/ts${indice}.sock"
+    puerto=$((BASE_PROXY + indice))
+    proxy="localhost:${puerto}"
+
+    tailscaled \
+        --tun=userspace-networking \
+        --state="$estado" \
+        --socket="$socket" \
+        --outbound-http-proxy-listen="$proxy" >/dev/stderr 2>&1 &
+
+    intentos=0
+    while [ ! -S "$socket" ]; do
+        intentos=$((intentos + 1))
+        if [ "$intentos" -ge 30 ]; then
+            echo "El demonio ${indice} no abrió el socket: se omite." >&2
+            return 1
+        fi
+        sleep 0.5
+    done
+
+    if ! tailscale --socket="$socket" up \
+        --authkey="${TAILSCALE_AUTHKEY}" \
+        --hostname="${TAILSCALE_HOSTNAME:-worker}-${indice}" \
+        --accept-dns=false >/dev/stderr 2>&1; then
+        echo "No se pudo conectar el nodo ${indice}: se omite." >&2
+        return 1
+    fi
+    sleep 3
+    if ! tailscale --socket="$socket" set --exit-node="${nodo}" >/dev/stderr 2>&1; then
+        echo "No se pudo fijar el exit node ${nodo}: se omite." >&2
+        return 1
+    fi
+    echo "http://${proxy}"
+}
+
 _tunel() {
-    if [ -z "${TAILSCALE_AUTHKEY:-}" ] || [ -z "${TAILSCALE_EXIT_NODE_IP:-}" ]; then
-        echo "Sin TAILSCALE_AUTHKEY o TAILSCALE_EXIT_NODE_IP: se arranca sin túnel."
+    if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
+        echo "Sin TAILSCALE_AUTHKEY: se arranca sin túnel."
+        return 0
+    fi
+
+    if [ -n "${TAILSCALE_EXIT_NODES:-}" ]; then
+        urls=""
+        indice=0
+        # IFS por coma. Los espacios alrededor de cada IP se quitan al usar la variable.
+        viejo_ifs=$IFS
+        IFS=','
+        for nodo in $TAILSCALE_EXIT_NODES; do
+            IFS=$viejo_ifs
+            nodo=$(echo "$nodo" | tr -d ' ')
+            if [ -n "$nodo" ]; then
+                if url=$(_un_nodo "$indice" "$nodo"); then
+                    if [ -n "$urls" ]; then
+                        urls="${urls},${url}"
+                    else
+                        urls="$url"
+                    fi
+                fi
+                indice=$((indice + 1))
+            fi
+            IFS=','
+        done
+        IFS=$viejo_ifs
+        if [ -n "$urls" ]; then
+            export NCO_PROXY_URLS="$urls"
+            echo "Túneles listos. NCO saldrá por ${NCO_PROXY_URLS}."
+        fi
+        return 0
+    fi
+
+    if [ -z "${TAILSCALE_EXIT_NODE_IP:-}" ]; then
+        echo "Sin TAILSCALE_EXIT_NODE_IP ni TAILSCALE_EXIT_NODES: se arranca sin túnel."
         return 0
     fi
 

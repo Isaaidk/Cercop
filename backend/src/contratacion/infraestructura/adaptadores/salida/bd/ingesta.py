@@ -418,7 +418,8 @@ class RepositorioIngesta:
                             JOIN fuente f ON f.id = r.fuente_id
                             WHERE f.codigo = ANY(:fuentes)
                               AND r.items_recogidos_en IS NULL
-                            ORDER BY r.primera_vez_visto DESC, r.id
+                            ORDER BY (r.items_prioridad_en IS NULL), r.items_prioridad_en DESC,
+                                     r.primera_vez_visto DESC, r.id
                             LIMIT :limite
                             """
                         ),
@@ -429,6 +430,25 @@ class RepositorioIngesta:
                 .all()
             )
             return [dict(fila) for fila in filas]
+
+    async def hay_items_prioritarios(self) -> bool:
+        """¿Alguien está esperando los ítems de un proceso? Es una lectura de índice parcial."""
+        async with self._motor.connect() as conexion:
+            return bool(
+                (
+                    await conexion.execute(
+                        text(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1 FROM registro
+                                WHERE items_recogidos_en IS NULL
+                                  AND items_prioridad_en > now() - interval '15 minutes'
+                            )
+                            """
+                        )
+                    )
+                ).scalar_one()
+            )
 
     async def contar_sin_items(self, fuentes: Sequence[str]) -> int:
         """Registros de estas fuentes a los que todavía no se les ha leído la ficha.
@@ -460,6 +480,7 @@ class RepositorioIngesta:
         items: Sequence[Mapping[str, Any]],
         cpc_busqueda: str,
         cpc_codigos: Sequence[str],
+        documentos: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         """Guarda los ítems de un registro y lo marca como leído.
 
@@ -479,6 +500,7 @@ class RepositorioIngesta:
                        SET items = CAST(:items AS jsonb),
                            cpc_busqueda = :texto,
                            cpc_codigos = :codigos,
+                           documentos = CAST(:documentos AS jsonb),
                            items_recogidos_en = now()
                      WHERE id = :id
                     """
@@ -488,6 +510,7 @@ class RepositorioIngesta:
                     "items": json.dumps(list(items), ensure_ascii=False, default=str),
                     "texto": cpc_busqueda,
                     "codigos": list(cpc_codigos),
+                    "documentos": json.dumps(list(documentos), ensure_ascii=False, default=str),
                 },
             )
 

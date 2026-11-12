@@ -36,7 +36,11 @@ def obtener_cache() -> Cache:
     global _cache
     if _cache is None:
         ajustes = obtener_ajustes()
-        _cache = CacheRedis(ajustes.redis_url) if ajustes.cache_habilitada else CacheNula()
+        _cache = (
+            CacheRedis(ajustes.redis_url, tiempo_limite_seg=ajustes.cache_timeout_seg)
+            if ajustes.cache_habilitada
+            else CacheNula()
+        )
     return _cache
 
 

@@ -435,6 +435,10 @@ def _fila_a_elemento(fila: Mapping[Any, Any]) -> Mapping[str, Any]:
         item.como_diccionario() for item in items_desde_crudos(fila.get("items") or ())
     ]
     elemento["cpc_codigos"] = list(fila.get("cpc_codigos") or ())
+    elemento["documentos"] = list(fila.get("documentos") or [])
+    # Distingue «la ficha aún no se ha leído» de «se leyó y no publica ítems», para que el panel
+    # pueda decir «leyendo CPC…» en vez de dejar la columna vacía sin explicación.
+    elemento["items_leidos"] = bool(fila.get("items_leidos", True))
     # El código del proceso, con respaldo en el `ocid` cuando el payload no lo trajo suelto.
     #
     # El listado paginado no siempre publica el `title` del que sale el código, y esas filas se
@@ -479,8 +483,9 @@ class RepositorioConsultasBd:
         consulta_pagina = text(
             f"""
             SELECT r.id, f.codigo AS fuente, f.endpoint_base AS fuente_url, r.clave_natural,
-                   r.datos, r.items, r.cpc_codigos, r.fecha_publicacion, r.primera_vez_visto,
-                   r.ultima_vez_visto, r.es_vigente
+                   r.datos, r.items, r.cpc_codigos, r.documentos, r.fecha_publicacion,
+                   r.primera_vez_visto, r.ultima_vez_visto, r.es_vigente,
+                   (r.items_recogidos_en IS NOT NULL) AS items_leidos
             FROM registro r
             JOIN fuente f ON f.id = r.fuente_id
             WHERE {where}
@@ -531,8 +536,9 @@ class RepositorioConsultasBd:
         consulta = text(
             f"""
             SELECT r.id, f.codigo AS fuente, f.endpoint_base AS fuente_url, r.clave_natural,
-                   r.datos, r.items, r.cpc_codigos, r.fecha_publicacion, r.primera_vez_visto,
-                   r.ultima_vez_visto, r.es_vigente
+                   r.datos, r.items, r.cpc_codigos, r.documentos, r.fecha_publicacion,
+                   r.primera_vez_visto, r.ultima_vez_visto, r.es_vigente,
+                   (r.items_recogidos_en IS NOT NULL) AS items_leidos
             FROM registro r
             JOIN fuente f ON f.id = r.fuente_id
             WHERE {where}

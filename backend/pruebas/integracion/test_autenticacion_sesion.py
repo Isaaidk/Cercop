@@ -94,7 +94,7 @@ async def escenario() -> AsyncIterator[Escenario]:
         await conexion.execute(
             text(
                 "INSERT INTO usuario (id, negocio_id, email, hash_password, nombre, rol, estado) "
-                "VALUES (:id, :negocio, :email, :huella, 'Ana', 'admin_negocio', 'activo')"
+                "VALUES (:id, :negocio, :email, :huella, 'Ana', 'dueno_empresa', 'activo')"
             ),
             {
                 "id": str(usuario_id),
@@ -216,7 +216,7 @@ async def test_el_inicio_de_sesion_funciona_de_verdad(escenario: Escenario) -> N
     tokens = TokensJwt(obtener_ajustes().jwt_secreto)
     claims = tokens.verificar(resultado.acceso, TipoToken.ACCESO)
     assert claims.negocio_id == escenario.negocio_id
-    assert claims.rol == "admin_negocio"
+    assert claims.rol == "dueno_empresa"
 
 
 async def test_una_contrasena_incorrecta_se_rechaza(escenario: Escenario) -> None:

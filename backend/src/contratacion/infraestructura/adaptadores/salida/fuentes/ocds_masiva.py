@@ -258,7 +258,12 @@ def traducir_publicacion(publicacion: Mapping[str, Any]) -> dict[str, Any]:
         if (valor := (adjudicacion.get("value") or {}).get("amount")) is not None
     ]
     direccion = _direccion_del_comprador(publicacion)
+    # El SERCOP anida el importe —`planning.budget.amount = {"amount": 15600, "currency": "USD"}`,
+    # comprobado en `record?ocid=` el 2026-11-11 (ver `ocds_proceso.py`)— mientras que el estándar
+    # lo pone plano. Sin desanidarlo, `_importe` recibía un diccionario y el presupuesto se perdía.
     presupuesto = (planificacion.get("budget") or {}).get("amount")
+    if isinstance(presupuesto, Mapping):
+        presupuesto = presupuesto.get("amount")
     estado = _estado_del_proceso(contrato.get("status"))
 
     return {

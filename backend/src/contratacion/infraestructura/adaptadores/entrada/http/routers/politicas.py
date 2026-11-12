@@ -38,6 +38,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
     ConsentimientosDep,
     CuentasDep,
+    IpClienteDep,
     PoliticasDep,
 )
 
@@ -111,8 +112,8 @@ async def aceptar_politica(
     politicas: PoliticasDep,
     consentimientos: ConsentimientosDep,
     cuentas: CuentasDep,
+    ip: IpClienteDep,
     user_agent: Annotated[str | None, Header()] = None,
-    x_forwarded_for: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Registra la aceptación con su evidencia y levanta el bloqueo de la cuenta.
 
@@ -128,7 +129,7 @@ async def aceptar_politica(
         politicas=politicas,
         consentimientos=consentimientos,
         cuentas=cuentas,
-        ip=x_forwarded_for,
+        ip=ip,
         user_agent=user_agent,
     )
     restante = await estado(actor, politicas=politicas, consentimientos=consentimientos)
@@ -151,8 +152,8 @@ async def revocar_politica(
     politicas: PoliticasDep,
     consentimientos: ConsentimientosDep,
     cuentas: CuentasDep,
+    ip: IpClienteDep,
     user_agent: Annotated[str | None, Header()] = None,
-    x_forwarded_for: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Retira el consentimiento y **bloquea el aplicativo** hasta que se vuelva a aceptar.
 
@@ -166,7 +167,7 @@ async def revocar_politica(
         politicas=politicas,
         consentimientos=consentimientos,
         cuentas=cuentas,
-        ip=x_forwarded_for,
+        ip=ip,
         user_agent=user_agent,
     )
     restante = await estado(actor, politicas=politicas, consentimientos=consentimientos)

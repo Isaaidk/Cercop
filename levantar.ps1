@@ -300,6 +300,29 @@ $arrancados = [ordered]@{}
 
 # 1 · API. Se arranca con recarga y con `--reload-dir src` a propósito: sin acotar el directorio,
 # vigila también `pruebas/` y `scripts/`, y cada `pytest` reinicia el servidor.
+# Un API de este proyecto que quedó de antes **sin recarga**, o arrancado antes del último cambio del
+# código, sirve rutas viejas: el panel nuevo pide rutas que ese proceso no conoce y responde «Not
+# Found». Pasó el 2026-11-11 con un API de la víspera. Se detiene y se arranca de nuevo; un proceso
+# ajeno al proyecto en el puerto no se toca.
+if (PuertoEnUso $PuertoApi) {
+    $duenioViejo = Dueno-Del-Puerto $PuertoApi
+    $proceso = Get-CimInstance Win32_Process -Filter "ProcessId = $duenioViejo" -ErrorAction SilentlyContinue
+    if ($proceso -and $proceso.CommandLine -match 'contratacion\.asgi') {
+        # Con `--reload` el proceso se recarga solo al cambiar el código, así que su fecha de inicio
+        # no dice nada. Sin recarga, cualquier cambio posterior lo deja sirviendo rutas viejas.
+        $ultimoCambio = (Get-ChildItem (Join-Path $Backend 'src') -Recurse -Filter '*.py' |
+            Measure-Object -Property LastWriteTime -Maximum).Maximum
+        $sinRecarga = $proceso.CommandLine -notmatch '--reload'
+        if ($sinRecarga -and $proceso.CreationDate -lt $ultimoCambio) {
+            Aviso "El API del puerto $PuertoApi (pid $duenioViejo) tiene código anterior al actual: se reinicia."
+            Get-CimInstance Win32_Process |
+                Where-Object { $_.CommandLine -match 'contratacion\.asgi' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
 if (PuertoEnUso $PuertoApi) {
     $duenioApi = Dueno-Del-Puerto $PuertoApi
     if ($duenioApi -gt 0) { $arrancados['api'] = $duenioApi }

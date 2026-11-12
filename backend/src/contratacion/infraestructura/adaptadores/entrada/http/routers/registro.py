@@ -19,21 +19,82 @@ son los que se olvidan de comprobar algo.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Annotated, Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
+from contratacion.aplicacion.casos_uso.gestionar_cpc import sembrar_cpc
+from contratacion.aplicacion.casos_uso.gestionar_perfil import (
+    consultar_ruc_publico,
+    sembrar_perfil,
+)
 from contratacion.aplicacion.casos_uso.registrar_empresa import registrar_empresa, requisitos
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ConsentimientosDep,
     ContrasenasDep,
+    CpcDep,
     NegociosDep,
+    PerfilDep,
     PoliticasDep,
 )
+from contratacion.infraestructura.adaptadores.salida.sri import ConsultaSri, obtener_sri
+
+registro = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/registro", tags=["Registro"])
+
+
+class IdentidadDelSri(BaseModel):
+    razon_social: str | None = Field(default=None, max_length=300)
+    nombre_comercial: str | None = Field(default=None, max_length=300)
+    tipo_persona: str | None = Field(default=None, max_length=20)
+    regimen_tributario: str | None = Field(default=None, max_length=120)
+    obligado_contabilidad: bool | None = None
+    fecha_inicio_actividades: str | None = Field(default=None, max_length=10)
+    direccion: str | None = Field(default=None, max_length=300)
+    ciudad: str | None = Field(default=None, max_length=120)
+
+
+class RepresentanteDelSri(BaseModel):
+    nombre: str | None = Field(default=None, max_length=160)
+    cedula: str | None = Field(default=None, max_length=20)
+    cargo: str | None = Field(default=None, max_length=120)
+
+
+class CoberturaDelSri(BaseModel):
+    provincia: str = Field(max_length=80)
+    canton: str = Field(default="", max_length=80)
+
+
+class ExperienciaAbierta(BaseModel):
+    entidad: str = Field(max_length=300)
+    objeto: str | None = Field(default=None, max_length=300)
+    monto: float | None = Field(default=None, ge=0)
+    anio: int | None = Field(default=None, ge=1990, le=2100)
+    cpc: str | None = Field(default=None, max_length=20)
+    tipo_contratacion: str | None = Field(default=None, max_length=20)
+
+
+class PerfilDelSri(BaseModel):
+    """Lo que el formulario trae de la consulta de RUC, para sembrar el perfil.
+
+    `cpc` y `experiencia` vienen de los contratos que los datos abiertos del SERCOP atribuyen al
+    RUC (el RUP no tiene consulta pública).
+    """
+
+    identidad: IdentidadDelSri | None = None
+    representante: RepresentanteDelSri | None = None
+    cobertura: list[CoberturaDelSri] = Field(default_factory=list, max_length=24)
+    actividad: str | None = Field(default=None, max_length=300)
+    cpc: list[str] = Field(default_factory=list, max_length=30)
+    experiencia: list[ExperienciaAbierta] = Field(default_factory=list, max_length=12)
+
+
+class ConsultaDeRuc(BaseModel):
+    ruc: str = Field(min_length=13, max_length=13, pattern=r"^\d{13}$")
 
 
 class AltaDeEmpresa(BaseModel):
@@ -77,6 +138,13 @@ class AltaDeEmpresa(BaseModel):
     )
     direccion: str | None = Field(default=None, max_length=200)
     ciudad: str | None = Field(default=None, max_length=80)
+    perfil: PerfilDelSri | None = Field(
+        default=None,
+        description=(
+            "Lo que el SRI publica del RUC (la respuesta de /v1/registro/consulta-ruc). Se usa "
+            "para dejar el perfil de la empresa listo; se filtra y recorta en el servidor."
+        ),
+    )
 
 
 @router.get(
@@ -92,6 +160,14 @@ async def ver_requisitos() -> dict[str, Any]:
     return requisitos()
 
 
+@router.post("/consulta-ruc", summary="Datos públicos del SRI para un RUC, para el registro")
+async def consulta_ruc(
+    cuerpo: ConsultaDeRuc, sri: Annotated[ConsultaSri, Depends(obtener_sri)]
+) -> dict[str, Any]:
+    """Respaldo de la consulta que el formulario hace al SRI desde el navegador. No guarda nada."""
+    return cuerpo_json(await consultar_ruc_publico(cuerpo.ruc, sri=sri))
+
+
 @router.post(
     "/empresa",
     status_code=status.HTTP_201_CREATED,
@@ -103,6 +179,8 @@ async def crear_empresa(
     contrasenas: ContrasenasDep,
     politicas: PoliticasDep,
     consentimientos: ConsentimientosDep,
+    perfiles: PerfilDep,
+    cpc: CpcDep,
 ) -> dict[str, Any]:
     """Da de alta la empresa, su administrador y una prueba de las vistas.
 
@@ -129,4 +207,27 @@ async def crear_empresa(
         politicas=politicas,
         consentimientos=consentimientos,
     )
+    if cuerpo.perfil is not None:
+        # La empresa ya existe: un fallo al sembrar el perfil no puede deshacer el registro. Se
+        # anota y la persona completa el perfil desde el panel, como antes.
+        try:
+            await sembrar_perfil(
+                resultado.negocio_id,
+                repositorio=perfiles,
+                propuesta=cuerpo.perfil.model_dump(exclude_none=True),
+            )
+        except Exception:  # noqa: BLE001 - el registro ya está hecho
+            registro.exception(
+                "No se pudo sembrar el perfil de la empresa %s", resultado.negocio_id
+            )
+        if cuerpo.perfil.cpc:
+            try:
+                await sembrar_cpc(
+                    negocio_id=resultado.negocio_id,
+                    usuario_id=resultado.admin_id,
+                    textos=[str(codigo).strip()[:20] for codigo in cuerpo.perfil.cpc],
+                    repositorio=cpc,
+                )
+            except Exception:  # noqa: BLE001 - el registro ya está hecho
+                registro.exception("No se pudieron sembrar los CPC de %s", resultado.negocio_id)
     return cuerpo_json(resultado.como_diccionario())

@@ -21,6 +21,7 @@ import re
 from html.parser import HTMLParser
 
 from contratacion.dominio.cpc import ItemCpc
+from contratacion.dominio.documentos import es_descarga
 
 # Celdas mínimas de una fila de ítem: número, código, nombre del CPC, descripción, unidad y
 # cantidad.
@@ -154,6 +155,88 @@ def parsear_items(html: str) -> tuple[ItemCpc, ...]:
         items = [item for fila in tabla[1:] if (item := _item_de_fila(fila)) is not None]
         return tuple(items)
     return ()
+
+
+_EXTENSIONES = (".pdf", ".doc", ".docx", ".zip", ".rar", ".xls", ".xlsx")
+
+
+def _parece_archivo(nombre: str) -> bool:
+    limpio = nombre.strip().lower()
+    return any(limpio.endswith(extension) for extension in _EXTENSIONES)
+
+
+class _Anclas(HTMLParser):
+    """Enlaces de la ficha. El TDR, cuando está, es un `<a>`, no una celda suelta."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.documentos: list[dict[str, str]] = []
+        self._href: str | None = None
+        self._texto: list[str] = []
+        self._en_ancla = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        self._en_ancla = True
+        self._texto = []
+        self._href = None
+        for clave, valor in attrs:
+            if clave == "href" and valor:
+                self._href = valor.strip()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or not self._en_ancla:
+            return
+        nombre = ESPACIOS.sub(" ", "".join(self._texto)).strip()
+        enlace = self._href or ""
+        if es_descarga(nombre, enlace):
+            self.documentos.append({"nombre": nombre or enlace, "enlace": enlace})
+        self._en_ancla = False
+
+    def handle_data(self, data: str) -> None:
+        if self._en_ancla:
+            self._texto.append(data)
+
+
+def parsear_documentos(html: str) -> tuple[dict[str, str], ...]:
+    """Nombre y enlace de los archivos que publica la ficha.
+
+    La misma página que trae la tabla CPC trae la de documentos. Se leen las dos de un solo HTML,
+    sin una petición extra. Un nombre de archivo sin enlace también cuenta: el fixture real trae
+    `Pliego.pdf` en una celda, sin `<a>`.
+    """
+    anclas = _Anclas()
+    anclas.feed(html)
+    anclas.close()
+    vistos: dict[str, dict[str, str]] = {}
+    for documento in anclas.documentos:
+        vistos[documento["nombre"].lower()] = documento
+
+    tablas = _Tablas()
+    tablas.feed(html)
+    tablas.close()
+    for tabla in tablas.tablas:
+        for fila in tabla:
+            for celda in fila:
+                if _parece_archivo(celda) and celda.lower() not in vistos:
+                    vistos[celda.lower()] = {"nombre": celda, "enlace": ""}
+    return tuple(vistos.values())
+
+
+def campos_que_pide(html: str) -> tuple[str, ...]:
+    """Qué anexos menciona la ficha. No abre el archivo: solo mira el HTML ya descargado."""
+    texto = html.lower()
+    pedidos: list[str] = []
+    if "experiencia" in texto:
+        pedidos.append("experiencia")
+    if "personal" in texto:
+        pedidos.append("personal")
+    if "equipo" in texto:
+        pedidos.append("equipo")
+    if "declar" in texto or "rup" in texto:
+        pedidos.append("declaraciones")
+    return tuple(pedidos)
 
 
 def token_de_enlace(enlace: str | None) -> str | None:

@@ -11,9 +11,9 @@ nadie entendería por qué el panel dejó de funcionar.
 convierte la empresa en algo que solo se arregla con acceso directo a la base de datos. La
 comprobación se hace **antes** de tocar nada y cuenta a los administradores activos.
 
-**Nadie puede crear un rol que no le corresponde asignar.** Un administrador de empresa puede crear
-otro administrador, un consultor o un lector; `super_admin` no está en esa lista. Si lo estuviera,
-cualquier administrador podría fabricarse una cuenta de plataforma en un formulario.
+**Nadie puede crear un rol que no le corresponde asignar.** Un dueño de empresa solo puede crear
+usuarios regulares. `super_admin` y `dueno_empresa` no están en esa lista: si lo estuvieran,
+cualquier dueño podría fabricarse otra cuenta de plataforma o de dueño en un formulario.
 
 **El límite de usuarios del plan se comprueba al crear, no al entrar.** Avisar cuando ya no
 caben más obliga a la persona a descubrir el problema después de haber decidido a quién
@@ -64,6 +64,7 @@ from contratacion.dominio.negocios import limpiar_texto, validar_correo
 from contratacion.dominio.roles import (
     DESCRIPCION_ROL,
     ETIQUETAS_ROL,
+    ORDEN_ROLES,
     Rol,
     catalogo_para_panel,
     es_administrativo,
@@ -134,7 +135,7 @@ def _etiqueta_asignable(rol: Rol) -> str:
 
 
 def _lista_asignables() -> str:
-    return ", ".join(ETIQUETAS_ROL[rol] for rol in (Rol.ADMIN_NEGOCIO, Rol.CONSULTOR, Rol.LECTOR))
+    return ", ".join(ETIQUETAS_ROL[rol] for rol in ORDEN_ROLES)
 
 
 def _exigir_gestion(actor: Actor) -> None:

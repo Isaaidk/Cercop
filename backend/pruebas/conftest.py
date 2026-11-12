@@ -20,6 +20,7 @@ import pytest
 
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import cerrar_bd
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import cerrar_cache
+from contratacion.infraestructura.adaptadores.salida.resiliencia import reiniciar_circuitos
 
 PRUEBAS_INTEGRACION = os.getenv("PRUEBAS_INTEGRACION") == "1"
 
@@ -55,3 +56,6 @@ async def liberar_dependencias() -> AsyncIterator[None]:
     yield
     await cerrar_cache()
     await cerrar_bd()
+    # Los cortacircuitos viven en la memoria del proceso: sin esto, una prueba que simula caídas
+    # del SRI dejaría el circuito abierto para la siguiente, que fallaría sin haber hecho nada.
+    reiniciar_circuitos()

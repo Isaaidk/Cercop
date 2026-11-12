@@ -440,16 +440,29 @@ async def test_los_fallos_repetidos_bloquean_la_cuenta_temporalmente() -> None:
     assert bloqueada.bloqueado_hasta > AHORA
 
 
-async def test_una_cuenta_bloqueada_lo_dice_si_la_contrasena_es_correcta() -> None:
-    """Quien conoce la contraseña ya sabía que la cuenta existe: merece un mensaje útil."""
+async def test_una_cuenta_bloqueada_no_dice_si_la_contrasena_es_correcta() -> None:
+    """Regresión (doc 38): el bloqueo era un oráculo de la contraseña.
+
+    Con la cuenta bloqueada, la contraseña correcta y la incorrecta tienen que dar la misma
+    respuesta; si no, quien prueba contraseñas sigue probándolas durante el bloqueo y el cambio de
+    mensaje le dice cuál es la buena.
+    """
     cuenta = _cuenta(bloqueado_hasta=AHORA + timedelta(minutes=10))
-    piezas = _piezas(cuenta)
 
-    with pytest.raises(SinPermiso) as fallo:
-        await _entrar(cuenta, piezas)
+    piezas_buena = _piezas(cuenta)
+    with pytest.raises(SinPermiso) as con_la_buena:
+        await _entrar(cuenta, piezas_buena)
 
-    assert "bloqueada" in str(fallo.value).lower()
-    assert piezas["sesiones"].guardadas == {}
+    piezas_mala = _piezas(cuenta)
+    with pytest.raises(SinPermiso) as con_la_mala:
+        await _entrar(cuenta, piezas_mala, contrasena="otra-cosa-larga")
+
+    assert str(con_la_buena.value) == str(con_la_mala.value) == MENSAJE_CREDENCIALES
+    assert "bloquea" in MENSAJE_CREDENCIALES
+    assert piezas_buena["sesiones"].guardadas == {}
+    # Se comprueba la huella igualmente: el tiempo de respuesta tampoco puede delatarlo.
+    assert piezas_buena["contrasenas"].verificaciones
+    assert piezas_mala["contrasenas"].verificaciones
 
 
 async def test_el_inicio_avisa_de_una_contrasena_temporal() -> None:
@@ -459,19 +472,6 @@ async def test_el_inicio_avisa_de_una_contrasena_temporal() -> None:
     resultado = await _entrar(cuenta, piezas)
 
     assert resultado.como_diccionario()["debe_cambiar_contrasena"] is True
-
-
-async def test_el_mensaje_de_bloqueo_usa_la_hora_de_ecuador() -> None:
-    hasta = AHORA + timedelta(minutes=10)
-    cuenta = _cuenta(bloqueado_hasta=hasta)
-    piezas = _piezas(cuenta)
-
-    with pytest.raises(SinPermiso) as fallo:
-        await _entrar(cuenta, piezas)
-
-    from contratacion.dominio.ingesta import ZONA_FUENTE
-
-    assert hasta.astimezone(ZONA_FUENTE).strftime("%H:%M") in str(fallo.value)
 
 
 async def test_un_fallo_durante_el_bloqueo_no_lo_alarga() -> None:

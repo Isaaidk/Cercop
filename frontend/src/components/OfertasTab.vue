@@ -114,6 +114,18 @@ const error = ref('')
  */
 const abierto = ref(null)
 
+/**
+ * «Preparar oferta» desde el cajón. Se reenvía hacia arriba con la fila, igual que hace la tabla de
+ * ínfimas; `onPreparar` es el oyente del padre declarado como propiedad, para que el cajón no
+ * pinte el botón si nadie lo escucha (hoy `VistaPanel.vue` monta `<OfertasTab />` sin oyente).
+ */
+const props = defineProps({ onPreparar: { type: Function, default: null } })
+
+function prepararDesdeElCajon(fila) {
+  abierto.value = null
+  props.onPreparar?.(fila)
+}
+
 const catalogo = computed(() => datos.estado.catalogos)
 
 const fuentes = computed(() => catalogo.value.fuente || [])
@@ -715,7 +727,12 @@ onMounted(() => {
       tiene que estar pegado a su `v-if`, y meter algo en medio rompe la cadena —el mensaje de «no
       hay procesos» pasaba a pintarse siempre, incluso con la tabla llena—.
     -->
-    <CajonDetalleOferta v-if="abierto" :fila="abierto" @cerrar="abierto = null" />
+    <CajonDetalleOferta
+      v-if="abierto"
+      :fila="abierto"
+      :on-preparar="onPreparar ? prepararDesdeElCajon : null"
+      @cerrar="abierto = null"
+    />
   </section>
 </template>
 

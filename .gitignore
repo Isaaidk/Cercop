@@ -78,3 +78,7 @@ certs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Pruebas manuales y TDR descargados en local (no van al repositorio)
+backend/tmp/
+backend/tdr/

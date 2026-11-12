@@ -40,6 +40,38 @@ TABLAS_ESPERADAS = (
     "acceso_vista",
     "consentimiento",
     "auditoria",
+    "rol",
+    "permiso",
+    "rol_permiso",
+    "plantilla_excel",
+    "exportacion_columnas",
+    "cpc_clave",
+    "politica_version",
+    "punto_contacto_entidad",
+    "solicitud_arco",
+    "registro_historial",
+    "negocio_dedicacion",
+    "negocio_contacto",
+    "negocio_actividad",
+    "negocio_cobertura",
+    "negocio_documento",
+    "negocio_experiencia",
+    "negocio_personal",
+    "negocio_equipo",
+    "documento_tdr",
+    "negocio_oferta",
+    "negocio_palabra",
+    "busqueda_guardada",
+    "alerta",
+    "aviso",
+    "lectura_documento",
+    "requisito_proceso",
+    "proforma",
+    "asistente_conversaciones",
+    "asistente_mensajes",
+    "saldo_ia",
+    "movimiento_ia",
+    "compra_ia",
 )
 
 # Tablas del plano de negocio: deben tener RLS activo **y forzado**.
@@ -48,14 +80,34 @@ TABLAS_CON_AISLAMIENTO = (
     "usuario",
     "sesion",
     "suscripcion_termino",
-    "conjunto_terminos",
-    "conjunto_termino",
-    "filtro_guardado",
-    "exportacion",
     "consentimiento",
     "solicitud_arco",
     "auditoria",
     "acceso_vista",
+    "plantilla_excel",
+    "exportacion_columnas",
+    "cpc_clave",
+    "negocio_dedicacion",
+    "negocio_contacto",
+    "negocio_actividad",
+    "negocio_cobertura",
+    "negocio_documento",
+    "negocio_experiencia",
+    "negocio_personal",
+    "negocio_equipo",
+    "negocio_oferta",
+    "negocio_palabra",
+    "busqueda_guardada",
+    "alerta",
+    "aviso",
+    "lectura_documento",
+    "requisito_proceso",
+    "proforma",
+    "asistente_conversaciones",
+    "asistente_mensajes",
+    "saldo_ia",
+    "movimiento_ia",
+    "compra_ia",
 )
 
 
@@ -118,6 +170,43 @@ async def _sin_aislamiento() -> list[tuple[str, bool, bool, bool]]:
     return problemas
 
 
+async def _con_negocio_sin_aislamiento() -> list[str]:
+    """Tablas con columna `negocio_id` que no tienen RLS activo, forzado y con política.
+
+    La lista de arriba se mantiene a mano y se queda atrás cada vez que una migración añade una
+    tabla de empresa. Esta comprobación no depende de nadie: mira el catálogo. Se excluyen las
+    particiones, porque la política vive en la tabla madre y la aplicación consulta siempre por
+    ella (auditoría de seguridad, doc 38).
+    """
+    motor = obtener_motor()
+    async with motor.connect() as conexion:
+        filas = (
+            await conexion.execute(
+                text(
+                    """
+                    SELECT c.relname
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public'
+                      AND c.relkind IN ('r', 'p')
+                      AND NOT c.relispartition
+                      AND EXISTS (
+                          SELECT 1 FROM pg_attribute a
+                          WHERE a.attrelid = c.oid AND a.attname = 'negocio_id'
+                            AND NOT a.attisdropped
+                      )
+                      AND NOT (
+                          c.relrowsecurity AND c.relforcerowsecurity
+                          AND EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid)
+                      )
+                    ORDER BY c.relname
+                    """
+                )
+            )
+        ).all()
+    return [str(fila[0]) for fila in filas]
+
+
 async def _rol_actual() -> tuple[str, bool, bool]:
     """Nombre del rol de la conexión y si es superusuario o puede saltarse RLS.
 
@@ -167,6 +256,13 @@ async def main() -> int:
         fallos += 1
     else:
         print(f"Aislamiento: activo y forzado en las {len(TABLAS_CON_AISLAMIENTO)} tablas")
+
+    sueltas = await _con_negocio_sin_aislamiento()
+    if sueltas:
+        print(f"  TABLAS CON negocio_id SIN AISLAMIENTO: {', '.join(sueltas)}")
+        fallos += 1
+    else:
+        print("Catálogo: toda tabla con negocio_id tiene RLS activo, forzado y con política")
 
     if superusuario or bypass:
         print(

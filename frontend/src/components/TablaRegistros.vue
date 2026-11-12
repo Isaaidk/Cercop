@@ -8,16 +8,24 @@
  *   horizontal es inutilizable: se pierde la referencia de qué columna se está mirando. En pantalla
  *   estrecha cada registro pasa a ser un bloque con sus datos etiquetados.
  * - **Las celdas largas se recortan con `title`.** El objeto de compra puede ocupar tres líneas y
- *   descuadrar todas las filas. Se recorta a una línea y el texto completo queda en el título del
+ *   descuadrar todas las filas. Se recorta a dos líneas y el texto completo queda en el título del
  *   elemento y en el detalle desplegable.
+ *
+ * Rediseño 2026-11: el cliente pidió quitar «esos colores feísimos». La tabla va ahora en base
+ * neutra —sin borde de color por urgencia en las filas ni píldoras de colores en el resumen— y la
+ * urgencia del plazo es solo una insignia pequeña con texto (`insigniaDePlazo`). Se ven seis
+ * columnas, las que sirven para decidir si abrir una ínfima; el resto vive en la ficha.
  */
 import { computed, ref } from 'vue'
 
 import { fechaCorta, numero, recortar, sinEtiquetas } from '@/utils/formato'
-import { itemsDe, resumenCpc } from '@/utils/cpc'
-import { diasParaProforma, nivelDePlazo, textoDePlazo } from '@/utils/plazo'
+import FichaInfima from '@/components/FichaInfima.vue'
+import { resumenCpc } from '@/utils/cpc'
+import { diasParaProforma, insigniaDePlazo } from '@/utils/plazo'
+import IconoPanel from '@/components/IconoPanel.vue'
 import { separarProvincia, codigoDeProvincia } from '@/utils/provincias'
 import { guardarArchivo } from '@/utils/descargas'
+import { descargarTdr } from '@/utils/tdr'
 import { diaDeHoy } from '@/utils/fecha'
 import {
   MESES_EXPORTABLES,
@@ -38,6 +46,8 @@ import { sesion } from '@/stores/sesion'
 const props = defineProps({
   titulo: { type: String, default: 'Contrataciones' },
 })
+
+const emit = defineEmits(['preparar'])
 
 const desplegado = ref(null)
 
@@ -94,7 +104,7 @@ const OPCIONES_EXPORTACION = computed(() => {
   const principal = {
     clave: 'vista',
     categoria: familia,
-    etiqueta: 'Descargar',
+    etiqueta: 'Descargar Excel',
     principal: true,
     pista: `Descarga ${descripcionDeLaVista.value} con los filtros de la pantalla`,
   }
@@ -104,7 +114,7 @@ const OPCIONES_EXPORTACION = computed(() => {
     {
       clave: 'todo',
       categoria: null,
-      etiqueta: 'Todo',
+      etiqueta: 'Excel con todo',
       pista: 'Un solo archivo con las ínfimas cuantías y las ofertas, cada una en su hoja',
     },
   ]
@@ -201,29 +211,22 @@ async function descargarElPeriodoExportable() {
  * fuentes —NCO y OCDS— hablen igual. Escribir aquí el nombre de la fuente dejaría la tabla vacía en
  * la mitad de las filas sin ningún error de por medio.
  *
- * El juego de columnas sigue la ficha de ínfimas cuantías del SERCOP, pero **solo con los campos que
- * la fuente publica de verdad**. Comprobado contra el origen: el listado NCO trae veinte claves, todas
- * las filas son «Ínfimas Cuantías» y el objeto, la razón social, el responsable, la provincia, el
- * estado y las fechas vienen rellenos. No trae Nro. de factura, ni CPC, ni justificativo, ni importes
- * utilizables, así que no se pintan columnas para datos que nadie tiene: una columna a cero parece
- * información y no lo es.
+ * **Solo seis a la vista**, en el orden en que se decide: qué es (código y objeto), quién lo compra,
+ * dónde, cuándo cierra y con qué CPC. El tipo de compra, el responsable, el estado y la fecha de
+ * publicación siguen ahí, en la ficha que se abre al pulsar la fila: con once columnas la tabla
+ * obligaba a desplazarse de lado y nadie leía las del final.
+ *
+ * El juego sigue la ficha de ínfimas cuantías del SERCOP, pero **solo con los campos que la fuente
+ * publica de verdad**: no trae Nro. de factura, ni justificativo, ni importes utilizables, así que no
+ * se pintan columnas para datos que nadie tiene.
  */
 const COLUMNAS = [
   { clave: 'codigo', etiqueta: 'Código', tipo: 'codigo' },
-  { clave: 'tipo_necesidad', etiqueta: 'Tipo de compra', tipo: 'texto' },
-  { clave: 'entidad', etiqueta: 'Razón social', tipo: 'largo' },
-  { clave: 'objeto_compra', etiqueta: 'Objeto de compra', tipo: 'largo' },
-  {
-    clave: 'cpc',
-    etiqueta: 'CPC',
-    tipo: 'largo',
-  },
-  { clave: 'funcionario', etiqueta: 'Responsable', tipo: 'largo' },
-  { clave: 'provincia', etiqueta: 'Provincia · cantón', tipo: 'ubicacion' },
-  { clave: 'estado', etiqueta: 'Estado', tipo: 'estado' },
-  { clave: 'fecha_publicacion', etiqueta: 'Publicación', tipo: 'fecha' },
-  { clave: 'fecha_limite_proformas', etiqueta: 'Límite de proformas', tipo: 'fecha' },
-  { clave: 'dias_proforma', etiqueta: 'Días para proforma', tipo: 'plazo' },
+  { clave: 'objeto_compra', etiqueta: 'Objeto', tipo: 'objeto' },
+  { clave: 'entidad', etiqueta: 'Entidad', tipo: 'largo' },
+  { clave: 'provincia', etiqueta: 'Ubicación', tipo: 'ubicacion' },
+  { clave: 'fecha_limite_proformas', etiqueta: 'Cierre', tipo: 'cierre' },
+  { clave: 'cpc', etiqueta: 'CPC', tipo: 'cpc' },
 ]
 
 function valor(registro, clave) {
@@ -243,19 +246,18 @@ function valor(registro, clave) {
  * publica la fuente. Si algún día se rellenan, las columnas vuelven y el total se calcula igual.
  */
 
-/** Numeración corrida entre páginas: la página 2 empieza donde acabó la 1, no en 1 otra vez. */
-function numeroDeFila(indice) {
-  return (filtros.estado.pagina - 1) * filtros.estado.tamano + indice + 1
-}
-
 /**
  * Días que quedan para la proforma de una fila.
  *
- * El cálculo y el semáforo viven en `@/utils/plazo` porque los comparte con el listado que aparece
- * bajo el mapa: el mismo registro no puede salir verde en una pantalla y amarillo en la otra.
+ * El cálculo vive en `@/utils/plazo` porque lo comparten la ficha, el inicio y el CRM: la misma
+ * ínfima no puede decir «2 días» en una pantalla y «3 días» en otra.
  */
 function plazo(fila) {
   return diasParaProforma(valor(fila, 'fecha_limite_proformas'))
+}
+
+function insignia(fila) {
+  return insigniaDePlazo(plazo(fila))
 }
 
 function alternar(fila) {
@@ -263,28 +265,20 @@ function alternar(fila) {
   desplegado.value = desplegado.value === clave ? null : clave
 }
 
-/** Todas las claves del registro, para el detalle: la API no garantiza un conjunto fijo. */
-function detalles(fila) {
-  return Object.entries(fila)
-    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '')
-    // `enlace` es la dirección relativa que publica la fuente y `enlace_publico` es esa misma ya
-    // resuelta. Las dos se quitan: la primera no lleva a ninguna parte fuera del portal y la segunda
-    // ya está en el botón de arriba, así que como par de texto solo añadirían ruido.
-    // `items` y `cpc_codigos` son las piezas con las que se arma el resumen del CPC: volcadas como
-    // texto darían `[object Object]` y una lista de códigos sueltos. El resumen ya está en su
-    // columna y el desglose, en la tabla de ítems de arriba.
-    .filter(
-      ([k]) => !['id', 'datos', 'enlace', 'enlace_publico', 'items', 'cpc_codigos'].includes(k),
-    )
-    .map(([clave, v]) => ({ clave, valor: sinEtiquetas(v) }))
-}
+/** Filas cuyo TDR se está bajando desde el botón de la tabla, para mostrar el estado. */
+const bajandoTdr = ref(null)
+const errorTdr = ref({})
 
-function etiquetaEstado(estado) {
-  const limpio = sinEtiquetas(estado).toLowerCase()
-  if (limpio.includes('curso') || limpio.includes('activo') || limpio.includes('abiert')) return 'etiqueta--ok'
-  if (limpio.includes('finaliz') || limpio.includes('cerrad') || limpio.includes('complete')) return 'etiqueta--info'
-  if (limpio.includes('anulad') || limpio.includes('cancelad')) return 'etiqueta--error'
-  return ''
+async function bajarTdrDeFila(fila) {
+  bajandoTdr.value = fila.id
+  errorTdr.value = { ...errorTdr.value, [fila.id]: '' }
+  try {
+    await descargarTdr(String(fila.id))
+  } catch (fallo) {
+    errorTdr.value = { ...errorTdr.value, [fila.id]: fallo.message }
+  } finally {
+    bajandoTdr.value = null
+  }
 }
 
 function filtrarPorProvincia(valorCrudo) {
@@ -294,12 +288,34 @@ function filtrarPorProvincia(valorCrudo) {
   // ella. Pulsar la celda de una fila esperando ver *esa* provincia y encontrarse cuatro más sería
   // desconcertante; para comparar ya está el doble clic sobre el mapa.
   if (codigo) filtros.elegirProvincia(codigo)
-}</script>
+}
+
+/** ¿La ficha de CPC de esta fila todavía no se ha leído? Se dice en vez de dejar la celda vacía. */
+function leyendoCpc(fila) {
+  return fila.items_leidos === false && !resumenCpc(fila)
+}
+
+/**
+ * Lo que hay en esta página, de un vistazo: cuántas cierran pronto, cuántas traen TDR y cuántas
+ * esperan aún su CPC. Es un resumen de la página, no un filtro: los filtros siguen en el lateral.
+ * Se pinta como una línea de texto gris, no como píldoras de colores: es contexto, no una alarma.
+ */
+const resumenPagina = computed(() => {
+  const filas = registros.value
+  const urgentes = filas.filter((fila) => {
+    const dias = plazo(fila)
+    return dias !== null && dias >= 0 && dias < 3
+  }).length
+  const conTdr = filas.filter((fila) => fila.documentos?.length).length
+  const leyendo = filas.filter(leyendoCpc).length
+  return { urgentes, conTdr, leyendo }
+})
+</script>
 
 <template>
-  <section class="tarjeta aparece retardo-5">
-    <header class="tarjeta__cabecera">
-      <div>
+  <section class="tarjeta tabla-tarjeta aparece">
+    <header class="tabla__cabecera">
+      <div class="tabla__cabecera-texto">
         <p class="tarjeta__titulo">{{ props.titulo }}</p>
         <p class="tarjeta__pista">
           <template v-if="datos.estado.total">
@@ -314,11 +330,12 @@ function filtrarPorProvincia(valorCrudo) {
       </div>
 
       <!-- La exportación lleva **todos** los resultados de los filtros, no esta página. El rótulo lo
-           dice para que nadie tenga que adivinarlo después de abrir el archivo. -->
+           dice para que nadie tenga que adivinarlo después de abrir el archivo. Las acciones de la
+           cabecera son secundarias: la principal de esta pantalla es «Llenar TDR», en cada fila. -->
       <div class="tabla__acciones-cabecera">
         <button
           type="button"
-          class="boton boton--secundario boton--pequeno"
+          class="boton boton--fantasma boton--pequeno"
           :aria-pressed="todosDesplegados"
           :disabled="!registros.length"
           :title="
@@ -332,20 +349,21 @@ function filtrarPorProvincia(valorCrudo) {
           {{ todosDesplegados ? 'Contraer todo' : 'Desplegar todo' }}
         </button>
 
-        <!-- El envoltorio `<template>` no crea ningún elemento: los tres botones quedan como hijos
+        <!-- El envoltorio `<template>` no crea ningún elemento: los botones quedan como hijos
              directos de la barra de acciones, que es la que reparte el espacio. Con `v-for` y `v-if`
              en el mismo botón, Vue evalúa antes el `v-if` y avisa de que la variable del recorrido
              todavía no existe. -->
         <template v-if="puedeExportar && descargaFueraDeVentana">
           <button
             type="button"
-            class="boton boton--principal boton--pequeno"
+            class="boton boton--secundario boton--pequeno"
             :disabled="Boolean(exportando) || !hayResultados"
             :title="`Pone el periodo del ${limiteDeLaVentana} a hoy y descarga lo que cumpla los demás filtros`"
             @click="descargarElPeriodoExportable"
           >
             <span v-if="exportando" class="girador" aria-hidden="true" />
-            {{ exportando ? 'Generando…' : `Descargar los últimos ${MESES_EXPORTABLES} meses` }}
+            <IconoPanel v-else nombre="descargar" :tamano="14" />
+            {{ exportando ? 'Generando…' : `Excel de los últimos ${MESES_EXPORTABLES} meses` }}
           </button>
         </template>
 
@@ -355,7 +373,7 @@ function filtrarPorProvincia(valorCrudo) {
             :key="opcion.clave"
             type="button"
             class="boton boton--pequeno"
-            :class="opcion.principal ? 'boton--principal' : 'boton--secundario'"
+            :class="opcion.principal ? 'boton--secundario' : 'boton--fantasma'"
             :disabled="Boolean(exportando) || !hayResultados"
             :title="
               hayResultados ? opcion.pista : 'Sin resultados que exportar con los filtros actuales'
@@ -363,6 +381,7 @@ function filtrarPorProvincia(valorCrudo) {
             @click="exportar(opcion)"
           >
             <span v-if="exportando === opcion.clave" class="girador" aria-hidden="true" />
+            <IconoPanel v-else-if="opcion.principal" nombre="descargar" :tamano="14" />
             {{ exportando === opcion.clave ? 'Generando…' : opcion.etiqueta }}
           </button>
         </template>
@@ -374,11 +393,28 @@ function filtrarPorProvincia(valorCrudo) {
       falla: es una limitación del sistema y el usuario merece saberla antes de intentarlo. La
       consulta en pantalla no tiene ese tope —se pagina— así que se dice también eso.
     -->
-    <p v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="tabla__pista-descarga">
-      La descarga a Excel cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar
-      el servidor con el histórico entero. El botón pone ese periodo en los filtros y lo descarga;
-      para el histórico anterior, acota por palabra clave, CPC o provincia, o consúltalo aquí, que
-      la tabla sí llega a todo.
+    <details v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="ayuda tabla__pista-descarga">
+      <summary>¿Qué cubre la descarga a Excel?</summary>
+      <p>
+        Cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar el servidor con el
+        histórico entero. El botón pone ese periodo en los filtros y lo descarga; para el histórico
+        anterior, acota por palabra clave, CPC o provincia, o consúltalo aquí, que la tabla sí llega
+        a todo.
+      </p>
+    </details>
+
+    <!-- El resumen de la página, en una línea de texto gris: contexto, no una alarma. -->
+    <p v-if="registros.length && !datos.estado.cargando" class="resumen-pagina" aria-label="Resumen de esta página">
+      <span v-if="resumenPagina.urgentes">
+        <strong class="numeros">{{ resumenPagina.urgentes }}</strong> cierran en menos de 3 días
+      </span>
+      <span>
+        <strong class="numeros">{{ resumenPagina.conTdr }}</strong> con TDR para bajar
+      </span>
+      <span v-if="resumenPagina.leyendo" class="tabla__leyendo">
+        <strong class="numeros">{{ resumenPagina.leyendo }}</strong> leyendo CPC…
+      </span>
+      <span class="resumen-pagina__pista">Pulsa una fila para ver la ficha completa.</span>
     </p>
 
     <p v-if="errorExportacion" class="tabla__error" role="alert">{{ errorExportacion }}</p>
@@ -399,9 +435,8 @@ function filtrarPorProvincia(valorCrudo) {
     <div v-else-if="!registros.length" class="tabla__vacio">
       <p class="tabla__vacio-titulo">No hay contrataciones que mostrar</p>
       <p class="tabla__vacio-texto">
-        Prueba a quitar algún filtro o a probar con «Cualquiera» en vez de «Todas»: con «Todas» se
-        exige que la contratación mencione **todas** las palabras a la vez, y es la causa habitual de
-        que una búsqueda con varias palabras no devuelva nada.
+        Prueba a quitar algún filtro o a elegir «Cualquiera» en vez de «Todas» en las palabras clave:
+        con «Todas» se exige que la contratación mencione todas las palabras a la vez.
       </p>
       <button v-if="filtros.hayFiltros.value" type="button" class="boton boton--secundario" @click="filtros.limpiarTodo()">
         Limpiar los filtros
@@ -417,19 +452,19 @@ function filtrarPorProvincia(valorCrudo) {
           </caption>
           <thead>
             <tr>
-              <th scope="col" class="tabla__th--nro">#<span class="solo-lectores"> Número de orden</span></th>
               <th v-for="columna in COLUMNAS" :key="columna.clave" scope="col" :class="`tabla__th--${columna.tipo}`">
                 {{ columna.etiqueta }}
               </th>
-              <th scope="col" class="tabla__th--acciones"><span class="solo-lectores">Detalle</span></th>
+              <th scope="col" class="tabla__th--acciones"><span class="solo-lectores">Acciones</span></th>
             </tr>
           </thead>
           <tbody>
-            <template v-for="(fila, indice) in registros" :key="valor(fila, 'codigo') || fila.id">
-              <tr class="tabla__fila" @click="alternar(fila)">
-                <td class="tabla__nro" data-etiqueta="Nro.">
-                  <span class="numeros">{{ numeroDeFila(indice) }}</span>
-                </td>
+            <template v-for="fila in registros" :key="valor(fila, 'codigo') || fila.id">
+              <tr
+                class="tabla__fila"
+                :class="{ 'tabla__fila--abierta': estaDesplegada(fila) }"
+                @click="alternar(fila)"
+              >
                 <td
                   v-for="columna in COLUMNAS"
                   :key="columna.clave"
@@ -453,30 +488,41 @@ function filtrarPorProvincia(valorCrudo) {
                     {{ recortar(valor(fila, columna.clave), 26) || '—' }}
                   </span>
 
-                  <span v-else-if="columna.tipo === 'estado'" class="etiqueta" :class="etiquetaEstado(valor(fila, columna.clave))">
-                    {{ sinEtiquetas(valor(fila, columna.clave)) || 'Sin estado' }}
-                  </span>
-
-                  <span v-else-if="columna.tipo === 'fecha'" class="numeros">
-                    {{ fechaCorta(valor(fila, columna.clave)) }}
+                  <span
+                    v-else-if="columna.tipo === 'objeto'"
+                    class="tabla__objeto"
+                    :title="sinEtiquetas(valor(fila, columna.clave))"
+                  >
+                    {{ recortar(sinEtiquetas(valor(fila, columna.clave)), 160) || '—' }}
                   </span>
 
                   <button
                     v-else-if="columna.tipo === 'ubicacion'"
                     type="button"
                     class="tabla__ubicacion"
-                    :title="valor(fila, columna.clave)"
+                    :title="`Ver solo ${sinEtiquetas(valor(fila, columna.clave)) || 'esta provincia'}`"
                     @click.stop="filtrarPorProvincia(valor(fila, columna.clave))"
                   >
                     {{ recortar(sinEtiquetas(valor(fila, columna.clave)), 30) || '—' }}
                   </button>
 
+                  <!-- El cierre: la fecha en texto y, debajo, una insignia pequeña con lo que falta.
+                       El color va solo en la insignia, y rojo solo si cierra hoy o mañana. -->
+                  <span v-else-if="columna.tipo === 'cierre'" class="tabla__cierre">
+                    <span class="numeros">{{ fechaCorta(valor(fila, columna.clave)) || '—' }}</span>
+                    <span class="etiqueta" :class="insignia(fila).clase">{{ insignia(fila).texto }}</span>
+                  </span>
+
+                  <span v-else-if="columna.tipo === 'cpc' && leyendoCpc(fila)" class="tabla__leyendo">
+                    Leyendo CPC…
+                  </span>
+
                   <span
-                    v-else-if="columna.tipo === 'plazo'"
-                    class="plazo"
-                    :class="nivelDePlazo(plazo(fila))"
+                    v-else-if="columna.tipo === 'cpc'"
+                    class="tabla__cpc"
+                    :title="valor(fila, columna.clave)"
                   >
-                    {{ textoDePlazo(plazo(fila)) }}
+                    {{ recortar(valor(fila, columna.clave), 60) || '—' }}
                   </span>
 
                   <span v-else class="tabla__largo" :title="sinEtiquetas(valor(fila, columna.clave))">
@@ -484,81 +530,51 @@ function filtrarPorProvincia(valorCrudo) {
                   </span>
                 </td>
                 <td class="tabla__acciones">
-                  <button
-                    type="button"
-                    class="boton boton--fantasma boton--icono"
-                    :aria-expanded="estaDesplegada(fila)"
-                    :aria-label="`Ver el detalle de ${valor(fila, 'codigo') || 'esta contratación'}`"
-                    @click.stop="alternar(fila)"
-                  >
-                    <span aria-hidden="true" class="tabla__chevron">▾</span>
-                  </button>
+                  <div class="tabla__acciones-fila">
+                    <button
+                      v-if="valor(fila, 'codigo')"
+                      type="button"
+                      class="boton boton--principal boton--pequeno"
+                      title="Abrir el TDR, los requisitos y la proforma de esta ínfima"
+                      @click.stop="emit('preparar', fila)"
+                    >
+                      Llenar TDR
+                    </button>
+                    <button
+                      v-if="fila.documentos && fila.documentos.length"
+                      type="button"
+                      class="boton boton--fantasma boton--icono"
+                      :disabled="bajandoTdr === fila.id"
+                      :aria-label="bajandoTdr === fila.id ? 'Preparando el TDR…' : 'Bajar el TDR'"
+                      :title="errorTdr[fila.id] || 'Bajar los términos de referencia (TDR) en PDF o Word'"
+                      @click.stop="bajarTdrDeFila(fila)"
+                    >
+                      <span v-if="bajandoTdr === fila.id" class="girador" aria-hidden="true" />
+                      <IconoPanel v-else nombre="descargar" :tamano="16" />
+                    </button>
+                    <button
+                      type="button"
+                      class="boton boton--fantasma boton--icono"
+                      :aria-expanded="estaDesplegada(fila)"
+                      :aria-label="`Ver el detalle de ${valor(fila, 'codigo') || 'esta contratación'}`"
+                      @click.stop="alternar(fila)"
+                    >
+                      <span aria-hidden="true" class="tabla__chevron">▾</span>
+                    </button>
+                  </div>
+                  <span v-if="errorTdr[fila.id]" class="tabla__error-tdr" role="alert">
+                    {{ errorTdr[fila.id] }}
+                  </span>
                 </td>
               </tr>
 
               <tr v-if="estaDesplegada(fila)" class="tabla__detalle-fila">
-                <td :colspan="COLUMNAS.length + 2">
-                  <!-- El enlace al portal va aquí arriba y destacado porque es la acción: quien abre
-                       el detalle de una ínfima cuantía quiere ver el proceso completo, y el resto de
-                       los campos son el contexto para decidir si vale la pena abrirlo. -->
-                  <a
-                    v-if="fila.enlace_publico"
-                    class="boton boton--secundario boton--pequeno detalle__enlace"
-                    :href="fila.enlace_publico"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <span aria-hidden="true">↗</span>
-                    Abrir el proceso en el portal de la fuente
-                  </a>
-
-                  <dl class="detalle">
-                    <div v-for="dato in detalles(fila)" :key="dato.clave" class="detalle__par">
-                      <dt>{{ dato.clave.replaceAll('_', ' ') }}</dt>
-                      <dd>{{ dato.valor }}</dd>
-                    </div>
-                  </dl>
-
-                  <!--
-                    El desglose del objeto de compra tal y como lo publica la ficha: un renglón por
-                    ítem, con su clasificación CPC. El resumen de la columna dice **de qué** está
-                    clasificada la contratación; esto dice **qué** se compra en cada línea, que es lo
-                    que hace falta para decidir si vale la pena abrir el proceso en el portal.
-
-                    Si no hay ítems puede ser que la ficha aún no se haya leído, y entonces no se
-                    pinta nada: una tabla vacía parecería un error.
-                  -->
-                  <div v-if="itemsDe(fila).length" class="detalle__items">
-                    <p class="detalle__items-titulo">
-                      Detalle del objeto de compra ({{ itemsDe(fila).length }}
-                      {{ itemsDe(fila).length === 1 ? 'ítem' : 'ítems' }})
-                    </p>
-                    <div class="items__marco">
-                      <table class="items">
-                        <thead>
-                          <tr>
-                            <th scope="col">#</th>
-                            <th scope="col">CPC</th>
-                            <th scope="col">Descripción del producto</th>
-                            <th scope="col">Unidad</th>
-                            <th scope="col">Cantidad</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr v-for="(item, indice) in itemsDe(fila)" :key="`${indice}-${item.codigo}`">
-                            <td class="numeros">{{ item.numero ?? indice + 1 }}</td>
-                            <td class="items__cpc">
-                              <span class="codigo numeros">{{ item.codigo }}</span>
-                              <span class="items__nombre">{{ item.descripcion_cpc }}</span>
-                            </td>
-                            <td>{{ item.descripcion }}</td>
-                            <td>{{ item.unidad }}</td>
-                            <td class="numeros">{{ item.cantidad }}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+                <td :colspan="COLUMNAS.length + 1">
+                  <FichaInfima
+                    :fila="fila"
+                    @preparar="emit('preparar', $event)"
+                    @filtrar-provincia="filtrarPorProvincia"
+                  />
                 </td>
               </tr>
             </template>
@@ -568,35 +584,51 @@ function filtrarPorProvincia(valorCrudo) {
 
       <!-- Fichas para pantallas estrechas -->
       <ul class="fichas">
-        <li v-for="fila in registros" :key="`f-${valor(fila, 'codigo') || fila.id}`" class="ficha-registro">
+        <li
+          v-for="fila in registros"
+          :key="`f-${valor(fila, 'codigo') || fila.id}`"
+          class="ficha-registro"
+        >
           <div class="ficha-registro__cabecera">
-            <a
-              v-if="fila.enlace_publico"
-              class="codigo numeros codigo--enlace"
-              :href="fila.enlace_publico"
-              target="_blank"
-              rel="noopener noreferrer"
-              :title="`Abrir ${valor(fila, 'codigo')} en el portal de la fuente`"
-            >
-              {{ valor(fila, 'codigo') || '—' }}
-              <span class="codigo__fuera" aria-hidden="true">↗</span>
-            </a>
-            <span v-else class="codigo numeros">{{ valor(fila, 'codigo') || '—' }}</span>
-            <span class="etiqueta" :class="etiquetaEstado(valor(fila, 'estado'))">
-              {{ sinEtiquetas(valor(fila, 'estado')) || 'Sin estado' }}
-            </span>
-            <span class="plazo" :class="nivelDePlazo(plazo(fila))">
-              {{ textoDePlazo(plazo(fila)) }}
-            </span>
+            <span class="codigo numeros">{{ recortar(valor(fila, 'codigo'), 30) || '—' }}</span>
+            <span class="etiqueta" :class="insignia(fila).clase">{{ insignia(fila).texto }}</span>
           </div>
-          <p class="ficha-registro__objeto">{{ sinEtiquetas(valor(fila, 'objeto_compra')) || '—' }}</p>
+          <p class="ficha-registro__titulo">{{ sinEtiquetas(valor(fila, 'objeto_compra')) || '—' }}</p>
           <p class="ficha-registro__objeto">{{ sinEtiquetas(valor(fila, 'entidad')) || 'Sin razón social' }}</p>
+          <p v-if="resumenCpc(fila)" class="ficha-registro__cpc">CPC {{ recortar(resumenCpc(fila), 60) }}</p>
+          <p v-else-if="leyendoCpc(fila)" class="ficha-registro__cpc tabla__leyendo">Leyendo CPC…</p>
           <div class="ficha-registro__pie">
             <button type="button" class="tabla__ubicacion" @click="filtrarPorProvincia(valor(fila, 'provincia'))">
               {{ recortar(sinEtiquetas(valor(fila, 'provincia')), 28) || 'Sin provincia' }}
             </button>
-            <span class="numeros">{{ fechaCorta(valor(fila, 'fecha_publicacion')) }}</span>
+            <span v-if="valor(fila, 'fecha_limite_proformas')" class="numeros">
+              Cierra {{ fechaCorta(valor(fila, 'fecha_limite_proformas')) }}
+            </span>
           </div>
+          <div class="ficha-registro__acciones">
+            <button
+              v-if="valor(fila, 'codigo')"
+              type="button"
+              class="boton boton--principal boton--pequeno"
+              @click="emit('preparar', fila)"
+            >
+              Llenar TDR
+            </button>
+            <button
+              type="button"
+              class="boton boton--secundario boton--pequeno"
+              :aria-expanded="estaDesplegada(fila)"
+              @click="alternar(fila)"
+            >
+              {{ estaDesplegada(fila) ? 'Ocultar ficha' : 'Ver ficha' }}
+            </button>
+          </div>
+          <FichaInfima
+            v-if="estaDesplegada(fila)"
+            :fila="fila"
+            @preparar="emit('preparar', $event)"
+            @filtrar-provincia="filtrarPorProvincia"
+          />
         </li>
       </ul>
 
@@ -606,8 +638,33 @@ function filtrarPorProvincia(valorCrudo) {
 </template>
 
 <style scoped>
+/* Sombra solo al pasar el ratón, como el resto de tarjetas del rediseño. */
+.tabla-tarjeta {
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.tabla__cabecera {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--e-3);
+  padding: var(--e-4) var(--e-5);
+}
+
+.tabla__cabecera-texto {
+  min-width: 0;
+}
+
 .tabla__contenedor {
   overflow-x: auto;
+  /* Sombras que avisan de que hay más columnas a un lado: la tabla no está «cortada», se desliza. */
+  background:
+    linear-gradient(to right, var(--superficie) 30%, transparent) left center / 24px 100% no-repeat local,
+    linear-gradient(to left, var(--superficie) 30%, transparent) right center / 24px 100% no-repeat local,
+    linear-gradient(to right, var(--borde-fuerte), transparent) left center / 6px 100% no-repeat scroll,
+    linear-gradient(to left, var(--borde-fuerte), transparent) right center / 6px 100% no-repeat scroll;
 }
 
 .tabla__acciones-cabecera {
@@ -618,11 +675,9 @@ function filtrarPorProvincia(valorCrudo) {
 }
 
 .tabla__exportacion {
-  padding: var(--e-2) var(--e-3);
-  border-radius: var(--r-1);
-  background: var(--ok-suave);
-  color: var(--ok);
+  margin: 0 var(--e-5) var(--e-3);
   font-size: var(--t-xs);
+  color: var(--texto-suave);
 }
 
 /*
@@ -630,9 +685,7 @@ function filtrarPorProvincia(valorCrudo) {
  * neutro y no en el color de aviso. Con el color del error parecería que algo ha fallado.
  */
 .tabla__pista-descarga {
-  padding: var(--e-2) var(--e-3);
-  border-radius: var(--r-1);
-  background: var(--superficie-2);
+  margin: 0 var(--e-5) var(--e-3);
   color: var(--texto-tenue);
   font-size: var(--t-xs);
   line-height: 1.5;
@@ -654,20 +707,10 @@ function filtrarPorProvincia(valorCrudo) {
   text-decoration: underline;
 }
 
-.codigo--enlace:focus-visible {
-  outline: 2px solid var(--acento);
-  outline-offset: 2px;
-  border-radius: var(--r-1);
-}
-
 .codigo__fuera {
   margin-left: 0.25em;
   font-size: 0.85em;
   opacity: 0.75;
-}
-
-.detalle__enlace {
-  margin-bottom: var(--e-3);
 }
 
 .girador {
@@ -689,14 +732,13 @@ function filtrarPorProvincia(valorCrudo) {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: var(--e-3) var(--e-4);
+  padding: var(--e-2) var(--e-4);
   text-align: left;
   font-size: var(--t-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-weight: 600;
   color: var(--texto-tenue);
-  background: var(--superficie);
+  background: var(--superficie-2);
+  border-top: 1px solid var(--borde);
   border-bottom: 1px solid var(--borde);
   white-space: nowrap;
 }
@@ -710,6 +752,59 @@ function filtrarPorProvincia(valorCrudo) {
   background: var(--superficie-2);
 }
 
+/* La fila abierta se marca con el fondo más suave del acento: es «lo seleccionado», no una alerta. */
+.tabla__fila--abierta,
+.tabla__fila--abierta:hover {
+  background: var(--acento-tenue);
+}
+
+.tabla__fila--abierta .tabla__chevron {
+  transform: rotate(180deg);
+}
+
+/* «Leyendo CPC…»: gris con un punto que late. Es un estado de espera, no una alarma. */
+.tabla__leyendo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--texto-tenue);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+
+.tabla__leyendo::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--acento);
+  animation: pulso-tabla 1.2s ease-in-out infinite;
+}
+
+@keyframes pulso-tabla {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.resumen-pagina {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--e-1) var(--e-4);
+  margin: 0 var(--e-5) var(--e-3);
+  font-size: var(--t-xs);
+  color: var(--texto-tenue);
+}
+
+.resumen-pagina strong {
+  color: var(--texto-suave);
+}
+
+.resumen-pagina__pista {
+  margin-left: auto;
+}
+
 .tabla td {
   padding: var(--e-3) var(--e-4);
   border-bottom: 1px solid var(--borde);
@@ -718,22 +813,47 @@ function filtrarPorProvincia(valorCrudo) {
 
 .tabla__largo {
   display: block;
-  max-width: 42ch;
+  max-width: 28ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--texto-suave);
 }
 
-.tabla__th--nro,
-.tabla__nro {
-  width: 1%;
-  text-align: right;
-  color: var(--texto-tenue);
+/* El objeto es lo que más se lee: texto en color principal y hasta dos líneas. */
+.tabla__objeto {
+  display: -webkit-box;
+  min-width: 18rem;
+  max-width: 48ch;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--texto);
+  font-weight: 550;
+  line-height: 1.4;
 }
 
-.tabla__th--plazo,
-.tabla__td--plazo {
-  text-align: right;
+.tabla__cpc {
+  display: block;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-xs);
+  color: var(--texto-suave);
+}
+
+.tabla__cierre {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.tabla__th--cierre,
+.tabla__td--cierre {
   white-space: nowrap;
 }
 
@@ -745,25 +865,49 @@ function filtrarPorProvincia(valorCrudo) {
   white-space: nowrap;
 }
 
+/* La ubicación filtra al pulsarla. Va en el color del texto para no llenar la tabla de azul; el
+   subrayado al pasar el ratón y el `title` dicen que se puede pulsar. */
 .tabla__ubicacion {
   border: 0;
   padding: 0;
   background: none;
-  color: var(--acento);
+  color: var(--texto-suave);
   text-align: left;
   font-size: inherit;
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  transition: text-decoration-color var(--rapido) var(--curva);
+  text-decoration: underline dotted;
+  text-decoration-color: var(--borde-fuerte);
+  text-underline-offset: 3px;
+  transition:
+    color var(--rapido) var(--curva),
+    text-decoration-color var(--rapido) var(--curva);
 }
 
 .tabla__ubicacion:hover {
+  color: var(--acento);
   text-decoration-color: currentColor;
 }
 
 .tabla__acciones {
-  width: 44px;
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tabla__acciones-fila {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--e-1);
+}
+
+.tabla__error-tdr {
+  display: block;
+  max-width: 14rem;
+  margin-top: 0.25rem;
+  margin-left: auto;
+  font-size: var(--t-xs);
+  color: var(--error);
+  white-space: normal;
   text-align: right;
 }
 
@@ -775,90 +919,6 @@ function filtrarPorProvincia(valorCrudo) {
 .tabla__detalle-fila td {
   background: var(--superficie-2);
   padding: 0;
-}
-
-.detalle {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--e-3) var(--e-5);
-  padding: var(--e-4) var(--e-5);
-  margin: 0;
-  animation: aparecer var(--normal) var(--curva-entrada) both;
-}
-
-.detalle__par dt {
-  font-size: var(--t-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--texto-tenue);
-  margin-bottom: 2px;
-}
-
-.detalle__par dd {
-  margin: 0;
-  font-size: var(--t-sm);
-  color: var(--texto-suave);
-  overflow-wrap: anywhere;
-}
-
-/* El desglose de ítems: lo que la ficha publica línea a línea. */
-.detalle__items {
-  padding: 0 var(--e-5) var(--e-4);
-  animation: aparecer var(--normal) var(--curva-entrada) both;
-}
-
-.detalle__items-titulo {
-  font-size: var(--t-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--texto-tenue);
-  margin-bottom: var(--e-2);
-}
-
-/*
- * El marco lleva el desplazamiento y no la página: un desglose de treinta y seis ítems —los hay—
- * desplazaría la tabla entera de lado en pantallas medianas.
- */
-.items__marco {
-  overflow-x: auto;
-  border: 1px solid var(--borde);
-  border-radius: var(--r-2);
-}
-
-.items {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--t-sm);
-}
-
-.items th,
-.items td {
-  text-align: left;
-  padding: var(--e-2) var(--e-3);
-  border-bottom: 1px solid var(--borde);
-  vertical-align: top;
-}
-
-.items th {
-  font-size: var(--t-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--texto-tenue);
-  white-space: nowrap;
-}
-
-.items tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.items__cpc {
-  white-space: nowrap;
-}
-
-.items__nombre {
-  color: var(--texto-suave);
 }
 
 .tabla__cargando {
@@ -875,10 +935,10 @@ function filtrarPorProvincia(valorCrudo) {
 }
 
 .tabla__error {
-  margin: var(--e-4);
+  margin: var(--e-3) var(--e-5);
   padding: var(--e-3) var(--e-4);
   border-radius: var(--r-2);
-  border-left: 3px solid var(--error);
+  border: 1px solid var(--borde);
   background: var(--error-suave);
   color: var(--error);
   font-size: var(--t-sm);
@@ -911,6 +971,7 @@ function filtrarPorProvincia(valorCrudo) {
   list-style: none;
   padding: 0;
   margin: 0;
+  border-top: 1px solid var(--borde);
 }
 
 .ficha-registro {
@@ -935,9 +996,41 @@ function filtrarPorProvincia(valorCrudo) {
   color: var(--texto-suave);
 }
 
+.ficha-registro__titulo {
+  font-size: var(--t-md);
+  font-weight: 600;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ficha-registro__cpc {
+  font-size: var(--t-xs);
+  color: var(--texto-tenue);
+}
+
 .ficha-registro__pie {
   font-size: var(--t-xs);
   color: var(--texto-tenue);
+}
+
+.ficha-registro__acciones {
+  display: flex;
+  gap: var(--e-2);
+}
+
+.ficha-registro__acciones .boton {
+  flex: 1;
+  justify-content: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabla__leyendo::before {
+    animation: none;
+  }
 }
 
 @media (max-width: 1023px) {
@@ -947,6 +1040,27 @@ function filtrarPorProvincia(valorCrudo) {
 
   .fichas {
     display: block;
+  }
+}
+
+@media (max-width: 639px) {
+  .tabla__cabecera {
+    padding: var(--e-3) var(--e-4);
+  }
+
+  .resumen-pagina,
+  .tabla__pista-descarga,
+  .tabla__exportacion {
+    margin-left: var(--e-4);
+    margin-right: var(--e-4);
+  }
+
+  .resumen-pagina__pista {
+    display: none;
+  }
+
+  .ficha-registro {
+    padding: var(--e-3) var(--e-4);
   }
 }
 </style>

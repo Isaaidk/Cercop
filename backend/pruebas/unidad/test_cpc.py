@@ -21,6 +21,7 @@ from contratacion.dominio.cpc import (
     texto_de_cpc,
 )
 from contratacion.infraestructura.adaptadores.salida.fuentes.nco_detalle import (
+    parsear_documentos,
     parsear_items,
     token_de_enlace,
 )
@@ -75,6 +76,22 @@ def _con_celda_anidada() -> str:
 # --------------------------------------------------------------------------- #
 # Lectura de la tabla
 # --------------------------------------------------------------------------- #
+
+
+def test_la_ficha_ignora_el_menu_y_se_queda_con_el_archivo() -> None:
+    html = """
+    <a href="https://www.compraspublicas.gob.ec/">Servicio Nacional</a>
+    <a href="/ProcesoContratacion/compras/NCO/FrmNCOListado.cpe">Buscador</a>
+    <a href="../GE/ExeGENBajarArchivoGeneral.cpe?Archivo=abc">Términos</a>
+    """
+    documentos = parsear_documentos(html)
+    assert len(documentos) == 1
+    assert "BajarArchivo" in documentos[0]["enlace"]
+
+
+def test_la_ficha_tambien_trae_el_documento() -> None:
+    documentos = parsear_documentos(FICHA)
+    assert any(documento["nombre"] == "Pliego.pdf" for documento in documentos)
 
 
 def test_lee_los_items_de_la_ficha() -> None:

@@ -11,10 +11,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 4173",
-    "revisar": "vite build && vite preview --port 4173"
+    "revisar": "vite build && vite preview --port 4173",
+    "test": "node --test"
   },
   "dependencies": {
     "chart.js": "^4.4.7",
+    "jspdf": "^2.5.2",
+    "pdfjs-dist": "4.10.38",
+    "tesseract.js": "7.0.0",
     "vue": "^3.5.13"
   },
   "devDependencies": {

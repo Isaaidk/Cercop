@@ -67,25 +67,33 @@ from contratacion.dominio.errores import (
 )
 from contratacion.dominio.roles import es_de_plataforma
 from contratacion.dominio.sesiones import EstadoSesion, MotivoRevocacion
+from contratacion.infraestructura.adaptadores.entrada.http.proteccion import ip_cliente
 from contratacion.infraestructura.adaptadores.salida.archivos.local import obtener_almacen
 from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
 from contratacion.infraestructura.adaptadores.salida.bd.columnas import RepositorioColumnasBd
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
 from contratacion.infraestructura.adaptadores.salida.bd.cpc import RepositorioCpcBd
+from contratacion.infraestructura.adaptadores.salida.bd.creditos import RepositorioCreditos
 from contratacion.infraestructura.adaptadores.salida.bd.cuentas import (
     RepositorioCuentasBd,
     RepositorioSesionesBd,
 )
+from contratacion.infraestructura.adaptadores.salida.bd.documentos import RepositorioDocumentos
+from contratacion.infraestructura.adaptadores.salida.bd.mercado import RepositorioMercado
 from contratacion.infraestructura.adaptadores.salida.bd.negocios import RepositorioNegociosBd
+from contratacion.infraestructura.adaptadores.salida.bd.perfil import RepositorioPerfil
 from contratacion.infraestructura.adaptadores.salida.bd.plantillas import RepositorioPlantillasBd
 from contratacion.infraestructura.adaptadores.salida.bd.politicas import (
     RepositorioConsentimientosBd,
     RepositorioPoliticasBd,
 )
+from contratacion.infraestructura.adaptadores.salida.bd.radar import RepositorioRadar
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import obtener_motor
+from contratacion.infraestructura.adaptadores.salida.bd.tdr import RepositorioTdr
 from contratacion.infraestructura.adaptadores.salida.bd.terminos import RepositorioTerminosBd
 from contratacion.infraestructura.adaptadores.salida.bd.usuarios import RepositorioUsuariosBd
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
+from contratacion.infraestructura.adaptadores.salida.ia import ModeloIa, obtener_modelo
 from contratacion.infraestructura.adaptadores.salida.presencia.fabrica import (
     obtener_bus,
     obtener_presencia,
@@ -151,6 +159,19 @@ def ajustes_de_la_app() -> Ajustes:
 
 
 AjustesDep = Annotated[Ajustes, Depends(ajustes_de_la_app)]
+
+
+def ip_de_la_peticion(peticion: Request, ajustes: AjustesDep) -> str:
+    """IP de quien llama, resuelta como la resuelve el freno (ver `proteccion.ip_cliente`).
+
+    Es la que se guarda en la sesión, en la auditoría y en la aceptación de los términos. Antes se
+    leía la cabecera `X-Forwarded-For` tal cual, y esa cabecera la escribe el cliente: la IP de una
+    aceptación —que es prueba del consentimiento— era la que el cliente quisiera.
+    """
+    return ip_cliente(peticion, ajustes.proxy_saltos)
+
+
+IpClienteDep = Annotated[str, Depends(ip_de_la_peticion)]
 
 # Rutas que comprueban la sesión **sin rearmar el plazo de inactividad**.
 #
@@ -343,6 +364,7 @@ async def obtener_actor(
             usuario_id=claims.usuario_id,
             negocio_id=claims.negocio_id,
             rol=claims.rol,
+            sesion_id=claims.sesion_id,
         )
 
     if ajustes.es_produccion or not ajustes.permitir_actor_de_desarrollo:
@@ -365,7 +387,7 @@ async def obtener_actor(
         return Actor(
             usuario_id=UUID(x_desarrollo_usuario),
             negocio_id=UUID(x_desarrollo_negocio),
-            rol=x_desarrollo_rol or "consultor",
+            rol=x_desarrollo_rol or "usuario",
         )
     except ValueError as exc:
         raise HTTPException(
@@ -470,6 +492,55 @@ PlantillasDep = Annotated[RepositorioPlantillas, Depends(repositorio_plantillas)
 AlmacenPlantillasDep = Annotated[AlmacenPlantillas, Depends(almacen_plantillas)]
 ColumnasDep = Annotated[RepositorioColumnasExportacion, Depends(repositorio_columnas)]
 CpcDep = Annotated[RepositorioCpc, Depends(repositorio_cpc)]
+
+
+def repositorio_perfil() -> RepositorioPerfil:
+    """Perfil de la empresa con el que se rellenan los TDR."""
+    return RepositorioPerfil(obtener_motor())
+
+
+PerfilDep = Annotated[RepositorioPerfil, Depends(repositorio_perfil)]
+
+
+def repositorio_documentos() -> RepositorioDocumentos:
+    """Lecturas de TDR, requisitos y proformas."""
+    return RepositorioDocumentos(obtener_motor())
+
+
+DocumentosDep = Annotated[RepositorioDocumentos, Depends(repositorio_documentos)]
+
+
+def repositorio_mercado() -> RepositorioMercado:
+    """Historial, precios, rankings y comparador."""
+    return RepositorioMercado(obtener_motor())
+
+
+MercadoDep = Annotated[RepositorioMercado, Depends(repositorio_mercado)]
+
+
+def repositorio_radar() -> RepositorioRadar:
+    """Radar, alertas y búsquedas guardadas."""
+    return RepositorioRadar(obtener_motor())
+
+
+RadarDep = Annotated[RepositorioRadar, Depends(repositorio_radar)]
+
+
+def repositorio_tdr() -> RepositorioTdr:
+    """Metadatos de los TDR pedidos. El archivo no está aquí."""
+    return RepositorioTdr(obtener_motor())
+
+
+TdrDep = Annotated[RepositorioTdr, Depends(repositorio_tdr)]
+
+
+def repositorio_creditos() -> RepositorioCreditos:
+    """Saldo y compras de créditos de IA."""
+    return RepositorioCreditos(obtener_motor())
+
+
+CreditosDep = Annotated[RepositorioCreditos, Depends(repositorio_creditos)]
+IaDep = Annotated[ModeloIa, Depends(obtener_modelo)]
 
 # El caché entra en pocos routers, pero cuando entra es para leer un contador y nada más: el de la
 # versión de los datos, que el panel consulta cada minuto para saber si hay algo nuevo. Se expone el

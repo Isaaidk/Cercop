@@ -189,8 +189,15 @@ async def estado_termino(
     termino_id: UUID,
     terminos: TerminosDep,
     ajustes: AjustesDep,
+    _: ConsentimientoDep,
 ) -> dict[str, Any]:
-    """Consulta barata para que el panel refresque sin volver a agregar el término."""
+    """Consulta barata para que el panel refresque sin volver a agregar el término.
+
+    Pide sesión como el resto de rutas de palabras clave (la puerta de consentimiento exige antes
+    el token). Antes era pública: cualquiera, sin entrar, podía leer el texto de un término y
+    cuántas empresas lo vigilan, que es información comercial de los clientes (auditoría de
+    seguridad, doc 38). El panel ya la llamaba con token.
+    """
     resultado = await consultar_estado(
         termino_id,
         repositorio=terminos,

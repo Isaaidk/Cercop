@@ -51,6 +51,10 @@ from contratacion.dominio.presencia import (
     negocio_de_canal,
     prefijo_de_negocio,
 )
+from contratacion.infraestructura.adaptadores.salida.cache.redis import (
+    TIEMPO_LIMITE_SEG,
+    circuito_redis,
+)
 from contratacion.infraestructura.adaptadores.salida.presencia.memoria import (
     MAXIMO_AVISOS_EN_COLA,
     deserializar_evento,
@@ -107,11 +111,24 @@ class _SuscripcionRedis:
         self._cerrada = True
 
 
+def _cliente_con_limite(url: str) -> Redis:
+    """Cliente para comandos sueltos, con tiempos límite de conexión y de lectura."""
+    return Redis.from_url(
+        url,
+        decode_responses=True,
+        socket_connect_timeout=TIEMPO_LIMITE_SEG,
+        socket_timeout=TIEMPO_LIMITE_SEG,
+    )
+
+
 class PresenciaRedis:
     """Señales de vida con caducidad, en Redis."""
 
     def __init__(self, url: str) -> None:
-        self._cliente: Redis = Redis.from_url(url, decode_responses=True)
+        # Con tiempos límite y por el circuito `redis`, como el caché: con Redis colgado, un latido
+        # falla en dos segundos (y al instante con el circuito abierto) en lugar de quedarse
+        # esperando lo que tarde el sistema operativo en soltar la conexión.
+        self._cliente: Redis = _cliente_con_limite(url)
 
     @property
     def compartida(self) -> bool:
@@ -132,17 +149,19 @@ class PresenciaRedis:
         hay ventana en la que la clave exista sin caducar, que es como se acumularían señales
         eternas afirmando que alguien sigue conectado cuando ya no está.
         """
-        await self._cliente.set(
-            clave_latido(negocio_id, sesion_id),
-            json.dumps(
-                {"u": str(usuario_id), "s": str(sesion_id), "m": momento.isoformat()},
-                separators=(",", ":"),
-            ),
-            ex=ttl_seg,
-        )
+        async with circuito_redis().proteger():
+            await self._cliente.set(
+                clave_latido(negocio_id, sesion_id),
+                json.dumps(
+                    {"u": str(usuario_id), "s": str(sesion_id), "m": momento.isoformat()},
+                    separators=(",", ":"),
+                ),
+                ex=ttl_seg,
+            )
 
     async def olvidar(self, *, negocio_id: UUID, sesion_id: UUID) -> None:
-        await self._cliente.delete(clave_latido(negocio_id, sesion_id))
+        async with circuito_redis().proteger():
+            await self._cliente.delete(clave_latido(negocio_id, sesion_id))
 
     async def vivas(self, *, negocio_id: UUID) -> tuple[Latido, ...]:
         """Recorre las claves del negocio con `SCAN` y lee sus valores de una vez.
@@ -151,16 +170,17 @@ class PresenciaRedis:
         señales de otra empresa: el aislamiento lo garantiza la forma de la clave y no un filtro
         posterior que alguien pueda olvidar al refactorizar.
         """
-        claves = [
-            clave
-            async for clave in self._cliente.scan_iter(
-                match=f"{prefijo_de_negocio(negocio_id)}*", count=LOTE_DE_RECORRIDO
-            )
-        ]
-        if not claves:
-            return ()
+        async with circuito_redis().proteger():
+            claves = [
+                clave
+                async for clave in self._cliente.scan_iter(
+                    match=f"{prefijo_de_negocio(negocio_id)}*", count=LOTE_DE_RECORRIDO
+                )
+            ]
+            if not claves:
+                return ()
 
-        crudos = await self._cliente.mget(claves)
+            crudos = await self._cliente.mget(claves)
         senales: list[Latido] = []
         for clave, crudo in zip(claves, crudos, strict=False):
             senal = deserializar_latido(crudo, clave)
@@ -195,7 +215,9 @@ class BusRedis:
     def __init__(self, url: str) -> None:
         self._url = url
         # No abre ninguna conexión al construirse: el cliente solo conecta en el primer comando.
-        self._cliente: Redis = Redis.from_url(url, decode_responses=True)
+        # Este cliente solo publica, así que lleva tiempos límite; el de la suscripción (en
+        # `_escuchar`) **no**, porque esperar mensajes sin que llegue ninguno es su trabajo normal.
+        self._cliente: Redis = _cliente_con_limite(url)
         # Reparto en proceso: negocio -> colas de sus paneles abiertos.
         self._canales: dict[UUID, set[asyncio.Queue[EventoPresencia]]] = {}
         # Estado de la suscripción compartida. `_pubsub` es `None` mientras nadie haya abierto un
@@ -214,7 +236,8 @@ class BusRedis:
         bien que sea así: lo que no puede perderse es el estado, y para eso está la instantánea
         periódica, que se construye leyendo el almacén y no el bus.
         """
-        await self._cliente.publish(canal_de_negocio(negocio_id), serializar_evento(evento))
+        async with circuito_redis().proteger():
+            await self._cliente.publish(canal_de_negocio(negocio_id), serializar_evento(evento))
 
     @asynccontextmanager
     async def suscribir(self, *, negocio_id: UUID) -> AsyncIterator[Suscripcion]:

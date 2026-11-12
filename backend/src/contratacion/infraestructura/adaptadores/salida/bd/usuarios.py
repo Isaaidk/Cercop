@@ -166,7 +166,7 @@ class RepositorioUsuariosBd:
                             FROM usuario
                             WHERE negocio_id = :negocio_id
                               AND estado IN ('activo', 'pendiente')
-                              AND rol IN ('admin_negocio', 'super_admin')
+                              AND rol IN ('dueno_empresa', 'super_admin', 'admin_negocio')
                             """
                         ),
                         {"negocio_id": negocio_id},

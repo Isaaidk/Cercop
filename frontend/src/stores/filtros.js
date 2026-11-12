@@ -73,7 +73,6 @@ const estado = reactive({
    * el parámetro repetido, así que la lista viaja en una sola petición.
    */
   provincias: [],
-  canton: null,
   estadoRegistro: null,
   /**
    * El NIC de una ínfima cuantía: el «NIC-1768120280001-2022-00003» que la ficha publica como
@@ -161,7 +160,6 @@ const CAMPOS_DE_CRITERIO = [
   'descripcion',
   'modo',
   'provincias',
-  'canton',
   'estadoRegistro',
   'codigo',
   'fuente',
@@ -279,6 +277,30 @@ export const filtros = {
   aplicar() {
     Object.assign(aplicados, criteriosDe(estado))
     estado.pagina = 1
+  },
+
+  /**
+   * Restaura una búsqueda guardada y la deja en vigor.
+   *
+   * Los campos que el panel no conoce se ignoran: una búsqueda vieja no puede romper el borrador
+   * por traer una clave que ya no existe.
+   */
+  cargarCriterios(parametros) {
+    const datos = parametros || {}
+    estado.seleccionadas = Array.isArray(datos.termino) ? [...datos.termino] : []
+    estado.cpc = Array.isArray(datos.cpc) ? [...datos.cpc] : []
+    estado.cpcSolo = Boolean(datos.solo_cpc)
+    estado.descripcion = Array.isArray(datos.descripcion) ? [...datos.descripcion] : []
+    estado.modo = datos.modo || 'cualquiera'
+    estado.provincias = Array.isArray(datos.provincia) ? [...datos.provincia] : []
+    estado.estadoRegistro = datos.estado || null
+    estado.codigo = datos.codigo || null
+    estado.fuente = datos.fuente || null
+    estado.desde = datos.desde || null
+    estado.hasta = datos.hasta || null
+    estado.soloNuevos = Boolean(datos.solo_nuevos)
+    estado.soloConPlazo = Boolean(datos.solo_con_plazo)
+    filtros.aplicar()
   },
 
   /**
@@ -606,7 +628,6 @@ export const filtros = {
   elegirProvincia(codigo) {
     const yaEsLaUnica = estado.provincias.length === 1 && estado.provincias[0] === codigo
     estado.provincias = yaEsLaUnica ? [] : [codigo]
-    estado.canton = null
   },
 
   /**
@@ -618,7 +639,6 @@ export const filtros = {
     const indice = estado.provincias.indexOf(codigo)
     if (indice === -1) estado.provincias.push(codigo)
     else estado.provincias.splice(indice, 1)
-    estado.canton = null
   },
 
   /**
@@ -633,16 +653,10 @@ export const filtros = {
    */
   fijarProvincias(codigos) {
     estado.provincias = [...new Set(codigos)].sort()
-    estado.canton = null
-  },
-
-  elegirCanton(canton) {
-    estado.canton = estado.canton === canton ? null : canton
   },
 
   limpiarProvincia() {
     estado.provincias = []
-    estado.canton = null
   },
 
   // --- Familia de contratación ---------------------------------------------
@@ -720,7 +734,6 @@ export const filtros = {
     estado.cpcSolo = false
     estado.descripcion = []
     estado.provincias = []
-    estado.canton = null
     estado.estadoRegistro = null
     estado.codigo = null
     estado.fuente = null

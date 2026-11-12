@@ -156,7 +156,7 @@ async def escenario() -> AsyncIterator[Escenario]:
             await conexion.execute(
                 text(
                     "INSERT INTO usuario (id, negocio_id, email, hash_password, rol, estado) "
-                    "VALUES (:id, :negocio, :email, 'x', 'admin_negocio', 'activo')"
+                    "VALUES (:id, :negocio, :email, 'x', 'dueno_empresa', 'activo')"
                 ),
                 {"id": str(usuario), "negocio": str(negocio), "email": email},
             )
@@ -316,7 +316,7 @@ async def test_extender_anade_una_fila_y_no_acorta(escenario: Escenario) -> None
         await repositorio.conceder(
             negocio_id=escenario.negocio_a,
             usuario_id=escenario.usuario_a,
-            vista=Vista.CONTRATACIONES,
+            vista=Vista.OFERTAS,
             plazo=plazo,
             otorgado_en=AHORA,
             vence_en=plazo.calcular(AHORA),
@@ -328,7 +328,7 @@ async def test_extender_anade_una_fila_y_no_acorta(escenario: Escenario) -> None
     )
     # Dos filas, no una reescrita: el historial conserva las dos concesiones.
     assert len(accesos) == 2
-    vigente = concesion_vigente(accesos, AHORA + timedelta(days=1))[Vista.CONTRATACIONES]
+    vigente = concesion_vigente(accesos, AHORA + timedelta(days=1))[Vista.OFERTAS]
     assert vigente.plazo is Plazo.A1
     assert vigente.vence_en == Plazo.A1.calcular(AHORA)
 

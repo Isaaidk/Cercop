@@ -54,3 +54,20 @@ export function textoDePlazo(dias) {
   if (dias === 1) return '1 día'
   return `${dias} días`
 }
+
+/**
+ * La insignia del plazo para las ínfimas cuantías: texto y clase de `.etiqueta`.
+ *
+ * Es más discreta que el semáforo de `nivelDePlazo`, y a propósito: el cliente pidió quitar los
+ * colores fuertes del listado de ínfimas. El rojo queda **solo** para lo que cierra hoy o mañana,
+ * que es lo único que exige actuar ya; el ámbar, para lo que cierra esta semana; el resto va en gris.
+ * El texto dice siempre lo mismo que el color, así que nadie depende de distinguir los tonos.
+ */
+export function insigniaDePlazo(dias) {
+  if (dias === null || dias === undefined) return { texto: 'Sin fecha', clase: '' }
+  if (dias < 0) return { texto: 'Cerrada', clase: '' }
+  if (dias === 0) return { texto: 'Cierra hoy', clase: 'etiqueta--error' }
+  if (dias === 1) return { texto: 'Cierra mañana', clase: 'etiqueta--error' }
+  if (dias < DIAS_VERDE) return { texto: `${dias} días`, clase: 'etiqueta--aviso' }
+  return { texto: `${dias} días`, clase: '' }
+}

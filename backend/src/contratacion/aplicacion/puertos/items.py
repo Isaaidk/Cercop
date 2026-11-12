@@ -49,6 +49,7 @@ class RepositorioItems(Protocol):
         items: Sequence[Mapping[str, Any]],
         cpc_busqueda: str,
         cpc_codigos: Sequence[str],
+        documentos: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         """Guarda los ítems ya normalizados y marca la ficha como leída.
 

@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
+import os
 import sys
 import time
+from pathlib import Path
 
+from contratacion.aplicacion.casos_uso.atender_tdr import atender_lote
 from contratacion.aplicacion.casos_uso.buscar_registros import obtener_catalogos
 from contratacion.aplicacion.casos_uso.mantener_registros import (
     ResultadoMantenimiento,
@@ -34,22 +38,127 @@ from contratacion.aplicacion.casos_uso.operar_ingesta import (
     SolicitudCiclo,
     consumir_solicitud,
 )
+from contratacion.aplicacion.casos_uso.revisar_alertas import revisar_alertas
+from contratacion.aplicacion.casos_uso.seguimiento_ofertas import recordar_cierres
+from contratacion.infraestructura.adaptadores.salida.bd.bloqueo import bloqueo_de_ingesta
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
 from contratacion.infraestructura.adaptadores.salida.bd.ingesta import RepositorioIngesta
 from contratacion.infraestructura.adaptadores.salida.bd.mantenimiento import (
     RepositorioMantenimientoBd,
 )
+from contratacion.infraestructura.adaptadores.salida.bd.radar import RepositorioRadar
+from contratacion.infraestructura.adaptadores.salida.bd.seguimiento import (
+    RepositorioSeguimiento,
+)
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import cerrar_bd, obtener_motor
+from contratacion.infraestructura.adaptadores.salida.bd.tdr import RepositorioTdr
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
     cerrar_cache,
     obtener_cache,
 )
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
-from contratacion.tareas.planificador import ejecutar_todos, ejecutar_vigilancia
+from contratacion.tareas.planificador import (
+    ejecutar_todos,
+    ejecutar_vigilancia,
+    leer_fichas_nuevas,
+    leer_fichas_prioritarias,
+)
 
 registro = logging.getLogger("contratacion.worker")
 
 ESPERA_MINIMA_SEG = 5.0
+# Lotes seguidos por pasada de la cola de TDR. Si quedan más, la pasada siguiente empieza enseguida.
+_TOPE_LOTES_TDR_POR_VUELTA = 4
+# Cada cuánto se mira la cola cuando está vacía. Es una lectura de índice: no cuesta nada, y es lo
+# que separa «el TDR está en segundos» de «el TDR está cuando acabe el ciclo».
+_ESPERA_COLA_TDR_SEG = 2.0
+
+
+# `True` mientras corre el bucle completo (`servir`). Cada trabajo suelto (`--una-vez`,
+# `--vigilancia`, `--mantenimiento`) abre y cierra su caché y su pool; dentro del bucle eso era un
+# error: la cola de TDR corre **a la vez** en otra tarea, y cerrar el pool al acabar cada vigilancia
+# (cada dos minutos y medio) le tiraba el motor debajo y obligaba a reabrir todas las conexiones.
+# En el bucle el pool y la caché viven lo que vive el proceso y se cierran una vez, al salir.
+_EN_BUCLE = False
+
+
+async def _cerrar_si_suelto() -> None:
+    """Cierra caché y pool solo si el trabajo corre suelto, no dentro del bucle."""
+    if _EN_BUCLE:
+        return
+    await cerrar_cache()
+    await cerrar_bd()
+
+
+async def _atender_cola() -> int:
+    """Baja los TDR pendientes del momento, hasta el tope. Cero si no había ninguno."""
+    hechos = 0
+    repositorio = RepositorioTdr(obtener_motor())
+    carpeta = Path(obtener_ajustes().tdr_dir)
+    for _ in range(_TOPE_LOTES_TDR_POR_VUELTA):
+        try:
+            atendidos = await atender_lote(repositorio, carpeta)
+        except Exception:  # noqa: BLE001 - un TDR no puede tumbar la ingesta
+            registro.exception("No se pudo atender un lote de TDR pendientes.")
+            break
+        if not atendidos:
+            break
+        hechos += atendidos
+    return hechos
+
+
+async def _servir_cola_tdr() -> None:
+    """Atiende la cola de TDR por su cuenta, sin esperar a la ingesta.
+
+    Antes la cola se miraba dentro del bucle principal, y un ciclo completo —búsquedas, páginas de
+    OCDS y fichas de CPC— puede durar muchos minutos. Quien pedía un TDR en ese rato esperaba a que
+    terminara. Es una tarea aparte porque las dos cosas no comparten nada: la ingesta habla con los
+    datos abiertos y esto baja archivos de la ficha de cada proceso.
+    """
+    ajustes = obtener_ajustes()
+    while True:
+        try:
+            hechos = await _atender_cola()
+            # Los ítems del proceso que alguien está armando se leen aquí, sin esperar al ciclo.
+            if await leer_fichas_prioritarias(
+                RepositorioIngesta(obtener_motor()),
+                obtener_cache(),
+                intervalo_min=ajustes.intervalo_ingesta_min,
+                ventana_solape_ciclos=ajustes.ventana_solape_ciclos,
+            ):
+                hechos += 1
+        except Exception:  # noqa: BLE001 - la cola no puede morir por un fallo suelto
+            registro.exception("Falló una pasada de la cola de TDR.")
+            hechos = 0
+        await asyncio.sleep(0.5 if hechos else _ESPERA_COLA_TDR_SEG)
+
+
+async def _alertas() -> None:
+    """Avisa de oportunidades nuevas. Un fallo aquí no puede parar la ingesta.
+
+    Va bajo el mismo bloqueo de asesoría que la ingesta (clave «alertas»): con dos réplicas del
+    worker, las dos revisarían las mismas alertas a la vez y cada aviso saldría dos veces. Quien no
+    obtiene el bloqueo se salta la vuelta; la otra réplica la está haciendo.
+    """
+    try:
+        async with bloqueo_de_ingesta("alertas") as conexion:
+            if conexion is None:
+                registro.info("Otra réplica está revisando las alertas; se omite esta vuelta.")
+                return
+            await _revisar_alertas_y_cierres()
+    except Exception:  # noqa: BLE001 - ni sin base para el bloqueo puede caer el bucle
+        registro.exception("No se pudo tomar el bloqueo de las alertas.")
+
+
+async def _revisar_alertas_y_cierres() -> None:
+    try:
+        await revisar_alertas(RepositorioRadar(obtener_motor()))
+    except Exception:  # noqa: BLE001 - las alertas no pueden tumbar el bucle
+        registro.exception("No se pudieron revisar las alertas.")
+    try:
+        await recordar_cierres(RepositorioSeguimiento(obtener_motor()))
+    except Exception:  # noqa: BLE001 - los recordatorios no pueden tumbar el bucle
+        registro.exception("No se pudieron revisar los recordatorios de cierre.")
 
 
 async def _precalentar_catalogos() -> None:
@@ -99,8 +208,7 @@ async def ejecutar_un_ciclo() -> int:
         )
         await _precalentar_catalogos()
     finally:
-        await cerrar_cache()
-        await cerrar_bd()
+        await _cerrar_si_suelto()
 
     if not resultados:
         registro.warning("Ninguna fuente se ingestó en este ciclo.")
@@ -121,16 +229,25 @@ async def vigilar_listado() -> None:
     repositorio = RepositorioIngesta(obtener_motor())
 
     try:
-        await ejecutar_vigilancia(
+        resultados = await ejecutar_vigilancia(
             repositorio,
             obtener_cache(),
             intervalo_min=ajustes.intervalo_ingesta_min,
             ventana_solape_ciclos=ajustes.ventana_solape_ciclos,
             presupuesto_peticiones=ajustes.presupuesto_peticiones_ciclo,
         )
+        # Las ínfimas nuevas se publican con sus CPC: se leen sus fichas en esta misma vuelta y,
+        # si se escribió alguno, se sube la generación y se dejan calientes los desplegables.
+        if any(resultado.nuevos for resultado in resultados) and await leer_fichas_nuevas(
+            repositorio,
+            obtener_cache(),
+            intervalo_min=ajustes.intervalo_ingesta_min,
+            ventana_solape_ciclos=ajustes.ventana_solape_ciclos,
+            fichas=ajustes.fichas_por_vigilancia,
+        ):
+            await _precalentar_catalogos()
     finally:
-        await cerrar_cache()
-        await cerrar_bd()
+        await _cerrar_si_suelto()
 
 
 async def mantener_historico(*, simular: bool = False) -> ResultadoMantenimiento:
@@ -144,8 +261,10 @@ async def mantener_historico(*, simular: bool = False) -> ResultadoMantenimiento
     """
     ajustes = obtener_ajustes()
     try:
+        repositorio = RepositorioMantenimientoBd(obtener_motor())
+        await repositorio.asegurar_particiones()
         return await mantener_registros(
-            RepositorioMantenimientoBd(obtener_motor()),
+            repositorio,
             obtener_cache(),
             intervalo_seg=ajustes.intervalo_mantenimiento_seg,
             dias_retencion=ajustes.purga_plazo_dias,
@@ -153,8 +272,7 @@ async def mantener_historico(*, simular: bool = False) -> ResultadoMantenimiento
             simular=simular,
         )
     finally:
-        await cerrar_cache()
-        await cerrar_bd()
+        await _cerrar_si_suelto()
 
 
 async def _solicitud_de_ciclo() -> SolicitudCiclo | None:
@@ -172,6 +290,22 @@ async def _solicitud_de_ciclo() -> SolicitudCiclo | None:
     except Exception:  # noqa: BLE001 - preguntar por la petición no puede tumbar el bucle
         registro.warning("No se pudo comprobar si hay un ciclo pedido", exc_info=False)
         return None
+
+
+async def servir() -> int:
+    """El worker completo: la ingesta y, a su lado, la cola de TDR."""
+    global _EN_BUCLE
+    _EN_BUCLE = True
+    cola = asyncio.create_task(_servir_cola_tdr(), name="cola-tdr")
+    try:
+        return await bucle()
+    finally:
+        cola.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cola
+        _EN_BUCLE = False
+        await cerrar_cache()
+        await cerrar_bd()
 
 
 async def bucle() -> int:
@@ -231,6 +365,7 @@ async def bucle() -> int:
         if momento >= proxima_comprobacion:
             proxima_comprobacion = momento + PASO_COMPROBACION_SEG
             peticion = await _solicitud_de_ciclo()
+
             if peticion is not None:
                 registro.info(
                     "Ciclo completo pedido desde el panel por %s; se adelanta.",
@@ -251,12 +386,14 @@ async def bucle() -> int:
                 await ejecutar_un_ciclo()
             except Exception:  # noqa: BLE001 - el bucle nunca debe morir por un ciclo fallido
                 registro.exception("El ciclo falló; se continuará con el siguiente.")
+            await _alertas()
         elif momento >= proxima_vigilancia:
             proxima_vigilancia = momento + intervalo_corto
             try:
                 await vigilar_listado()
             except Exception:  # noqa: BLE001 - ni por una vigilancia fallida
                 registro.exception("La vigilancia falló; se continuará con la siguiente.")
+            await _alertas()
 
         # El mantenimiento va **detrás** del ciclo y de la vigilancia, en el mismo bucle y no en un
         # proceso aparte: no consulta la fuente, así que no compite por la cuota, pero sí compite
@@ -311,6 +448,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     argumentos = parser.parse_args(argv)
 
+    # El worker no lleva los topes del API: la ingesta y el mantenimiento tienen consultas largas
+    # legítimas, y el bloqueo de ingesta vive en una conexión ociosa durante todo el ciclo. Se fija
+    # **antes** de leer los ajustes (que se leen una vez por proceso) y solo si el entorno no dice
+    # otra cosa, para que se pueda poner un tope al worker a propósito.
+    os.environ.setdefault("BD_STATEMENT_TIMEOUT_MS", "0")
+    os.environ.setdefault("BD_IDLE_TX_TIMEOUT_MS", "0")
+    os.environ.setdefault("BD_NOMBRE_APLICACION", "cercoapp-worker")
+
     logging.basicConfig(
         level=obtener_ajustes().log_nivel.upper(),
         format="%(asctime)s %(levelname)-5s %(name)s %(message)s",
@@ -326,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if argumentos.una_vez:
             return asyncio.run(ejecutar_un_ciclo())
-        return asyncio.run(bucle())
+        return asyncio.run(servir())
     except KeyboardInterrupt:
         registro.info("Worker detenido por el usuario.")
         return 0

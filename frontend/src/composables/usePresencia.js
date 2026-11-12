@@ -9,7 +9,8 @@
  * balanceador, el servidor. Se usa `fetch` con lectura por partes, que envía la cabecera como
  * cualquier otra petición.
  *
- * El latido va aparte, cada 30 segundos, y es lo que mantiene la señal viva. Sin él, la persona
+ * El latido va aparte, cada 30 segundos (más espaciado con la pestaña oculta o tras fallos; ver
+ * `proximoLatido`), y es lo que mantiene la señal viva. Sin él, la persona
  * pasaría a rojo sola al vencer la señal aunque siguiera delante del panel.
  *
  * El cierre se avisa con `fetch` y `keepalive`, no con `navigator.sendBeacon`: por la misma razón
@@ -22,6 +23,7 @@ import { onBeforeUnmount, onMounted, readonly, ref } from 'vue'
 import { api } from '@/api/endpoints'
 import { leerAcceso } from '@/api/cliente'
 import { sesion as almacenSesion } from '@/stores/sesion'
+import { conAzar, pestanaVisible } from '@/utils/sondeo'
 
 export function usePresencia() {
   const conectados = ref(0)
@@ -34,6 +36,8 @@ export function usePresencia() {
   let controlador = null
   let temporizadorLatido = null
   let intervaloLatido = 30_000
+  let vigenciaLatido = 60_000
+  let fallosSeguidos = 0
   let detener = false
 
   async function latir() {
@@ -42,20 +46,53 @@ export function usePresencia() {
 
     try {
       const respuesta = await api.latir(sesionId)
+      fallosSeguidos = 0
       // El servidor dice cada cuánto repetir. Se obedece en lugar de fijar el valor aquí: si alguien
       // cambia la configuración, los paneles ya abiertos se ajustan solos en el latido siguiente.
       if (respuesta?.repetir_en_seg) {
         intervaloLatido = respuesta.repetir_en_seg * 1000
       }
+      if (respuesta?.vigencia_seg) {
+        vigenciaLatido = respuesta.vigencia_seg * 1000
+      }
     } catch {
       // Un latido perdido no es grave: la señal sigue viva un rato y el siguiente la renovará. Si
       // fallara siempre, el punto se apagaría solo, que es exactamente lo que debe pasar.
+      fallosSeguidos += 1
     }
   }
 
+  /**
+   * Cuándo toca el próximo latido.
+   *
+   * - Con la pestaña **oculta** se late lo justo para seguir en verde: al 80 % de la vigencia de la
+   *   señal (48 s con los valores de hoy) en vez de cada 30 s. El panel sigue abierto —es verdad que
+   *   la persona está—, pero no hace falta repetirlo el doble de lo necesario.
+   * - Tras **fallos seguidos** (el servidor saturado o caído) la espera se dobla hasta 5 minutos: mil
+   *   paneles reintentando cada 30 s contra un servidor que ya no da abasto solo lo hunden más.
+   * - Siempre con ±10 % de azar, para que los paneles abiertos a la vez no laten a la vez.
+   */
+  function proximoLatido() {
+    let espera = intervaloLatido
+    if (!pestanaVisible()) espera = Math.max(espera, Math.floor(vigenciaLatido * 0.8))
+    if (fallosSeguidos > 0) espera = Math.min(espera * 2 ** fallosSeguidos, 300_000)
+    return conAzar(espera)
+  }
+
   function programarLatido() {
-    clearInterval(temporizadorLatido)
-    temporizadorLatido = setInterval(latir, intervaloLatido)
+    clearTimeout(temporizadorLatido)
+    if (detener) return
+    temporizadorLatido = setTimeout(async () => {
+      await latir()
+      programarLatido()
+    }, proximoLatido())
+  }
+
+  /** Al volver a la pestaña se late enseguida: el verde vuelve sin esperar a la siguiente vuelta. */
+  async function alCambiarVisibilidad() {
+    if (detener || !pestanaVisible()) return
+    await latir()
+    programarLatido()
   }
 
   async function consumirEventos() {
@@ -162,12 +199,14 @@ export function usePresencia() {
   onMounted(async () => {
     await latir()
     programarLatido()
+    document.addEventListener('visibilitychange', alCambiarVisibilidad)
     if (almacenSesion.esDePlataforma.value) consumirEventos()
   })
 
   onBeforeUnmount(() => {
     detener = true
-    clearInterval(temporizadorLatido)
+    clearTimeout(temporizadorLatido)
+    document.removeEventListener('visibilitychange', alCambiarVisibilidad)
     controlador?.abort()
   })
 

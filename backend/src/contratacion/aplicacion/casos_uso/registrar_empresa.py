@@ -188,7 +188,7 @@ async def registrar_empresa(
         admin_id=admin_id,
         admin_email=correo,
         admin_nombre=validar_nombre_persona(admin_nombre) or correo,
-        admin_rol=Rol.ADMIN_NEGOCIO,
+        admin_rol=Rol.DUENO_EMPRESA,
         huella=contrasenas.hash(texto_contrasena),
         vistas_prueba=vistas_prueba,
         plazo_prueba=plazo_prueba,

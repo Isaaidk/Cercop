@@ -110,6 +110,7 @@ function quitar(termino) {
   <div class="descripcion">
     <label class="campo__etiqueta" for="descripcion-producto">Descripción del producto</label>
 
+    <details class="ayuda"><summary>¿Cómo funciona?</summary>
     <p class="descripcion__ayuda">
       Busca en el <strong>objeto de compra</strong> —lo que la entidad dice que va a comprar— y no en
       el resto de la convocatoria. Sirve para lo mismo que una palabra clave, pero sin traer lo que
@@ -120,6 +121,7 @@ function quitar(termino) {
           : ' Con «Cualquiera» basta con que aparezca alguna palabra de la frase.'
       }}
     </p>
+    </details>
 
     <form v-if="mostrandoCampo" class="descripcion__nueva" @submit.prevent="agregar">
       <label class="solo-lectores" for="descripcion-producto">Descripción del producto</label>

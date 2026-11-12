@@ -41,6 +41,22 @@ class EstadoInvalido(ErrorDominio):
     codigo = "estado_invalido"
 
 
+class ServicioNoDisponible(EstadoInvalido):
+    """Un servicio del que depende la operación no responde ahora; se puede reintentar luego.
+
+    Lo lanza el cortacircuitos cuando un servicio externo (el SRI, los datos abiertos, la IA, el
+    almacén) acumula fallos o está saturado: en vez de dejar la petición colgada esperando a quien
+    no contesta, se responde enseguida y se explica que basta con volver a intentarlo.
+
+    Hereda de `EstadoInvalido` a propósito: todo el código que ya trataba un fallo del SRI o de la
+    IA como `EstadoInvalido` —para mandar al usuario a llenar los datos a mano, por ejemplo— sigue
+    funcionando igual sin saber que existe. Lo único que cambia es la traducción HTTP: un 503, que
+    dice «reintenta», en lugar de un 409, que diría «lo que pides choca con el estado».
+    """
+
+    codigo = "servicio_no_disponible"
+
+
 class SinPermiso(ErrorDominio):
     """El actor no tiene autorización para esta operación.
 
@@ -78,6 +94,12 @@ class NoEncontrado(ErrorDominio):
     """
 
     codigo = "no_encontrado"
+
+
+class SinCreditos(ErrorDominio):
+    """La empresa gastó los créditos de IA. La interfaz ofrece comprar más, no pedir permiso."""
+
+    codigo = "sin_creditos"
 
 
 class ConsentimientoPendiente(ErrorDominio):

@@ -63,6 +63,17 @@ import { Counter, Trend } from 'k6/metrics'
 
 const credenciales = JSON.parse(open(__ENV.CREDENCIALES || './credenciales.json'))
 const BASE_URL = __ENV.BASE_URL || 'http://127.0.0.1:8001'
+
+// Esta prueba crea conversaciones del asistente y mil sesiones: **nunca contra producción**. Si la
+// dirección no es local hay que decirlo a propósito con `-e PERMITIR_REMOTO=1` (un entorno de
+// ensayo con su propia base), y aun así no debe apuntar al dominio público del aplicativo.
+const ES_LOCAL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/.test(BASE_URL)
+if (!ES_LOCAL && __ENV.PERMITIR_REMOTO !== '1') {
+  throw new Error(
+    `BASE_URL=${BASE_URL} no es local. Esta prueba no se lanza contra producción; para un entorno ` +
+      'de ensayo propio, añade -e PERMITIR_REMOTO=1.',
+  )
+}
 const PAUSA_MIN = Number(__ENV.PAUSA_MIN || 4)
 const PAUSA_MAX = Number(__ENV.PAUSA_MAX || 8)
 
@@ -78,7 +89,19 @@ const PAUSA_MAX = Number(__ENV.PAUSA_MAX || 8)
  * `termino` cuando la serie se llamaba `tabla_termino` y la fila salía con ceros, que es la peor
  * forma de equivocarse —el número está, y parece malo—.
  */
-const TIPOS = ['tabla', 'graficas', 'version', 'tabla_termino']
+const TIPOS = [
+  'tabla',
+  'graficas',
+  'version',
+  'tabla_termino',
+  // Las pantallas nuevas que más se abren (docs/39): el inicio del asistente (siete lecturas con
+  // tope de dos conexiones a la vez), un mensaje por el camino rápido (sin IA: no gasta créditos),
+  // «Propuestas para ti» y «Mis ofertas».
+  'asistente_inicio',
+  'asistente_mensaje',
+  'propuestas',
+  'mis_ofertas',
+]
 const lecturas = Object.fromEntries(TIPOS.map((tipo) => [tipo, new Trend(tipo, true)]))
 // Un contador por tipo, y no el recuento de la serie: k6 2.2 **no** exporta `count` en los `Trend`,
 // así que leerlo de ahí deja el resumen con ceros y sin la fila. Se paga un contador y se ve el dato.
@@ -131,6 +154,13 @@ const UMBRALES = {
   version: ['med<300', 'p(95)<1000'],
   // La que no se puede cachear: su meta es la de una consulta a la base.
   tabla_termino: ['p(95)<1500'],
+  // Siete lecturas por índice, dos a la vez: la meta es la de una consulta a la base.
+  asistente_inicio: ['p(95)<1500'],
+  // Camino rápido: guarda dos mensajes y lee las alertas. Sin modelo.
+  asistente_mensaje: ['p(95)<1500'],
+  // Cacheada por empresa dos minutos; la primera de cada empresa va a la base.
+  propuestas: ['med<300', 'p(95)<1500'],
+  mis_ofertas: ['p(95)<1000'],
 }
 
 export const options = __ENV.VUS
@@ -200,17 +230,24 @@ function renovar() {
   return true
 }
 
-function leer(ruta, etiqueta) {
-  let respuesta = http.get(`${BASE_URL}${ruta}`, {
-    headers: { Authorization: `Bearer ${sesion.acceso}` },
+function pedir(metodo, ruta, etiqueta, cuerpo = null) {
+  const opciones = () => ({
+    headers: {
+      Authorization: `Bearer ${sesion.acceso}`,
+      ...(cuerpo ? { 'Content-Type': 'application/json' } : {}),
+    },
     tags: { nombre: etiqueta },
   })
+  const datos = cuerpo ? JSON.stringify(cuerpo) : null
+  let respuesta = http.request(metodo, `${BASE_URL}${ruta}`, datos, opciones())
   if (respuesta.status === 401 && renovar()) {
-    respuesta = http.get(`${BASE_URL}${ruta}`, {
-      headers: { Authorization: `Bearer ${sesion.acceso}` },
-      tags: { nombre: etiqueta },
-    })
+    respuesta = http.request(metodo, `${BASE_URL}${ruta}`, datos, opciones())
   }
+  return respuesta
+}
+
+function leer(ruta, etiqueta, metodo = 'GET', cuerpo = null) {
+  const respuesta = pedir(metodo, ruta, etiqueta, cuerpo)
   peticiones.add(1)
   cuantas[etiqueta].add(1)
   lecturas[etiqueta].add(respuesta.timings.duration)
@@ -242,6 +279,25 @@ export default function () {
         '&provincia=PICHINCHA&termino=mantenimiento',
       'tabla_termino',
     )
+  }
+
+  // Las pantallas nuevas, repartidas entre vueltas para que cada persona haga algo distinto y no
+  // pasen todas por el mismo endpoint en el mismo segundo. Los topes por persona del API (30 inicios
+  // y 20 mensajes por minuto) quedan muy lejos con una vuelta cada 4–8 s.
+  switch (__ITER % 4) {
+    case 0:
+      leer('/v1/asistente/inicio', 'asistente_inicio')
+      break
+    case 1:
+      // «mis alertas» lo contesta el camino rápido: sin modelo y sin gastar créditos. Cada envío
+      // abre una conversación nueva; el servidor guarda como mucho 50 por persona.
+      leer('/v1/asistente/mensajes', 'asistente_mensaje', 'POST', { texto: 'mis alertas' })
+      break
+    case 2:
+      leer('/v1/propuestas?pagina=1&tamano=20&orden=coincidencia', 'propuestas')
+      break
+    default:
+      leer('/v1/mis-ofertas', 'mis_ofertas')
   }
 
   // La pausa es parte de la medida: sin ella esto no son usuarios concurrentes, son una ráfaga.

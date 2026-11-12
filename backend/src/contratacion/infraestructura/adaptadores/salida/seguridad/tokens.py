@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -84,6 +85,10 @@ class TokensJwt:
             CAMPO_PERIODO: int((ahora + timedelta(seconds=ttl_seg)).timestamp()),
             "iss": self._emisor,
             "aud": self._audiencia,
+            # Identificador aleatorio de cada token. Sin él, dos tokens emitidos en el mismo segundo
+            # para la misma sesión salían idénticos byte a byte, y la rotación del de renovación no
+            # rotaba nada: el «viejo» y el «nuevo» tenían la misma huella (auditoría, doc 38).
+            "jti": secrets.token_urlsafe(12),
         }
         return jwt.encode(contenido, self._secreto, algorithm=self._algoritmo)
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.analizar_plantilla import analizar
@@ -31,6 +31,7 @@ from contratacion.aplicacion.casos_uso.gestionar_plantilla import (
     quitar,
     subir,
 )
+from contratacion.aplicacion.hilos import en_hilo
 from contratacion.aplicacion.plantillas import HOJA_DE_DATOS, TAMANO_MAXIMO_BYTES
 from contratacion.dominio.errores import DatoInvalido
 from contratacion.dominio.serializacion import cuerpo_json
@@ -39,9 +40,18 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     AlmacenPlantillasDep,
     ColumnasDep,
     PlantillasDep,
+    consentimiento_del_actor,
 )
 
-router = APIRouter(prefix="/v1/plantilla", tags=["Plantilla de Excel"])
+# La puerta de consentimiento va en todo el enrutador: estas rutas tratan datos de la empresa (el
+# archivo de su plantilla y las columnas de sus exportaciones), y sin ella una cuenta con la
+# contraseña temporal o con los términos sin aceptar podía subir o borrar la plantilla. Era la única
+# familia de rutas de datos del negocio que no la llevaba (auditoría de seguridad, doc 38).
+router = APIRouter(
+    prefix="/v1/plantilla",
+    tags=["Plantilla de Excel"],
+    dependencies=[Depends(consentimiento_del_actor)],
+)
 
 registro = logging.getLogger(__name__)
 
@@ -148,7 +158,8 @@ async def analizar_plantilla(
         )
 
     try:
-        informe = analizar(contenido)
+        # Abre el libro entero: CPU de corrido, fuera del bucle de eventos.
+        informe = await en_hilo(analizar, contenido)
     except Exception as exc:  # se traduce a algo que el usuario entiende
         raise DatoInvalido(
             "No se ha podido leer la plantilla guardada. Vuelve a subirla y, si se repite, "

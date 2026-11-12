@@ -131,7 +131,7 @@ class UsuariosFalsos:
             [
                 cuenta
                 for cuenta in self._de(negocio_id)
-                if cuenta.activo and cuenta.rol is Rol.ADMIN_NEGOCIO
+                if cuenta.activo and cuenta.rol is Rol.DUENO_EMPRESA
             ]
         )
 
@@ -243,7 +243,7 @@ def _cuenta(
     *,
     negocio_id: UUID = CLIENTE,
     email: str,
-    rol: Rol = Rol.CONSULTOR,
+    rol: Rol = Rol.USUARIO,
     nombre: str = "Ana Pérez",
     estado: str = "activo",
 ) -> FichaUsuario:
@@ -269,7 +269,7 @@ async def test_eliminar_empresa_la_borra_y_cierra_las_sesiones_de_su_gente() -> 
     negocios = NegociosQueApuntanPasos(pasos, guardadas={CLIENTE: _empresa()})
     usuarios = UsuariosFalsos(
         [
-            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.ADMIN_NEGOCIO),
+            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.DUENO_EMPRESA),
             _cuenta(CONSULTOR, email="ana@andina.ec"),
         ]
     )
@@ -468,7 +468,7 @@ async def test_la_linea_de_auditoria_guarda_lo_que_ya_no_existira() -> None:
         negocio_id=CLIENTE,
         repositorio=NegociosFalsos({CLIENTE: _empresa(estado="suspendido")}),
         usuarios=UsuariosFalsos(
-            [_cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.ADMIN_NEGOCIO)]
+            [_cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.DUENO_EMPRESA)]
         ),
         sesiones=SesionesFalsas(),
         auditoria=auditoria,
@@ -497,8 +497,8 @@ async def test_solo_se_cierran_las_sesiones_de_la_empresa_borrada() -> None:
     ajena = uuid4()
     usuarios = UsuariosFalsos(
         [
-            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.ADMIN_NEGOCIO),
-            _cuenta(ajena, negocio_id=OTRO_CLIENTE, email="otro@sur.ec", rol=Rol.ADMIN_NEGOCIO),
+            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.DUENO_EMPRESA),
+            _cuenta(ajena, negocio_id=OTRO_CLIENTE, email="otro@sur.ec", rol=Rol.DUENO_EMPRESA),
         ]
     )
     sesiones = SesionesFalsas()
@@ -526,7 +526,7 @@ async def test_solo_se_cierran_las_sesiones_de_la_empresa_borrada() -> None:
 async def test_la_plataforma_desbloquea_una_cuenta_de_otra_empresa() -> None:
     """Es la salida cuando el bloqueado es el único administrador de su empresa."""
     usuarios = UsuariosFalsos(
-        [_cuenta(ADMIN_CLIENTE, email="jefe@andina.ec", rol=Rol.ADMIN_NEGOCIO)]
+        [_cuenta(ADMIN_CLIENTE, email="jefe@andina.ec", rol=Rol.DUENO_EMPRESA)]
     )
     auditoria = AuditoriaFalsa()
 
@@ -673,7 +673,7 @@ async def test_la_confirmacion_tiene_que_ser_el_correo_de_la_cuenta() -> None:
 async def test_no_se_puede_dejar_una_empresa_sin_administradores() -> None:
     """Sin ninguna cuenta administrativa, esa empresa solo se arregla entrando a mano en la base."""
     usuarios = UsuariosFalsos(
-        [_cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.ADMIN_NEGOCIO)]
+        [_cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.DUENO_EMPRESA)]
     )
     auditoria = AuditoriaFalsa()
 
@@ -699,8 +699,8 @@ async def test_con_dos_administradores_el_borrado_pasa() -> None:
     segunda = uuid4()
     usuarios = UsuariosFalsos(
         [
-            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.ADMIN_NEGOCIO),
-            _cuenta(segunda, email="jefe2@andina.ec", rol=Rol.ADMIN_NEGOCIO),
+            _cuenta(ADMIN_CLIENTE, email="jefa@andina.ec", rol=Rol.DUENO_EMPRESA),
+            _cuenta(segunda, email="jefe2@andina.ec", rol=Rol.DUENO_EMPRESA),
         ]
     )
 

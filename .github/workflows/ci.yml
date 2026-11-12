@@ -75,6 +75,12 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      # Las reglas del SRI y de los contratos viven en Python y en JavaScript. Estas pruebas leen los
+      # mismos casos que las de `backend` (`compartido/reglas_consultas.json`): si una regla cambia
+      # en un lado y no en el otro, la integración continua falla aquí o allá.
+      - name: Pruebas (reglas del navegador y generador del PDF)
+        run: npm test
+
       - name: Compilar
         run: npm run build
 

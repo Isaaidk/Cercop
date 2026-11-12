@@ -55,7 +55,7 @@ const listo = ref(false)
 
 // Formulario de alta
 const creando = ref(false)
-const nuevo = ref({ email: '', nombre: '', rol: 'consultor', contrasena: '' })
+const nuevo = ref({ email: '', nombre: '', rol: 'usuario', contrasena: '' })
 const enviando = ref(false)
 const errorAlta = ref('')
 
@@ -122,7 +122,7 @@ async function crear() {
       contrasena: nuevo.value.contrasena,
     })
     anotar(resultado)
-    nuevo.value = { email: '', nombre: '', rol: 'consultor', contrasena: '' }
+    nuevo.value = { email: '', nombre: '', rol: 'usuario', contrasena: '' }
     creando.value = false
     await cargar()
   } catch (fallo) {

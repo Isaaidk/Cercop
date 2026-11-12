@@ -71,6 +71,39 @@ def _partir(textos: Sequence[str]) -> tuple[list[str], int]:
     return validas, len(partes) - len(validas)
 
 
+async def sembrar_cpc(
+    *,
+    negocio_id: Any,
+    usuario_id: Any,
+    textos: Sequence[str],
+    repositorio: RepositorioCpc,
+    momento: datetime | None = None,
+) -> int:
+    """Deja vigilados los CPC de una empresa recién registrada. Devuelve cuántos entraron.
+
+    Es `agregar` sin actor: la empresa nace en esta misma petición y su único usuario es quien la
+    registra. Los CPC salen de los contratos que los datos abiertos atribuyen a su RUC.
+    """
+    momento = momento or datetime.now(UTC)
+    candidatos, _ = _partir(textos)
+    vistas: set[str] = set()
+    agregados = 0
+    for candidato in candidatos[:30]:
+        normalizado = normalizar_termino(candidato)
+        if normalizado in vistas:
+            continue
+        vistas.add(normalizado)
+        if await repositorio.agregar(
+            negocio_id=negocio_id,
+            texto=candidato,
+            texto_normalizado=normalizado,
+            creado_por=usuario_id,
+            momento=momento,
+        ):
+            agregados += 1
+    return agregados
+
+
 async def listar(actor: Actor, *, repositorio: RepositorioCpc) -> tuple[str, ...]:
     """Los términos guardados por la empresa, en orden de alta."""
     claves = await repositorio.listar(negocio_id=actor.negocio_id)

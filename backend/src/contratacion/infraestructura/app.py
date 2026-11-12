@@ -24,22 +24,36 @@ from contratacion.dominio.errores import (
     ErrorDominio,
     EstadoInvalido,
     NoEncontrado,
+    ServicioNoDisponible,
     SesionRevocada,
+    SinCreditos,
     SinPermiso,
     TokenCaducado,
 )
+from contratacion.infraestructura.adaptadores.entrada.http.proteccion import (
+    LimiteDeCuerpo,
+    crear_proteccion,
+)
 from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     accesos,
+    asistente,
     autenticacion,
     busqueda,
     cpc,
+    documentos,
     ingestas,
+    mercado,
     negocios,
+    perfil,
     plantilla,
     plataforma,
     politicas,
     presencia,
+    procesos,
+    radar,
     salud,
+    seguimiento,
+    tdr,
     terminos,
     usuarios,
 )
@@ -50,14 +64,22 @@ from contratacion.infraestructura.adaptadores.entrada.http.routers import (
 # `registro.info(...)` de este archivo dejarían de escribir en el registro, en silencio, y se
 # convertirían en un acceso a un atributo de un módulo de rutas.
 from contratacion.infraestructura.adaptadores.entrada.http.routers import (
+    ia as ia_router,
+)
+from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     registro as registro_router,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.saturacion import es_saturacion
-from contratacion.infraestructura.adaptadores.salida.bd.sesion import cerrar_bd, verificar_bd
+from contratacion.infraestructura.adaptadores.salida.bd.sesion import (
+    calentar_pool,
+    cerrar_bd,
+    verificar_bd,
+)
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
     cerrar_cache,
     verificar_cache,
 )
+from contratacion.infraestructura.adaptadores.salida.ia import cerrar_modelo
 from contratacion.infraestructura.adaptadores.salida.presencia.fabrica import cerrar_presencia
 from contratacion.infraestructura.config.ajustes import Ajustes, obtener_ajustes
 
@@ -79,7 +101,11 @@ CODIGOS_POR_ERROR: tuple[tuple[type[ErrorDominio], int], ...] = (
     # Volver a entrar no arregla nada y el aviso lo dice, así que mandar un 401 solo serviría para
     # que el cliente intentara renovar y reintentar en un bucle.
     (EmpresaSuspendida, status.HTTP_403_FORBIDDEN),
+    (SinCreditos, status.HTTP_402_PAYMENT_REQUIRED),
     (NoEncontrado, status.HTTP_404_NOT_FOUND),
+    # Antes que `EstadoInvalido`, del que hereda: un servicio caído no es un conflicto con el estado
+    # del recurso, es «reintenta en unos minutos», y eso es un 503.
+    (ServicioNoDisponible, status.HTTP_503_SERVICE_UNAVAILABLE),
     (EstadoInvalido, status.HTTP_409_CONFLICT),
     (DatoInvalido, status.HTTP_422_UNPROCESSABLE_ENTITY),
     # 401 y no 403, aunque el mensaje sea el mismo que el de un token manipulado. Es la diferencia
@@ -99,11 +125,16 @@ async def _ciclo_vida(app: FastAPI) -> AsyncIterator[None]:
     hay_bd = await verificar_bd()
     hay_cache = await verificar_cache()
     registro.info("Arranque: postgres=%s redis=%s", hay_bd, hay_cache)
-    if not hay_bd or not hay_cache:
-        registro.warning(
-            "Alguna dependencia no responde; /listo devolverá 503 hasta que esté disponible."
-        )
+    if hay_bd:
+        registro.info("Pool de conexiones calentado: %s abiertas.", await calentar_pool())
+    if not hay_bd:
+        registro.warning("Postgres no responde; /listo devolverá 503 hasta que esté disponible.")
+    elif not hay_cache:
+        # Puede ser intencional (sin REDIS_URL) o una caída: en los dos casos el API sirve leyendo
+        # de la base, y `/listo` lo informa como `degradado` sin sacar la instancia de la rotación.
+        registro.warning("El caché no responde o no está configurado; se sirve sin caché.")
     yield
+    await cerrar_modelo()
     await cerrar_presencia()
     await cerrar_cache()
     await cerrar_bd()
@@ -123,7 +154,13 @@ async def _manejador_de_dominio(peticion: Request, exc: Exception) -> JSONRespon
         if isinstance(exc, tipo):
             codigo = candidato
             break
-    registro.info("Error de dominio en %s: %s", peticion.url.path, exc)
+    if type(exc) is SinPermiso:
+        # Un permiso denegado es un suceso de seguridad, no un error más: va como aviso, con el
+        # método y la ruta, para poder seguir a quien prueba puertas (auditoría, doc 38). Solo el
+        # tipo exacto: los tokens caducados heredan de otros errores y son rutina.
+        registro.warning("Permiso denegado en %s %s: %s", peticion.method, peticion.url.path, exc)
+    else:
+        registro.info("Error de dominio en %s: %s", peticion.url.path, exc)
     cuerpo: dict[str, Any] = {"detail": str(exc), "codigo": getattr(exc, "codigo", "error")}
     # El motivo de la revocación solo lo lleva `SesionRevocada`, y la interfaz lo necesita para
     # contar bien lo que pasó: no es lo mismo «cerraste la sesión» que «otra persona entró con tu
@@ -182,12 +219,20 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     """Construye la aplicación. Acepta ajustes explícitos para facilitar las pruebas."""
     configuracion = ajustes or obtener_ajustes()
 
+    # En producción no se publica el mapa de rutas: es un inventario listo para quien busca huecos.
+    sin_docs = configuracion.es_produccion
     aplicacion = FastAPI(
         title=TITULO,
         version=VERSION,
         lifespan=_ciclo_vida,
+        docs_url=None if sin_docs else "/docs",
+        redoc_url=None if sin_docs else "/redoc",
+        openapi_url=None if sin_docs else "/openapi.json",
     )
     aplicacion.state.ajustes = configuracion
+    aplicacion.middleware("http")(
+        crear_proteccion(produccion=configuracion.es_produccion, saltos=configuracion.proxy_saltos)
+    )
 
     # Orígenes exactos desde configuración. Nunca comodín con credenciales (vulnerabilidad V1).
     aplicacion.add_middleware(
@@ -202,7 +247,12 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
         # la API —que es como se despliega— el panel descargaría un archivo llamado «descarga» y no
         # podría decir cuántas filas se llevó. Se listan una a una en lugar de usar `*` porque la
         # lista es la documentación de qué se expone.
-        expose_headers=["Content-Disposition", "X-Contenido-Filas"],
+        expose_headers=["Content-Disposition", "X-Contenido-Filas", "X-Firmante", "X-Firmas"],
+    )
+    # El último en añadirse es el primero en ejecutarse: el tope de cuerpo corta antes que nada,
+    # incluso antes de que CORS o la protección lean la petición.
+    aplicacion.add_middleware(
+        LimiteDeCuerpo, maximo_bytes=configuracion.max_cuerpo_mb * 1024 * 1024
     )
 
     aplicacion.add_exception_handler(ErrorDominio, _manejador_de_dominio)
@@ -220,6 +270,15 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     aplicacion.include_router(plantilla.router)
     aplicacion.include_router(terminos.router)
     aplicacion.include_router(cpc.router)
+    aplicacion.include_router(documentos.router)
+    aplicacion.include_router(ia_router.router)
+    aplicacion.include_router(perfil.router)
+    aplicacion.include_router(radar.router)
+    aplicacion.include_router(seguimiento.router)
+    aplicacion.include_router(asistente.router)
+    aplicacion.include_router(mercado.router)
+    aplicacion.include_router(tdr.router)
+    aplicacion.include_router(procesos.router)
     aplicacion.include_router(ingestas.router)
     aplicacion.include_router(accesos.router)
     aplicacion.include_router(usuarios.router)

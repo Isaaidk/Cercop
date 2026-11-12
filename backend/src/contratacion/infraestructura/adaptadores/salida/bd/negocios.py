@@ -304,7 +304,7 @@ class RepositorioNegociosBd:
                                    ) AS usuarios_activos,
                                    count(u.id) FILTER (
                                        WHERE u.estado IN ('activo', 'pendiente')
-                                         AND u.rol = 'admin_negocio'
+                                         AND u.rol IN ('dueno_empresa', 'admin_negocio')
                                    ) AS administradores_activos
                             FROM negocio n
                             LEFT JOIN usuario u ON u.negocio_id = n.id

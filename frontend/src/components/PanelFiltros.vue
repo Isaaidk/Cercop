@@ -9,8 +9,13 @@
  * La provincia se puede elegir aquí **o** pulsando el mapa: los dos caminos escriben el mismo filtro.
  * Elegirla solo desde el mapa dejaba sin filtrar a quien no lo usara, que es la mayoría en escritorio.
  * El cantón, que solo se puede elegir en el mapa, sigue apareciendo como ficha quitadera.
+ *
+ * Rediseño 2026-11: a la vista solo lo que se usa todos los días —qué busco, en qué provincia y si
+ * aún admite proformas—; el CPC, la descripción, el NIC, la fuente, las fechas, el orden y el tamaño
+ * de página van en «Más filtros», que se abre solo si alguno de ellos está puesto. Así quien llega
+ * por primera vez ve tres preguntas y no once controles, y quien ya filtró por CPC no lo pierde.
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import GestorPalabrasClave from '@/components/GestorPalabrasClave.vue'
 import GestorPalabrasCpc from '@/components/GestorPalabrasCpc.vue'
@@ -40,6 +45,35 @@ const etiquetaAplicar = computed(() => {
   const pendientes = filtros.pendientes.value
   if (!pendientes) return 'Filtros aplicados'
   return pendientes === 1 ? 'Aplicar 1 cambio' : `Aplicar ${pendientes} cambios`
+})
+
+/**
+ * Cuántos de los filtros de «Más filtros» están puestos.
+ *
+ * Sirve para dos cosas: abrir el grupo si hay alguno —un filtro activo escondido es un filtro que
+ * nadie entiende por qué no devuelve nada— y decir el número en el propio título del grupo.
+ */
+const masFiltrosActivos = computed(
+  () =>
+    [
+      estado.cpc?.length,
+      estado.descripcion?.length,
+      estado.codigo,
+      estado.fuente,
+      estado.desde || estado.hasta,
+      estado.soloNuevos,
+      estado.orden && estado.orden !== 'recientes',
+    ].filter(Boolean).length,
+)
+
+/**
+ * Si «Más filtros» está desplegado. Se abre solo cuando aparece un filtro suyo —por ejemplo, al
+ * cargar una búsqueda guardada con CPC— pero **nunca se cierra solo**: si se cerrara al quitar el
+ * último término, el grupo se plegaría en la cara de quien lo está editando.
+ */
+const masAbierto = ref(masFiltrosActivos.value > 0)
+watch(masFiltrosActivos, (cuantos) => {
+  if (cuantos > 0) masAbierto.value = true
 })
 
 const pistaAplicar = computed(() =>
@@ -76,208 +110,191 @@ const pistaAplicar = computed(() =>
       </button>
       <p class="filtros__aplicar-pista" role="status">{{ pistaAplicar }}</p>
     </div>
-    <div class="filtros__bloque">
-      <GestorPalabrasClave />
-    </div>
-
-    <!--
-      Búsqueda por CPC: el mismo gestor que las palabras clave, pero en la clasificación.
-
-      Va pegado a ellas porque se usan juntas, y va separado porque no son lo mismo: una palabra
-      clave es una suscripción que el worker va a buscar al SERCOP, y un término de CPC es solo un
-      criterio sobre lo que ya está ingestado. El componente lo explica en pantalla.
-    -->
-    <div class="filtros__bloque">
-      <GestorPalabrasCpc />
-    </div>
-
-    <!--
-      La descripción del producto, debajo del CPC y por el mismo motivo: son los tres sitios donde se
-      escribe qué se busca, y se usan juntos.
-
-      Va después del CPC porque es lo más fino de los tres: las palabras clave buscan en toda la
-      convocatoria, el CPC en la clasificación normalizada y esto solo en el objeto de compra. De
-      arriba abajo, cada uno acota más.
-    -->
-    <div class="filtros__bloque">
-      <GestorDescripcionProducto />
-    </div>
-
-    <hr class="separador" />
-
-    <!--
-      La provincia se elige aquí o pulsando el mapa: los dos caminos escriben el mismo filtro. Antes
-      solo existía el mapa, así que quien no lo usara no podía acotar por provincia.
-
-      Se elige con **casillas** y no con un desplegable que añade y fichas que quitan: la pregunta es
-      «¿en qué provincias?», y con veinticuatro opciones una lista de casillas se lee de un vistazo
-      —se ve lo que está marcado y lo que no sin abrir nada— mientras que el desplegable obligaba a
-      abrirlo una vez por provincia. Lo que no cambia es la lógica: el filtro sigue siendo la
-      **lista** de provincias y la lista vacía no filtra, igual que en el mapa.
-    -->
-    <div class="filtros__bloque">
-      <SelectorProvincias
-        :seleccionadas="estado.provincias"
-        @cambiar="filtros.fijarProvincias"
-      />
-
-      <!-- El cantón solo se puede elegir en el mapa: aquí aparece como ficha para poder quitarlo. -->
-      <div v-if="estado.canton" class="filtros__fichas">
-        <button
-          type="button"
-          class="ficha"
-          :aria-label="`Quitar el filtro del cantón ${estado.canton}`"
-          @click="filtros.elegirCanton(estado.canton)"
-        >
-          <span class="ficha__ciudad" aria-hidden="true">▣</span>
-          {{ estado.canton }}
-          <span class="ficha__quitar" aria-hidden="true">✕</span>
-        </button>
+    <!-- 1. Qué busco: las palabras clave. Es el filtro de todos los días. -->
+    <details class="grupo" open>
+      <summary>Buscar</summary>
+      <div class="filtros__bloque">
+        <GestorPalabrasClave />
       </div>
-    </div>
-
-    <hr class="separador" />
+    </details>
 
     <!--
-      Búsqueda por NIC: el código que identifica una necesidad de contratación —el
-      «NIC-1768120280001-2022-00003» de la ficha—. Es el mismo criterio `codigo` del servidor que ya
-      usaba el listado de ofertas; aquí se nombra como lo llama quien tiene la ficha delante, que es
-      el NIC de la ínfima cuantía.
+      2. Dónde. La provincia se elige aquí o pulsando el mapa: los dos caminos escriben el mismo
+      filtro. Antes solo existía el mapa, así que quien no lo usara no podía acotar por provincia.
 
-      Se compara por fragmento y no por igualdad a propósito: el código se copia del portal, pero
-      casi nadie lo recuerda entero, y buscar por los últimos dígitos o por el año es lo que se hace
-      de verdad. Vive con los demás criterios y por eso pasa por el botón de aplicar.
+      Se elige con **casillas** y no con un desplegable: con veinticuatro opciones una lista de
+      casillas se lee de un vistazo —se ve lo que está marcado y lo que no sin abrir nada—. El filtro
+      sigue siendo la **lista** de provincias y la lista vacía no filtra, igual que en el mapa.
     -->
-    <div class="filtros__bloque">
-      <label class="campo">
-        <span class="campo__etiqueta">NIC de la ínfima cuantía</span>
-        <input
-          class="entrada"
-          type="search"
-          placeholder="NIC-1768120280001-2022-00003"
-          :value="estado.codigo || ''"
-          @input="filtros.actualizar({ codigo: $event.target.value || null })"
+    <details class="grupo" open>
+      <summary>
+        Provincia
+        <span v-if="estado.provincias.length" class="grupo__cuenta">{{ estado.provincias.length }}</span>
+      </summary>
+      <div class="filtros__bloque">
+        <SelectorProvincias
+          :seleccionadas="estado.provincias"
+          @cambiar="filtros.fijarProvincias"
         />
-      </label>
-      <p class="filtros__ayuda">
-        Vale un fragmento: el año, los últimos dígitos. Déjalo vacío para no filtrar por código.
-      </p>
-    </div>
+      </div>
+    </details>
 
-    <hr class="separador" />
-
-    <div class="filtros__bloque">
-      <label class="campo">
-        <span class="campo__etiqueta">Estado de la contratación</span>
-        <select
-          class="seleccion"
-          :value="estado.estadoRegistro || ''"
-          @change="filtros.actualizar({ estadoRegistro: $event.target.value || null })"
-        >
-          <option value="">Todos los estados</option>
-          <option v-for="valor in estados" :key="valor" :value="valor">{{ valor }}</option>
-        </select>
-      </label>
-
-      <label class="campo">
-        <span class="campo__etiqueta">Fuente</span>
-        <select
-          class="seleccion"
-          :value="estado.fuente || ''"
-          @change="filtros.elegirFuente($event.target.value || null)"
-        >
-          <option value="">Todas las fuentes</option>
-          <option v-for="valor in fuentes" :key="valor" :value="valor">{{ valor }}</option>
-        </select>
-      </label>
-    </div>
-
-    <hr class="separador" />
-
-    <div class="filtros__bloque">
-      <p class="campo__etiqueta">Fecha de publicación</p>
-      <div class="filtros__fechas">
+    <!-- 3. Estado y plazo: si la contratación sigue viva y si todavía admite proformas. -->
+    <details class="grupo" open>
+      <summary>Estado y plazo</summary>
+      <div class="filtros__bloque">
         <label class="campo">
-          <span class="filtros__fecha-etiqueta">Desde</span>
-          <input
-            class="entrada"
-            type="date"
-            :value="estado.desde || ''"
-            @change="filtros.actualizar({ desde: $event.target.value || null })"
-          />
+          <span class="campo__etiqueta">Estado de la contratación</span>
+          <select
+            class="seleccion"
+            :value="estado.estadoRegistro || ''"
+            @change="filtros.actualizar({ estadoRegistro: $event.target.value || null })"
+          >
+            <option value="">Todos los estados</option>
+            <option v-for="valor in estados" :key="valor" :value="valor">{{ valor }}</option>
+          </select>
         </label>
-        <label class="campo">
-          <span class="filtros__fecha-etiqueta">Hasta</span>
+
+        <!--
+          Se filtra en el servidor y no aquí: la tabla está paginada, así que esconder lo vencido de
+          la página visible dejaría las siguientes llenas de filas sin plazo y los totales dirían otra
+          cosa.
+        -->
+        <label class="interruptor">
           <input
-            class="entrada"
-            type="date"
-            :value="estado.hasta || ''"
-            @change="filtros.actualizar({ hasta: $event.target.value || null })"
+            type="checkbox"
+            :checked="estado.soloConPlazo"
+            class="interruptor__control"
+            @change="filtros.actualizar({ soloConPlazo: $event.target.checked })"
           />
+          <span class="interruptor__pista">Solo las que aún admiten proformas</span>
         </label>
       </div>
-      <div v-if="estado.desde || estado.hasta" class="filtros__fechas-acciones">
-        <button type="button" class="boton boton--fantasma boton--pequeno" @click="limpiarFecha('desde'); limpiarFecha('hasta')">
-          Quitar las fechas
-        </button>
-      </div>
-    </div>
+    </details>
 
-    <hr class="separador" />
-
-    <div class="filtros__bloque">
-      <label class="campo">
-        <span class="campo__etiqueta">Ordenar por</span>
-        <select
-          class="seleccion"
-          :value="estado.orden"
-          @change="filtros.actualizar({ orden: $event.target.value })"
-        >
-          <option value="recientes">Más recientes primero</option>
-          <option value="antiguos">Más antiguas primero</option>
-          <option value="nuevos">Detectadas hace poco</option>
-        </select>
-      </label>
-
-      <label class="interruptor">
-        <input
-          type="checkbox"
-          :checked="estado.soloNuevos"
-          class="interruptor__control"
-          @change="filtros.actualizar({ soloNuevos: $event.target.checked })"
-        />
-        <span class="interruptor__pista">Solo lo detectado en la última ingesta</span>
-      </label>
+    <!-- 4. Todo lo demás, plegado. Se abre solo si alguno de sus filtros está puesto. -->
+    <details class="grupo" :open="masAbierto" @toggle="masAbierto = $event.target.open">
+      <summary>
+        Más filtros
+        <span v-if="masFiltrosActivos" class="grupo__cuenta">{{ masFiltrosActivos }}</span>
+      </summary>
 
       <!--
-        Se filtra en el servidor y no aquí: la tabla está paginada, así que esconder lo vencido de la
-        página visible dejaría las siguientes llenas de filas sin plazo y los totales dirían otra cosa.
+        Búsqueda por CPC: el mismo gestor que las palabras clave, pero en la clasificación. Una
+        palabra clave es una suscripción que el worker va a buscar al SERCOP, y un término de CPC es
+        solo un criterio sobre lo que ya está ingestado. El componente lo explica en pantalla.
       -->
-      <button
-        type="button"
-        class="boton boton--secundario boton--pequeno filtros__plazo"
-        :aria-pressed="estado.soloConPlazo"
-        @click="filtros.actualizar({ soloConPlazo: !estado.soloConPlazo })"
-      >
-        <span aria-hidden="true">{{ estado.soloConPlazo ? '◉' : '○' }}</span>
-        {{ estado.soloConPlazo ? 'Viendo solo las que admiten proformas' : 'Ocultar las de plazo vencido' }}
-      </button>
-    </div>
+      <div class="filtros__bloque">
+        <GestorPalabrasCpc />
+      </div>
 
-    <hr class="separador" />
+      <!--
+        La descripción del producto: lo más fino de los tres buscadores. Las palabras clave buscan en
+        toda la convocatoria, el CPC en la clasificación normalizada y esto solo en el objeto.
+      -->
+      <div class="filtros__bloque">
+        <GestorDescripcionProducto />
+      </div>
 
-    <div class="filtros__bloque">
-      <p class="campo__etiqueta">Tamaño de página</p>
-      <select
-        class="seleccion"
-        :value="estado.tamano"
-        @change="filtros.cambiarTamano(Number($event.target.value))"
-      >
-        <option :value="25">25 por página</option>
-        <option :value="50">50 por página</option>
-        <option :value="100">100 por página</option>
-      </select>
-    </div>
+      <!--
+        Búsqueda por NIC: el código que identifica una necesidad de contratación —el
+        «NIC-1768120280001-2022-00003» de la ficha—. Se compara por fragmento y no por igualdad a
+        propósito: casi nadie recuerda el código entero, y buscar por los últimos dígitos o por el año
+        es lo que se hace de verdad.
+      -->
+      <div class="filtros__bloque">
+        <label class="campo">
+          <span class="campo__etiqueta">NIC de la ínfima cuantía</span>
+          <input
+            class="entrada"
+            type="search"
+            placeholder="NIC-1768120280001-2022-00003"
+            :value="estado.codigo || ''"
+            @input="filtros.actualizar({ codigo: $event.target.value || null })"
+          />
+        </label>
+        <p class="filtros__ayuda">Vale un fragmento: el año o los últimos dígitos.</p>
+      </div>
+
+      <div class="filtros__bloque">
+        <p class="campo__etiqueta">Fecha de publicación</p>
+        <div class="filtros__fechas">
+          <label class="campo">
+            <span class="filtros__fecha-etiqueta">Desde</span>
+            <input
+              class="entrada"
+              type="date"
+              :value="estado.desde || ''"
+              @change="filtros.actualizar({ desde: $event.target.value || null })"
+            />
+          </label>
+          <label class="campo">
+            <span class="filtros__fecha-etiqueta">Hasta</span>
+            <input
+              class="entrada"
+              type="date"
+              :value="estado.hasta || ''"
+              @change="filtros.actualizar({ hasta: $event.target.value || null })"
+            />
+          </label>
+        </div>
+        <div v-if="estado.desde || estado.hasta" class="filtros__fechas-acciones">
+          <button type="button" class="boton boton--fantasma boton--pequeno" @click="limpiarFecha('desde'); limpiarFecha('hasta')">
+            Quitar las fechas
+          </button>
+        </div>
+      </div>
+
+      <div class="filtros__bloque">
+        <label class="campo">
+          <span class="campo__etiqueta">Fuente</span>
+          <select
+            class="seleccion"
+            :value="estado.fuente || ''"
+            @change="filtros.elegirFuente($event.target.value || null)"
+          >
+            <option value="">Todas las fuentes</option>
+            <option v-for="valor in fuentes" :key="valor" :value="valor">{{ valor }}</option>
+          </select>
+        </label>
+
+        <label class="campo">
+          <span class="campo__etiqueta">Ordenar por</span>
+          <select
+            class="seleccion"
+            :value="estado.orden"
+            @change="filtros.actualizar({ orden: $event.target.value })"
+          >
+            <option value="recientes">Más recientes primero</option>
+            <option value="antiguos">Más antiguas primero</option>
+            <option value="nuevos">Detectadas hace poco</option>
+          </select>
+        </label>
+
+        <label class="interruptor">
+          <input
+            type="checkbox"
+            :checked="estado.soloNuevos"
+            class="interruptor__control"
+            @change="filtros.actualizar({ soloNuevos: $event.target.checked })"
+          />
+          <span class="interruptor__pista">Solo lo detectado en la última ingesta</span>
+        </label>
+
+        <label class="campo">
+          <span class="campo__etiqueta">Tamaño de página</span>
+          <select
+            class="seleccion"
+            :value="estado.tamano"
+            @change="filtros.cambiarTamano(Number($event.target.value))"
+          >
+            <option :value="25">25 por página</option>
+            <option :value="50">50 por página</option>
+            <option :value="100">100 por página</option>
+          </select>
+        </label>
+      </div>
+    </details>
 
     <div v-if="filtros.hayFiltros.value" class="filtros__resumen">
       <p>
@@ -295,7 +312,7 @@ const pistaAplicar = computed(() =>
 .filtros {
   display: flex;
   flex-direction: column;
-  gap: var(--e-4);
+  gap: var(--e-2);
 }
 
 /*
@@ -322,8 +339,8 @@ const pistaAplicar = computed(() =>
 
 /* Solo se enmarca cuando hay algo que aplicar: si estuviera siempre destacada, dejaría de avisar. */
 .filtros__aplicar--pendiente {
-  border-color: var(--acento);
-  background: var(--acento-suave);
+  border-color: var(--acento-suave);
+  background: var(--acento-tenue);
 }
 
 .filtros__aplicar-boton {
@@ -414,6 +431,7 @@ const pistaAplicar = computed(() =>
 }
 
 .filtros__resumen {
+  margin-top: var(--e-2);
   display: flex;
   flex-direction: column;
   gap: var(--e-2);
@@ -435,4 +453,27 @@ const pistaAplicar = computed(() =>
     grid-template-columns: 1fr;
   }
 }
+
+/* Grupos plegables: «Buscar», «Provincia», «Estado y plazo» y «Más filtros». Lo que se usa todos
+   los días está abierto; se separan con una raya fina y espacio, no con cajas dentro de la caja. */
+.grupo {
+  border-top: 1px solid var(--borde);
+}
+.grupo > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  padding: var(--e-3) 0;
+  font-size: var(--t-sm);
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+.grupo > summary::-webkit-details-marker { display: none; }
+.grupo > summary::after { content: '▾'; margin-left: auto; color: var(--texto-tenue); transition: transform var(--rapido); }
+.grupo:not([open]) > summary::after { transform: rotate(-90deg); }
+.grupo > .filtros__bloque { padding: 0 0 var(--e-4); }
+.grupo > .filtros__bloque + .filtros__bloque { padding-top: var(--e-2); }
+.grupo .separador { display: none; }
+.grupo__cuenta { padding: 0 0.45rem; border-radius: var(--r-redondo); background: var(--acento-suave); color: var(--acento-fuerte); font-size: var(--t-xs); }
 </style>

@@ -25,38 +25,43 @@
  */
 import { onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 
-import {
-  ArcElement,
-  BarController,
-  BarElement,
-  CategoryScale,
-  Chart,
-  DoughnutController,
-  Filler,
-  Legend,
-  LineController,
-  LineElement,
-  LinearScale,
-  PointElement,
-  Tooltip,
-} from 'chart.js'
+// Chart.js se baja **cuando hace falta la primera gráfica**, no con el panel. Eran unos 200 kB del
+// paquete principal que pagaba todo el mundo al entrar —también quien solo usa el asistente o la
+// tabla—, y con cientos de personas abriendo el panel a la vez es lo que más pesaba en la primera
+// carga. Registro explícito: solo entra lo que se usa (`chart.js/auto` traería todo).
+let ClaseChart = null
+let cargandoChart = null
 
-// Registro explícito: solo entra en el paquete lo que se usa. Importar `chart.js/auto` traería
-// todos los controladores, incluidos los que este panel nunca dibuja.
-Chart.register(
-  ArcElement,
-  BarController,
-  BarElement,
-  CategoryScale,
-  DoughnutController,
-  Filler,
-  Legend,
-  LineController,
-  LineElement,
-  LinearScale,
-  PointElement,
-  Tooltip,
-)
+export function cargarChart() {
+  if (ClaseChart) return Promise.resolve(ClaseChart)
+  if (!cargandoChart) {
+    cargandoChart = import('chart.js')
+      .then((modulo) => {
+        modulo.Chart.register(
+          modulo.ArcElement,
+          modulo.BarController,
+          modulo.BarElement,
+          modulo.CategoryScale,
+          modulo.DoughnutController,
+          modulo.Filler,
+          modulo.Legend,
+          modulo.LineController,
+          modulo.LineElement,
+          modulo.LinearScale,
+          modulo.PointElement,
+          modulo.Tooltip,
+        )
+        ClaseChart = modulo.Chart
+        return ClaseChart
+      })
+      .catch((fallo) => {
+        // Sin red no se queda envenenada la carga: el siguiente intento vuelve a pedirla.
+        cargandoChart = null
+        throw fallo
+      })
+  }
+  return cargandoChart
+}
 
 /** Lee una variable CSS del documento. Es lo que ata las gráficas al tema del panel. */
 export function colorDeToken(nombre, respaldo = '#888') {
@@ -92,9 +97,19 @@ export function useGrafica(construir, depende) {
   let grafica = null
   let observador = null
   let visible = null
+  let desmontada = false
 
   function dibujar() {
     if (!lienzo.value) return
+    if (!ClaseChart) {
+      // Primera gráfica: se baja Chart.js y se dibuja al llegar (si el componente sigue montado).
+      cargarChart()
+        .then(() => {
+          if (!desmontada) dibujar()
+        })
+        .catch(() => {})
+      return
+    }
     grafica?.destroy()
 
     // Se construye **una sola vez**. Llamar dos veces devolvería dos objetos distintos, y el `onClick`
@@ -102,7 +117,7 @@ export function useGrafica(construir, depende) {
     const configuracion = construir()
     const sinMovimiento = prefiereMenosMovimiento()
 
-    grafica = new Chart(lienzo.value, {
+    grafica = new ClaseChart(lienzo.value, {
       ...configuracion,
       options: {
         ...configuracion.options,
@@ -194,6 +209,7 @@ export function useGrafica(construir, depende) {
   })
 
   onBeforeUnmount(() => {
+    desmontada = true
     observador?.disconnect()
     visible?.disconnect()
     grafica?.destroy()

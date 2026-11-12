@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Header, status
+from fastapi import APIRouter, Body, Depends, Header, status
 from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.autenticar import (
@@ -46,8 +46,10 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     CierreSesionesDep,
     ContrasenasDep,
     CuentasDep,
+    IpClienteDep,
     SesionesDep,
 )
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
 from contratacion.infraestructura.adaptadores.salida.seguridad.fabrica import (
     huella_de_descarte,
     obtener_contrasenas,
@@ -70,14 +72,22 @@ class Credenciales(BaseModel):
 class Renovacion(BaseModel):
     """Cuerpo de la renovación."""
 
-    token_renovacion: str = Field(min_length=1)
+    # Un token de renovación mide unos 400 caracteres: el tope solo evita procesar un cuerpo
+    # absurdo.
+    token_renovacion: str = Field(min_length=1, max_length=4096)
 
 
 class CierreDeSesion(BaseModel):
     """Cuerpo del cierre. El token es opcional porque también vale el de acceso de la cabecera."""
 
-    token_renovacion: str | None = None
+    token_renovacion: str | None = Field(default=None, max_length=4096)
     motivo: MotivoRevocacion = MotivoRevocacion.LOGOUT
+
+
+# Los únicos motivos que el propio cliente puede declarar al cerrar su sesión. Los demás
+# (`admin`, `reuso_detectado`, `eviccion`) los pone el servidor: aceptarlos del cliente dejaba
+# escribir en la auditoría un «lo cerró un administrador» o un «robo de token» que no ocurrió.
+MOTIVOS_DEL_CLIENTE = frozenset({MotivoRevocacion.LOGOUT, MotivoRevocacion.CIERRE_VENTANA})
 
 
 # Valor por defecto del cuerpo del cierre, creado una sola vez.
@@ -93,8 +103,8 @@ async def iniciar(
     cuentas: CuentasDep,
     sesiones: SesionesDep,
     ajustes: AjustesDep,
+    ip: IpClienteDep,
     user_agent: Annotated[str | None, Header()] = None,
-    x_forwarded_for: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Valida las credenciales y abre una sesión.
 
@@ -112,9 +122,9 @@ async def iniciar(
         max_sesiones=ajustes.max_sesiones_usuario,
         acceso_ttl_seg=ajustes.acceso_ttl_min * SEGUNDOS_POR_MINUTO,
         refresco_ttl_seg=ajustes.refresh_ttl_dias * SEGUNDOS_POR_DIA,
-        dispositivo=user_agent,
-        ip=x_forwarded_for,
-        user_agent=user_agent,
+        dispositivo=user_agent[:300] if user_agent else None,
+        ip=ip,
+        user_agent=user_agent[:300] if user_agent else None,
     )
     return cuerpo_json(resultado.como_diccionario())
 
@@ -167,7 +177,7 @@ async def cerrar(
         claims,
         sesiones=sesiones,
         cuentas=cuentas,
-        motivo=cuerpo.motivo,
+        motivo=cuerpo.motivo if cuerpo.motivo in MOTIVOS_DEL_CLIENTE else MotivoRevocacion.LOGOUT,
     )
     return {"cerrada": True, "sesiones_cerradas": cerradas}
 
@@ -203,7 +213,13 @@ class CambioDeContrasenaPropia(BaseModel):
     sesion_actual: UUID | None = None
 
 
-@router.post("/contrasena", summary="Cambiar la contraseña propia")
+@router.post(
+    "/contrasena",
+    summary="Cambiar la contraseña propia",
+    # Con un token robado se podía probar la contraseña actual sin freno ni bloqueo, y acertarla es
+    # quedarse con la cuenta. Cinco intentos cada cinco minutos sobran para quien la escribe mal.
+    dependencies=[Depends(LimitePorUsuario("auth.contrasena", 5, 300))],
+)
 async def cambiar_contrasena(
     cuerpo: CambioDeContrasenaPropia,
     actor: ActorDep,
@@ -236,6 +252,8 @@ async def cambiar_contrasena(
         sesiones=sesiones,
         contrasenas=contrasenas,
         auditoria=auditoria,
-        sesion_actual=cuerpo.sesion_actual,
+        # La sesión que se conserva es la del token, no la que diga el cuerpo: el campo se sigue
+        # aceptando por compatibilidad, pero solo cuenta cuando no hay token del que sacarla.
+        sesion_actual=actor.sesion_id or cuerpo.sesion_actual,
     )
     return cuerpo_json(resultado.como_diccionario())

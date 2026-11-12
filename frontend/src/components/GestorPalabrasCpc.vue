@@ -141,6 +141,7 @@ async function usarPalabrasClave() {
   <div class="cpc">
     <p class="campo__etiqueta">Buscar por CPC</p>
 
+    <details class="ayuda"><summary>¿Cómo funciona?</summary>
     <p class="cpc__ayuda">
       Busca en el <strong>código y el nombre estándar</strong> del CPC de cada ítem, no en la
       descripción que escribe la entidad. Sirve para lo mismo que una palabra clave, pero sin traer
@@ -151,6 +152,7 @@ async function usarPalabrasClave() {
           : ' Con «Cualquiera» basta con que aparezca uno de los términos añadidos aquí.'
       }}
     </p>
+    </details>
 
     <!--
       «Solo CPC»: con el interruptor activo, buscar por clasificación **no** exige además las palabras

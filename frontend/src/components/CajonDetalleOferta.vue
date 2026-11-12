@@ -30,19 +30,38 @@
  * distingue las dos ausencias en lugar de callarse: «esta fuente no publica el desglose de este
  * proceso» no es lo mismo que un hueco, y sin decirlo lo que se lee es que al panel le falta algo.
  *
- * El enlace al portal va arriba y es lo más visible, porque es la única acción del cajón.
+ * El enlace al portal va arriba y es lo más visible.
+ *
+ * Los anexos para la proforma
+ * ---------------------------
+ * Debajo del enlace va «Anexos para tu proforma» (`AnexosProceso.vue`): TDR, pliego y solo la última
+ * acta, con el monto del proceso destacado. Se pide al servidor al abrir el cajón, no con la tabla.
+ *
+ * «Preparar oferta» se pinta solo si quien abre el cajón escucha `preparar` (se detecta con la
+ * propiedad `onPreparar`, que es como Vue entrega ese oyente). `OfertasTab.vue` lo reenvía hacia
+ * arriba; para que funcione, `VistaPanel.vue` tiene que escucharlo como ya hace con la tabla de
+ * ínfimas: `<OfertasTab @preparar="prepararOferta" />`. Mientras no lo haga, el botón no aparece.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
+import AnexosProceso from '@/components/AnexosProceso.vue'
 import { itemsDe } from '@/utils/cpc'
 import { decimal, fechaCorta, sinEtiquetas } from '@/utils/formato'
 
 const props = defineProps({
   /** La fila tal y como la devuelve la API: el cajón la interpreta, no la completa. */
   fila: { type: Object, required: true },
+  /** El oyente de `preparar`, declarado como propiedad para saber si hay alguien que lo atienda. */
+  onPreparar: { type: Function, default: null },
 })
 
 const emit = defineEmits(['cerrar'])
+
+const registroId = computed(() => (props.fila.id ? String(props.fila.id) : ''))
+
+function preparar() {
+  props.onPreparar?.(props.fila)
+}
 
 const botonCerrar = ref(null)
 
@@ -242,6 +261,13 @@ onBeforeUnmount(() => {
         <p v-else class="cajon__sin-enlace">
           Este proceso no trae dirección en los datos abiertos, así que no hay nada que abrir.
         </p>
+
+        <AnexosProceso
+          v-if="registroId"
+          :registro-id="registroId"
+          :puede-preparar="Boolean(onPreparar)"
+          @preparar="preparar()"
+        />
 
         <section v-for="bloque in bloques" :key="bloque.titulo" class="bloque">
           <h3 class="bloque__titulo">{{ bloque.titulo }}</h3>
