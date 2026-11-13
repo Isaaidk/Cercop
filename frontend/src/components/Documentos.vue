@@ -114,6 +114,9 @@ const paso = ref('proceso')
 const tipo = ref('proforma')
 const reviso = ref(false)
 const error = ref('')
+// Si el portal no contesta al servidor, los anexos se pueden abrir desde el navegador de la persona
+// (con su conexión) y subir aquí. El servidor manda sus direcciones junto con el error.
+const enlacesPortal = ref([])
 const aviso = ref('')
 const ocupado = ref(false)
 const lectura = ref(null)
@@ -537,7 +540,7 @@ async function leerArchivoSubido(elegido) {
 
 function leer() {
   return ejecutar(async () => {
-    if (!archivo.value) throw new Error('Elige un PDF, una foto o un archivo de texto.')
+    if (!archivo.value) throw new Error('Elige un PDF, un Word, un Excel, un ZIP o una foto del documento.')
     const resultado = await leerArchivoSubido(archivo.value)
     lectura.value = resultado
     resumen.value = resultado.resumen
@@ -605,7 +608,10 @@ async function traerDelPortal(clave) {
     }
     const estado = await conReintento(() => api.estadoDesdeCodigo(clave))
     sondeo.enCola = estado.en_cola || 0
-    if (estado.estado === 'error') throw new Error(estado.mensaje || 'No se pudo bajar el TDR.')
+    if (estado.estado === 'error') {
+      enlacesPortal.value = estado.enlaces_portal || []
+      throw new Error(estado.mensaje || 'No se pudo bajar el TDR.')
+    }
     if (estado.estado === 'listo') {
       sondeo.fase = 'leyendo'
       resultado = await conReintento(() => api.prepararDesdeCodigo(clave, false))
@@ -637,6 +643,7 @@ function pedirResumen() {
       return
     }
     trayendo.value = true
+    enlacesPortal.value = []
     try {
       const resultado = await traerDelPortal(clave)
       if (!resultado) return
@@ -1430,6 +1437,14 @@ onMounted(() => {
     </nav>
 
     <p v-if="error" class="docs__mensaje docs__mensaje--error" role="alert">{{ error }}</p>
+    <div v-if="error && enlacesPortal.length" class="docs__portal">
+      <p>Abre cada anexo en el portal (se descarga con tu conexión), guárdalo y súbelo abajo:</p>
+      <ul>
+        <li v-for="enlace in enlacesPortal" :key="enlace.url">
+          <a :href="enlace.url" target="_blank" rel="noopener noreferrer">{{ enlace.nombre }}</a>
+        </li>
+      </ul>
+    </div>
     <p v-if="aviso" class="docs__mensaje docs__mensaje--info" role="status">{{ aviso }}</p>
 
     <section class="docs__panel" aria-labelledby="docs-paso-titulo">
@@ -1466,7 +1481,7 @@ onMounted(() => {
         <form class="docs__subida" @submit.prevent="leer">
           <input
             type="file"
-            accept=".pdf,.txt,application/pdf,text/plain,image/*"
+            accept=".pdf,.txt,.docx,.xlsx,.zip,.csv,application/pdf,text/plain,image/*"
             aria-describedby="docs-subida-ayuda"
             @change="elegirArchivo"
           />
@@ -1475,7 +1490,7 @@ onMounted(() => {
           </button>
         </form>
         <p id="docs-subida-ayuda" class="docs__nota">
-          PDF, texto o una foto del documento. Los escaneos y las fotos se leen con OCR en tu navegador.
+          PDF, Word, Excel, ZIP, texto o una foto del documento. Los escaneos y las fotos se leen con OCR en tu navegador.
         </p>
         <div v-if="ocr.activo" class="proceso__ocr" role="status" aria-live="polite">
           <span>
@@ -2581,6 +2596,8 @@ onMounted(() => {
 .proceso__buscar label { flex: 1 1 22rem; }
 .proceso__etiqueta { display: block; margin-bottom: 4px; color: var(--texto-suave); font-size: var(--t-sm); }
 .proceso__buscar input { width: 100%; padding: 0.65rem 0.8rem; font-size: var(--t-md); font-variant-numeric: tabular-nums; }
+.docs__portal { margin: var(--e-2) 0; font-size: var(--t-sm); }
+.docs__portal ul { margin: var(--e-1) 0 0; padding-left: 1.1rem; }
 .proceso__subir summary { cursor: pointer; color: var(--texto-suave); font-size: var(--t-sm); }
 .proceso__subir[open] summary { margin-bottom: var(--e-3); }
 .proceso__progreso { display: flex; flex-wrap: wrap; gap: var(--e-3); margin: 0; padding: var(--e-3) var(--e-4); list-style: none; border: 1px solid var(--borde); border-radius: var(--r-3); background: var(--superficie); }

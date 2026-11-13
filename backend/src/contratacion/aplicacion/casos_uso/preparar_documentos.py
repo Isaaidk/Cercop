@@ -9,6 +9,7 @@ import re
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urljoin, urlsplit
 from uuid import UUID
 
 from contratacion.aplicacion.actor import Actor
@@ -306,10 +307,54 @@ def _publicados(ficha: dict[str, Any]) -> list[dict[str, Any]]:
     return [documento for documento in documentos if isinstance(documento, dict)]
 
 
+# Errores de red de la bajada (los nombres de excepción de httpx que guarda la cola). Cualquiera de
+# ellos significa lo mismo para quien prepara la oferta: el portal no contestó a nuestro servidor.
+_ERRORES_DE_RED = (
+    "HTTP",
+    "Connect",
+    "Read",
+    "Write",
+    "Timeout",
+    "Remote",
+    "Proxy",
+    "Pool",
+    "Network",
+    "TooManyRedirects",
+    "Protocol",
+)
+_MENSAJE_SIN_PORTAL = (
+    "El portal de compras públicas no respondió a CercoApp en este momento. Puedes abrir cada "
+    "anexo en el portal desde tu computadora con los enlaces de abajo, guardarlo y subirlo aquí "
+    "con «¿Ya tienes el archivo? Súbelo». O vuelve a intentarlo en unos minutos."
+)
+
+
 def _error_de_bajada(texto: str) -> str:
-    if texto.startswith(("HTTP", "Connect", "Read", "Timeout", "Remote")):
-        return "No se pudo bajar el TDR desde el portal. Vuelve a intentarlo."
+    if texto.startswith(_ERRORES_DE_RED):
+        return _MENSAJE_SIN_PORTAL
     return texto or "No se pudo bajar el TDR."
+
+
+def _enlaces_al_portal(ficha: dict[str, Any]) -> list[dict[str, str]]:
+    """Dirección completa de cada anexo en el portal, para abrirlo desde el navegador de la persona.
+
+    Navegar al portal con su propia conexión sí funciona (lo que el navegador prohíbe es que otra
+    web *lea* el archivo). Solo enlaces del propio portal: la ficha la escribe un tercero.
+    """
+    enlaces = []
+    for anexo in _anexos_del_proceso(ficha):
+        url = urljoin(_DETALLE_NCO, str(anexo.get("enlace") or ""))
+        anfitrion = (urlsplit(url).hostname or "").lower()
+        if urlsplit(url).scheme == "https" and (
+            anfitrion == "compraspublicas.gob.ec" or anfitrion.endswith(".compraspublicas.gob.ec")
+        ):
+            enlaces.append({"nombre": str(anexo.get("nombre") or "Anexo"), "url": url})
+    return enlaces[:20]
+
+
+_DETALLE_NCO = (
+    "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/NCO/NCORegistroDetalle.cpe"
+)
 
 
 def _nombre_fila(documento: dict[str, Any]) -> str:
@@ -635,6 +680,7 @@ async def estado_desde_codigo(
         respuesta["en_cola"] = await tdr.contar_pendientes()
     if estado == "error":
         respuesta["mensaje"] = _error_de_bajada(str(filas[0].get("error") or ""))
+        respuesta["enlaces_portal"] = _enlaces_al_portal(ficha)
     return respuesta
 
 
