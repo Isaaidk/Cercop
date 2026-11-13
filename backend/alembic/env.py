@@ -11,6 +11,7 @@ objetos ajenos al proyecto.
 from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -30,7 +31,10 @@ target_metadata = None
 
 def _url_de_conexion() -> str:
     """URL resuelta desde la configuración de la aplicación (una sola fuente de verdad)."""
-    url = normalizar_url_bd(obtener_ajustes().database_url)
+    # Las migraciones corren con el dueño de las tablas (`DATABASE_URL_MIGRACIONES`); la aplicación,
+    # con el rol sin superusuario de `DATABASE_URL` (docs/38 §3). Sin la primera, se usa la segunda.
+    propia = os.environ.get("DATABASE_URL_MIGRACIONES", "").strip()
+    url = normalizar_url_bd(propia or obtener_ajustes().database_url)
     return url.render_as_string(hide_password=False)
 
 

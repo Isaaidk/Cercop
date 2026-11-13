@@ -127,6 +127,24 @@ async def _asegurar_rol(conexion: AsyncConnection, clave_sql: str) -> None:
     await conexion.execute(
         text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {ROL_APLICACION}")
     )
+    # La migración 0043 quita `EXECUTE` a PUBLIC en las funciones SECURITY DEFINER (S-19): el rol de
+    # prueba las necesita igual que el de producción.
+    await conexion.execute(
+        text(
+            f"""
+            DO $$
+            DECLARE f regprocedure;
+            BEGIN
+                FOR f IN SELECT p.oid::regprocedure FROM pg_proc p
+                         JOIN pg_namespace n ON n.oid = p.pronamespace
+                         WHERE n.nspname = 'public' AND p.prosecdef
+                LOOP
+                    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO {ROL_APLICACION}', f);
+                END LOOP;
+            END $$
+            """
+        )
+    )
 
 
 @pytest.fixture

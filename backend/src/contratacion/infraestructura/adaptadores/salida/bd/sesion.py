@@ -236,6 +236,24 @@ async def verificar_bd() -> bool:
     return responde
 
 
+async def rol_de_bd() -> tuple[str, bool]:
+    """Usuario con el que se conecta la aplicación y si **salta el RLS** (superusuario/BYPASSRLS).
+
+    Con un rol que lo salta, las políticas de aislamiento entre empresas no se aplican (docs/38,
+    S-01). Se registra al arrancar para comprobarlo en el despliegue sin entrar a la base.
+    """
+    async with obtener_motor().connect() as conexion:
+        fila = (
+            await conexion.execute(
+                text(
+                    "SELECT current_user::text, rolsuper OR rolbypassrls "
+                    "FROM pg_roles WHERE rolname = current_user"
+                )
+            )
+        ).one()
+    return str(fila[0]), bool(fila[1])
+
+
 async def cerrar_bd() -> None:
     """Libera el pool de conexiones y **siempre** olvida la referencia.
 

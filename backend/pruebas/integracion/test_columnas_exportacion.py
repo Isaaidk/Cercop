@@ -104,7 +104,13 @@ async def _contar(escenario: Escenario) -> int:
     falló sin que nada estuviera roto. Se cuenta lo propio y se deja de depender de que la tabla
     esté vacía, que estas pruebas no pueden garantizar.
     """
-    async with escenario.motor.connect() as conexion:
+    # Dentro del contexto de la empresa: con el rol de aplicación (sin BYPASSRLS) es la única forma
+    # de ver sus filas; con el administrador da lo mismo.
+    async with escenario.motor.begin() as conexion:
+        await conexion.execute(
+            text("SELECT set_config('app.negocio_id', :id, true)"),
+            {"id": str(escenario.negocio_id)},
+        )
         fila = await conexion.execute(
             text("SELECT count(*) FROM exportacion_columnas WHERE negocio_id = :id"),
             {"id": str(escenario.negocio_id)},

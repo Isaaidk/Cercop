@@ -73,6 +73,7 @@ from contratacion.infraestructura.adaptadores.salida.bd.saturacion import es_sat
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import (
     calentar_pool,
     cerrar_bd,
+    rol_de_bd,
     verificar_bd,
 )
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
@@ -127,6 +128,15 @@ async def _ciclo_vida(app: FastAPI) -> AsyncIterator[None]:
     registro.info("Arranque: postgres=%s redis=%s", hay_bd, hay_cache)
     if hay_bd:
         registro.info("Pool de conexiones calentado: %s abiertas.", await calentar_pool())
+        rol, salta_rls = await rol_de_bd()
+        if salta_rls:
+            registro.warning(
+                "Rol de base %s: superusuario o BYPASSRLS. El aislamiento entre empresas depende "
+                "solo de las consultas (docs/38 S-01).",
+                rol,
+            )
+        else:
+            registro.info("Rol de base %s: sin superusuario; RLS aplicado entre empresas.", rol)
     if not hay_bd:
         registro.warning("Postgres no responde; /listo devolverá 503 hasta que esté disponible.")
     elif not hay_cache:

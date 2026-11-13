@@ -115,8 +115,15 @@ async def _reemplazar(
 
 
 async def _contar_filas(escenario: Escenario, negocio_id: uuid.UUID) -> int:
-    """Cuenta las filas **sin** el contexto del negocio, para ver el estado real de la tabla."""
-    async with escenario.motor.connect() as conexion:
+    """Cuenta las filas del negocio, en su contexto.
+
+    Antes contaba sin contexto «para ver el estado real», que solo funciona con un rol que salta
+    RLS. Con el rol de aplicación (sin BYPASSRLS) sin contexto no se ve nada: es el aislamiento.
+    """
+    async with escenario.motor.begin() as conexion:
+        await conexion.execute(
+            text("SELECT set_config('app.negocio_id', :id, true)"), {"id": str(negocio_id)}
+        )
         return int(
             (
                 await conexion.execute(
@@ -179,7 +186,11 @@ async def test_al_reemplazar_se_conserva_la_fecha_de_la_primera(escenario: Escen
         momento=despues,
     )
 
-    async with escenario.motor.connect() as conexion:
+    async with escenario.motor.begin() as conexion:
+        await conexion.execute(
+            text("SELECT set_config('app.negocio_id', :id, true)"),
+            {"id": str(escenario.negocio_id)},
+        )
         fila: Any = (
             await conexion.execute(
                 text(
