@@ -92,7 +92,9 @@ async def salida_portal(actor: ActorDep) -> dict[str, Any]:
         for nombre, url in _PRUEBAS_DE_SALIDA:
             inicio = time.monotonic()
             try:
-                respuesta = await cliente.get(url)
+                # Tope total por prueba: un servidor que corta a las IP que no quiere puede mandar
+                # los datos a cuentagotas, y un tope entre lecturas nunca salta.
+                respuesta = await asyncio.wait_for(cliente.get(url), timeout=15.0)
                 resultados.append(
                     {
                         "prueba": nombre,
@@ -101,7 +103,7 @@ async def salida_portal(actor: ActorDep) -> dict[str, Any]:
                         "segundos": round(time.monotonic() - inicio, 2),
                     }
                 )
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, TimeoutError) as exc:
                 resultados.append(
                     {
                         "prueba": nombre,
