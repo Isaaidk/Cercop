@@ -84,6 +84,11 @@ _un_nodo() {
 }
 
 _tunel() {
+    # Un proxy propio en Ecuador (deploy/proxy-ecuador) tiene prioridad: no hace falta túnel.
+    if [ -n "${NCO_PROXY_URLS:-}" ]; then
+        echo "NCO_PROXY_URLS definido: se sale por ese proxy, sin túnel de Tailscale."
+        return 0
+    fi
     if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
         echo "Sin TAILSCALE_AUTHKEY: se arranca sin túnel."
         return 0
