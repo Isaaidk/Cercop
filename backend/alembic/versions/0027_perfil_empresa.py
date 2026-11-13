@@ -25,6 +25,25 @@ depends_on: str | Sequence[str] | None = None
 CONTEXTO = "NULLIF(current_setting('app.negocio_id', true), '')::uuid"
 
 
+_INDICE_RUC = """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM negocio
+                WHERE ruc IS NOT NULL AND btrim(ruc) <> ''
+                GROUP BY ruc HAVING count(*) > 1
+            ) THEN
+                RAISE WARNING 'Hay empresas con el mismo RUC: ux_negocio_ruc queda sin UNIQUE.';
+                CREATE INDEX IF NOT EXISTS ux_negocio_ruc
+                    ON negocio (ruc) WHERE ruc IS NOT NULL AND btrim(ruc) <> '';
+            ELSE
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_negocio_ruc
+                    ON negocio (ruc) WHERE ruc IS NOT NULL AND btrim(ruc) <> '';
+            END IF;
+        END $$;
+"""
+
+
 def _ejecutar(sql: str) -> None:
     for sentencia in sql.split(";"):
         limpia = sentencia.strip()
@@ -45,7 +64,7 @@ def _aislar(tabla: str) -> str:
 
 def upgrade() -> None:
     _ejecutar(
-        f"""
+        """
         ALTER TABLE negocio ADD COLUMN IF NOT EXISTS razon_social text;
         ALTER TABLE negocio ADD COLUMN IF NOT EXISTS nombre_comercial text;
         ALTER TABLE negocio ADD COLUMN IF NOT EXISTS tipo_persona text;
@@ -61,10 +80,16 @@ def upgrade() -> None:
             CHECK (tipo_persona IS NULL OR tipo_persona IN ('natural', 'juridica'));
         ALTER TABLE negocio DROP CONSTRAINT IF EXISTS negocio_ruc_13;
         ALTER TABLE negocio ADD CONSTRAINT negocio_ruc_13
-            CHECK (ruc IS NULL OR btrim(ruc) = '' OR ruc ~ '^[0-9]{{13}}$') NOT VALID;
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_negocio_ruc
-            ON negocio (ruc) WHERE ruc IS NOT NULL AND btrim(ruc) <> '';
-
+            CHECK (ruc IS NULL OR btrim(ruc) = '' OR ruc ~ '^[0-9]{13}$') NOT VALID;
+        """
+    )
+    # Un RUC, una empresa. En producción ya había empresas con el mismo RUC (alta repetida): el
+    # índice único no se puede crear sin tocar datos de clientes, y eso no lo decide una migración.
+    # Con repetidos queda un índice normal y un aviso en el log; al depurarlos, el índice único se
+    # crea a mano. Va en su propia sentencia: `_ejecutar` corta por «;» y partiría el bloque DO.
+    op.execute(_INDICE_RUC)
+    _ejecutar(
+        f"""
         CREATE TABLE negocio_dedicacion (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
             negocio_id uuid NOT NULL REFERENCES negocio(id) ON DELETE CASCADE,
