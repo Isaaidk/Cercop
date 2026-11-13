@@ -12,6 +12,7 @@ desde la API, desde el worker o desde una tarea programada.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Annotated, Any
 from uuid import UUID
