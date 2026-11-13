@@ -2,12 +2,14 @@
 /**
  * El pie de las páginas públicas.
  *
- * Los enlaces que hay aquí son **los cuatro que existen de verdad**. No hay enlaces a una página de
- * privacidad ni a unas condiciones de uso porque esas páginas no están escritas: un enlace a una
- * dirección que no lleva a ninguna parte es peor que su ausencia, y engaña a quien lo pulsa y a quien
- * lo rastrea. Las condiciones se aceptan al crear la cuenta, y eso es lo que se dice, sin enlazar a
- * ningún sitio.
+ * Lleva los enlaces de navegación pública, los dos textos legales (términos y privacidad) y el aviso
+ * de derechos. Los enlaces son `<a href>` normales, igual que en la cabecera: funcionan sin
+ * JavaScript y un buscador los sigue.
+ *
+ * El año del aviso de derechos se calcula al montar el componente: escrito a mano, se queda viejo el
+ * 1 de enero y nadie se acuerda de cambiarlo.
  */
+const anio = new Date().getFullYear()
 </script>
 
 <template>
@@ -21,7 +23,8 @@
           CercoApp
         </p>
         <p class="pie__descripcion">
-          Panel de seguimiento de la contratación pública del Ecuador.
+          Encuentra ínfimas cuantías y necesidades de contratación del Ecuador, y prepara tu oferta
+          en el mismo sitio.
         </p>
       </div>
 
@@ -30,16 +33,25 @@
         <a href="/contratacion-publica-ecuador">Contratación pública en Ecuador</a>
         <a href="/login">Ingresar</a>
         <a href="/registro">Crear cuenta</a>
+        <a href="/terminos">Términos y condiciones</a>
+        <a href="/privacidad">Política de privacidad</a>
       </nav>
     </div>
 
     <div class="pie__envoltura">
       <p class="pie__aviso">
-        CercoApp no es una página oficial del SERCOP. Es una herramienta de consulta que lee los datos
-        que el Servicio Nacional de Contratación Pública publica en abierto. Para cualquier trámite,
-        la fuente que vale es siempre la oficial. Al crear una cuenta se aceptan las condiciones de
-        uso del servicio.
+        CercoApp no es una página oficial del SERCOP. Es una herramienta independiente que lee los
+        datos que el Servicio Nacional de Contratación Pública publica en abierto. Para presentar una
+        oferta o hacer cualquier trámite, la fuente que vale es siempre el portal oficial.
       </p>
+
+      <div class="pie__legal">
+        <p>© {{ anio }} CercoApp. Todos los derechos reservados.</p>
+        <p>
+          Prohibida la reproducción, copia o distribución total o parcial de este sitio, su
+          contenido, diseño y marca sin autorización escrita.
+        </p>
+      </div>
     </div>
   </footer>
 </template>
@@ -99,6 +111,7 @@ html[data-tema='oscuro'] .pie__icono {
   margin: var(--e-2) 0 0;
   color: var(--texto-suave);
   font-size: var(--t-base);
+  max-width: 70ch;
 }
 
 .pie__enlaces {
@@ -113,7 +126,8 @@ html[data-tema='oscuro'] .pie__icono {
   text-decoration: none;
 }
 
-.pie__enlaces a:hover {
+.pie__enlaces a:hover,
+.pie__enlaces a:focus-visible {
   color: var(--acento);
   text-decoration: underline;
 }
@@ -126,5 +140,27 @@ html[data-tema='oscuro'] .pie__icono {
   font-size: var(--t-sm);
   line-height: 1.6;
   max-width: 78ch;
+}
+
+.pie__legal {
+  margin-top: var(--e-4);
+  color: var(--texto-tenue);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+}
+
+.pie__legal p {
+  margin: 0;
+}
+
+.pie__legal p + p {
+  margin-top: var(--e-1);
+  max-width: 78ch;
+}
+
+@media (max-width: 640px) {
+  .pie__envoltura {
+    padding: 0 var(--e-4);
+  }
 }
 </style>

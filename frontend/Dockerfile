@@ -82,10 +82,21 @@ RUN cat > /etc/caddy/Caddyfile <<'CONF'
 	@html path / /index.html
 	header @html Cache-Control "no-cache"
 
+	# Cabeceras de seguridad del panel (docs/38, S-22).
+	# - La CSP que se APLICA solo lleva lo que no puede romper la aplicación: nadie la enmarca
+	#   (clickjacking), no hay plugins, no se cambia la base de las URL ni se envían formularios fuera.
+	# - La CSP completa va en modo Report-Only: el navegador avisa en la consola de lo que bloquearía,
+	#   sin bloquearlo. Cuando no haya avisos con el uso real (OCR, PDF, SRI, asistente), se pasa a
+	#   aplicarla. El hash es el del script del tema en index.html: si ese script cambia, cambia.
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
 		X-Frame-Options DENY
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Permissions-Policy "camera=(), geolocation=(), payment=(), usb=(), microphone=(self)"
+		Cross-Origin-Opener-Policy same-origin
+		Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"
+		Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'sha256-AVuBRSRnMelloLHdO6A8q89aJU6mdCnTTNrgK9zf7Tg=' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; worker-src 'self' blob: https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://*.up.railway.app https://srienlinea.sri.gob.ec https://datosabiertos.compraspublicas.gob.ec https://cdn.jsdelivr.net; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 

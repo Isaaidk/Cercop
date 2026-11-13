@@ -15,6 +15,7 @@ import logging
 from datetime import UTC, datetime
 
 from contratacion.aplicacion.actor import Actor
+from contratacion.aplicacion.hilos import en_hilo
 from contratacion.aplicacion.plantillas import HOJA_DE_DATOS, revisar_plantilla
 from contratacion.aplicacion.puertos.plantillas import (
     AlmacenPlantillas,
@@ -103,7 +104,9 @@ async def subir(
     instante = momento or datetime.now(UTC)
 
     actor.exigir_administrativo()
-    revisar_plantilla(nombre_archivo, contenido)
+    # Abrir el ZIP y el libro es CPU pura (hasta el tamaño máximo de la subida): va a un hilo para
+    # no detener el bucle de eventos, que atiende a todas las demás personas del proceso.
+    await en_hilo(revisar_plantilla, nombre_archivo, contenido)
 
     ruta = await almacen.guardar(negocio_id=actor.negocio_id, contenido=contenido)
 

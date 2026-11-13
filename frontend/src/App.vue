@@ -27,10 +27,11 @@ import PantallaAcceso from '@/components/PantallaAcceso.vue'
 import PantallaContratacionPublica from '@/components/PantallaContratacionPublica.vue'
 import PantallaInicio from '@/components/PantallaInicio.vue'
 import PantallaNoEncontrada from '@/components/PantallaNoEncontrada.vue'
+import PantallaPolitica from '@/components/PantallaPolitica.vue'
 import PantallaRegistro from '@/components/PantallaRegistro.vue'
 import VistaPanel from '@/components/VistaPanel.vue'
 import { sesion } from '@/stores/sesion'
-import { ir, paginaActual } from '@/utils/enrutado'
+import { ir, PAGINAS_LEGALES, paginaActual } from '@/utils/enrutado'
 import { aplicarSeo } from '@/utils/seo'
 
 const arrancando = ref(true)
@@ -81,6 +82,10 @@ function alRegistrar(correo) {
 
 const fase = computed(() => {
   if (arrancando.value) return 'cargando'
+  // Los textos legales se leen en cualquier estado —sin sesión, con sesión, con la aceptación
+  // pendiente o con la empresa suspendida—: no llevan datos de nadie, y quien tiene que aceptarlos,
+  // o quiere ejercer sus derechos, tiene que poder leerlos siempre.
+  if (PAGINAS_LEGALES.includes(paginaActual.value)) return paginaActual.value
   // La suspensión se mira antes que todo lo demás, incluso antes de saber si hay sesión. Es la
   // única pantalla que **sustituye** al aplicativo: no se enseña el panel con un cartel encima,
   // porque el acceso está cortado de verdad y un panel de fondo daría a entender lo contrario.
@@ -189,6 +194,14 @@ onMounted(async () => {
         @ir-a-acceso="ir('login')"
         @registrada="alRegistrar"
       />
+    </template>
+
+    <template v-else-if="fase === 'legal-terminos'">
+      <PantallaPolitica tipo="terminos_uso" :tema="tema" @alternar-tema="alternarTema" />
+    </template>
+
+    <template v-else-if="fase === 'legal-privacidad'">
+      <PantallaPolitica tipo="tratamiento_datos" :tema="tema" @alternar-tema="alternarTema" />
     </template>
 
     <template v-else-if="fase === 'no-encontrada'">

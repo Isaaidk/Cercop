@@ -184,6 +184,8 @@ RUTAS_PUBLICAS = {
     ("GET", "/salud"),
     ("GET", "/listo"),
     ("GET", "/v1/politicas/{tipo}"),
+    # Páginas `/terminos` y `/privacidad`: el texto se lee antes de crear la cuenta (art. 12 LOPDP).
+    ("GET", "/v1/politicas/publicas/{tipo}"),
     ("GET", "/v1/registro/requisitos"),
     ("POST", "/v1/registro/empresa"),
     ("POST", "/v1/registro/consulta-ruc"),

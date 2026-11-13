@@ -84,6 +84,33 @@ LIMITE_PROVINCIAS = 60
 # publica basura en ese campo.
 LIMITE_DISTRIBUCION = 40
 
+# Los nombres de los campos van **escritos** en la consulta y no como parámetro: `jsonb_to_record`
+# necesita conocer las columnas al planificar. Salen de la constante de arriba, no de la petición,
+# y se comprueba que sean identificadores simples para que nadie pueda colar otra cosa al editarla.
+if not all(campo.isidentifier() for campo in CAMPOS_CATALOGO):  # pragma: no cover
+    raise RuntimeError("CAMPOS_CATALOGO solo admite identificadores simples")
+_CONSULTA_CATALOGOS = f"""
+SELECT campo, valor FROM (
+    SELECT campo, valor,
+           row_number() OVER (PARTITION BY campo ORDER BY valor) AS n
+    FROM (
+        SELECT 'fuente' AS campo, f.codigo AS valor FROM fuente f
+        UNION ALL
+        SELECT c.campo, c.valor
+        FROM registro r
+        CROSS JOIN LATERAL jsonb_to_record(r.datos)
+            AS j({", ".join(f"{campo} text" for campo in CAMPOS_CATALOGO)})
+        CROSS JOIN LATERAL (
+            VALUES {", ".join(f"('{campo}', j.{campo})" for campo in CAMPOS_CATALOGO)}
+        ) AS c(campo, valor)
+        WHERE COALESCE(c.valor, '') <> ''
+    ) AS crudos
+    GROUP BY campo, valor
+) AS numerados
+WHERE n <= :limite
+ORDER BY campo, valor
+"""
+
 INDICE_TEXTO = "to_tsvector('simple', r.texto_busqueda)"
 
 # El CPC se busca contra su propia columna y no se sumó a `texto_busqueda` a propósito: si
@@ -565,38 +592,21 @@ class RepositorioConsultasBd:
             # fuentes— y, como la base es remota y cada viaje ronda los 95 ms medidos, el
             # desplegable de filtros gastaba más de medio segundo solo en presentarse.
             #
-            # Los cinco campos se recorren con `unnest` sobre un parámetro de tipo array, así que
-            # no se interpola nada: los nombres de los campos siguen viajando como dato.
-            #
-            # `jsonb_exists` es la forma de función del operador `?`. Se usa así porque el símbolo
-            # `?` choca con la sintaxis de marcadores de posición de algunos controladores y acaba
-            # interpretándose como un parámetro.
+            # Cada fila se **descomprime una sola vez**. La versión anterior cruzaba el histórico
+            # con la lista de campos (`unnest`) y leía `datos` con `jsonb_exists` y dos `->>` por
+            # campo: quince descompresiones del `jsonb` de cada fila (TOAST), 258.000 bloques
+            # leídos para 6.600 filas y 172 ms en local, que con las 110.000 de producción son
+            # segundos. `jsonb_to_record` saca los cinco campos de una vez: 44 ms con el mismo
+            # resultado, fila a fila (comparado en local). `jsonb_exists` sobraba: una clave ausente
+            # da `NULL`, y el `<> ''` ya la descarta.
             #
             # El `row_number` reproduce el tope por campo que antes aplicaba cada `LIMIT`: sin él,
             # un campo con miles de valores distintos llenaría el desplegable entero.
             filas = (
                 (
                     await conexion.execute(
-                        text(
-                            """
-                            SELECT campo, valor FROM (
-                                SELECT campo, valor,
-                                       row_number() OVER (PARTITION BY campo ORDER BY valor) AS n
-                                FROM (
-                                    SELECT 'fuente' AS campo, f.codigo AS valor FROM fuente f
-                                    UNION ALL
-                                    SELECT c.campo, r.datos ->> c.campo
-                                    FROM unnest(CAST(:campos AS text[])) AS c(campo)
-                                    JOIN registro r ON jsonb_exists(r.datos, c.campo)
-                                    WHERE COALESCE(r.datos ->> c.campo, '') <> ''
-                                ) AS crudos
-                                GROUP BY campo, valor
-                            ) AS numerados
-                            WHERE n <= :limite
-                            ORDER BY campo, valor
-                            """
-                        ),
-                        {"campos": list(CAMPOS_CATALOGO), "limite": LIMITE_CATALOGO},
+                        text(_CONSULTA_CATALOGOS),
+                        {"limite": LIMITE_CATALOGO},
                     )
                 )
                 .mappings()

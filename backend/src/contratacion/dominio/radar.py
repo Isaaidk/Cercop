@@ -10,7 +10,10 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
+
+from contratacion.dominio.texto import sin_marcas
 
 _PESOS = {
     "cpc": 25,
@@ -40,11 +43,33 @@ class CriteriosComerciales:
         return bool(self.cpc or self.palabras)
 
 
-def plegar(texto: str | None) -> str:
-    """Minúsculas y sin tildes, para comparar «Pichincha» con «PICHINCHA»."""
-    base = unicodedata.normalize("NFKD", str(texto or ""))
-    sin_tilde = "".join(caracter for caracter in base if not unicodedata.combining(caracter))
+# Textos cortos (palabras del perfil, provincias, cantones, códigos) se repiten en cada fila que se
+# evalúa: se recuerdan. Los largos (el texto de cada ínfima) casi nunca se repiten y llenarían la
+# memoria sin acertar, así que se calculan siempre. Es una función pura: el valor solo depende del
+# texto, no de quién lo pide.
+_LARGO_RECORDADO = 200
+
+
+@lru_cache(maxsize=8192)
+def _plegar_corto(texto: str) -> str:
+    return _plegar(texto)
+
+
+def _plegar(texto: str) -> str:
+    sin_tilde = sin_marcas(unicodedata.normalize("NFKD", texto))
     return " ".join(sin_tilde.lower().split())
+
+
+def plegar(texto: str | None) -> str:
+    """Minúsculas y sin tildes, para comparar «Pichincha» con «PICHINCHA».
+
+    Mismo resultado que filtrar `unicodedata.combining` carácter a carácter (ver `dominio/texto`),
+    pero en C y recordando los textos cortos: era el 70 % de la CPU de «Propuestas para ti».
+    """
+    plano = str(texto or "")
+    if len(plano) <= _LARGO_RECORDADO:
+        return _plegar_corto(plano)
+    return _plegar(plano)
 
 
 def _numero(valor: Any) -> float | None:

@@ -1073,10 +1073,13 @@ async def preguntar(
     menciona_tdr = any(pista in plana for pista in ("tdr", "pliego", "termino", "proceso"))
 
     if not menciona_tdr and any(pista in plana for pista in ("pendiente", "me falta", "faltan")):
+        # Se piden ya filtrados y con tope: de la respuesta salen doce, y traer el checklist
+        # entero de la empresa para filtrarlo aquí eran miles de filas por pregunta.
         filas = [
             fila["texto"]
-            for fila in await documentos.requisitos(negocio_id=actor.negocio_id)
-            if fila["estado"] == "pendiente"
+            for fila in await documentos.requisitos(
+                negocio_id=actor.negocio_id, estado="pendiente", limite=12
+            )
         ]
         return _respuesta(
             "Estos requisitos siguen pendientes:"

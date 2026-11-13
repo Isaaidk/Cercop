@@ -1104,6 +1104,20 @@ const ultimaActualizacion = computed(() =>
               <span v-else-if="presencia.error.value" :title="presencia.error.value">
                 · presencia sin conexión
               </span>
+              <!-- Aviso de derechos y textos legales. Se abren en otra pestaña para no sacar a nadie
+                   del panel a mitad de trabajo. -->
+              <div class="panel__legal">
+                <span>© {{ new Date().getFullYear() }} CercoApp. Todos los derechos reservados.</span>
+                <span>
+                  Prohibida la reproducción, copia o distribución total o parcial de este sitio, su
+                  contenido, diseño y marca sin autorización escrita.
+                </span>
+                <span class="panel__legal-enlaces">
+                  <a href="/terminos" target="_blank" rel="noopener">Términos y condiciones</a>
+                  ·
+                  <a href="/privacidad" target="_blank" rel="noopener">Política de privacidad</a>
+                </span>
+              </div>
             </footer>
           </main>
         </div>
@@ -1394,6 +1408,26 @@ const ultimaActualizacion = computed(() =>
   gap: var(--e-2);
   font-size: var(--t-xs);
   color: var(--texto-tenue);
+}
+
+.panel__legal {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-1) var(--e-3);
+  margin-top: var(--e-2);
+  padding-top: var(--e-2);
+  border-top: 1px solid var(--borde);
+  line-height: 1.5;
+}
+
+.panel__legal-enlaces a {
+  color: var(--texto-suave);
+}
+
+.panel__legal-enlaces a:hover,
+.panel__legal-enlaces a:focus-visible {
+  color: var(--acento);
 }
 
 .panel__velo {

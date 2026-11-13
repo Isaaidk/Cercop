@@ -82,3 +82,7 @@ Thumbs.db
 # Pruebas manuales y TDR descargados en local (no van al repositorio)
 backend/tmp/
 backend/tdr/
+
+# Salidas locales de las pruebas de carga
+carga/salida_k6*.txt
+carga/inicio*.txt

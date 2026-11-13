@@ -4,12 +4,16 @@
  *
  * Es lo primero que ve quien llega desde un buscador o desde un enlace compartido, y su trabajo es
  * uno solo: contar qué es esto en diez segundos y ofrecer las dos salidas que existen —entrar o
- * crear una cuenta—. Nada más.
+ * crear una cuenta—. Debajo, para quien quiera leer más, va todo lo que el panel hace hoy, en el
+ * mismo orden en que se usa: registrarse, encontrar, preparar la oferta y seguirla.
  *
- * Todo lo que se afirma aquí se puede comprobar en el repositorio o en la fuente oficial: lo que
- * hace el panel, de dónde salen los datos y qué no es. **No hay ninguna cifra de usuarios, ningún
- * cliente, ningún testimonio y ninguna promesa de resultado**, porque no hay ningún dato que los
- * respalde. Un dato inventado en la portada es lo primero que se cae cuando alguien pregunta.
+ * Todo lo que se afirma aquí se puede comprobar en el repositorio (`docs/30-*` a `docs/39-*`) o en la
+ * fuente oficial. **No hay ninguna cifra de usuarios, ningún cliente, ningún testimonio y ninguna
+ * promesa de resultado**, porque no hay ningún dato que los respalde. Un dato inventado en la portada
+ * es lo primero que se cae cuando alguien pregunta.
+ *
+ * El texto está pensado para dueños de negocio que no son técnicos: frases cortas, sin siglas sin
+ * explicar y diciendo siempre qué gana la persona, no cómo está hecho por dentro.
  *
  * Las preguntas frecuentes están escritas con `<details>`, que es lo que el navegador ya sabe
  * desplegar: funciona sin JavaScript y un buscador lee su contenido aunque esté cerrado.
@@ -31,26 +35,26 @@ const emit = defineEmits(['alternar-tema'])
       <section class="portada">
         <div class="envoltura portada__rejilla">
           <div class="aparece">
-            <p class="portada__etiqueta">Contratación pública de Ecuador</p>
+            <p class="portada__etiqueta">Para proveedores del Estado ecuatoriano</p>
             <h1 class="portada__titulo">
-              Encuentra oportunidades de contratación pública en Ecuador
+              Encuentra ínfimas cuantías y prepara tu oferta en un solo lugar
             </h1>
             <p class="portada__entrada">
-              CercoApp reúne lo que el SERCOP publica en abierto —las
-              <strong>necesidades de contratación</strong> y los
-              <strong>procesos publicados</strong>— y lo pone en una tabla filtrable, con gráficas
-              interactivas y un mapa de las 24 provincias. Escribe una palabra clave y mira qué se
-              está contratando, dónde y quién lo publica.
+              CercoApp revisa por ti lo que el SERCOP publica —las
+              <strong>necesidades de contratación</strong> y las
+              <strong>ínfimas cuantías</strong>—, te muestra lo que calza con tu empresa, te avisa
+              cuando sale algo nuevo y te ayuda a armar la proforma, lista en PDF o Word.
             </p>
 
             <div class="portada__acciones">
-              <a class="boton boton--principal" href="/login">Ingresar</a>
-              <a class="boton boton--secundario" href="/registro">Crear cuenta</a>
+              <a class="boton boton--principal" href="/registro">Crear la cuenta de mi empresa</a>
+              <a class="boton boton--secundario" href="/login">Ingresar</a>
             </div>
 
             <p class="portada__nota">
-              Para entrar hace falta una cuenta de empresa. Se crea desde el registro y al crearla se
-              aceptan las condiciones de uso.
+              Solo necesitas el <strong>RUC</strong> de tu empresa: los datos los traemos del SRI.
+              Empiezas con 7 días de acceso a todo el panel y
+              <strong>100 créditos de IA de bienvenida</strong>.
             </p>
           </div>
 
@@ -58,29 +62,36 @@ const emit = defineEmits(['alternar-tema'])
             <li>
               <span class="portada__marca" aria-hidden="true">◆</span>
               <span>
-                <strong>Búsqueda por varias palabras clave a la vez</strong>
-                <span>Los registros que las contienen, sin ir una por una.</span>
+                <strong>Propuestas para ti</strong>
+                <span>Las ínfimas abiertas que tu empresa puede ofertar, y por qué te las sugerimos.</span>
               </span>
             </li>
             <li>
               <span class="portada__marca" aria-hidden="true">◆</span>
               <span>
-                <strong>Mapa del Ecuador con las 24 provincias</strong>
-                <span>Dónde se concentra lo que buscas.</span>
+                <strong>Alertas que te avisan</strong>
+                <span>Por tus códigos CPC o tus palabras clave, en la provincia que elijas.</span>
               </span>
             </li>
             <li>
               <span class="portada__marca" aria-hidden="true">◆</span>
               <span>
-                <strong>Gráficas que filtran al pulsarlas</strong>
-                <span>Pulsar una barra ajusta el resto del panel a lo que has pulsado.</span>
+                <strong>Asistente con IA</strong>
+                <span>Pregunta con tus palabras: «recomiéndame ínfimas de limpieza en Guayas».</span>
               </span>
             </li>
             <li>
               <span class="portada__marca" aria-hidden="true">◆</span>
               <span>
-                <strong>El resultado se exporta a Excel</strong>
-                <span>Para seguir trabajándolo fuera del panel.</span>
+                <strong>Tu proforma en 4 pasos</strong>
+                <span>Leemos todos los anexos del proceso y llenamos lo que ya sabemos.</span>
+              </span>
+            </li>
+            <li>
+              <span class="portada__marca" aria-hidden="true">◆</span>
+              <span>
+                <strong>Mis ofertas</strong>
+                <span>En qué etapa va cada oferta y un aviso antes de que cierre el plazo.</span>
               </span>
             </li>
           </ul>
@@ -91,33 +102,41 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">Cómo funciona</h2>
           <p class="seccion__entrada">
-            CercoApp no inventa datos ni los completa a mano: lee los que la fuente oficial publica y
-            los deja consultables.
+            Cuatro pasos, en el orden en que los vas a usar. Todo desde el navegador, sin instalar
+            nada.
           </p>
 
           <ol class="pasos">
             <li class="pasos__paso">
               <span class="pasos__numero" aria-hidden="true">1</span>
-              <h3 class="pasos__titulo">Se leen las fuentes oficiales</h3>
+              <h3 class="pasos__titulo">Registras tu empresa con el RUC</h3>
               <p>
-                CercoApp consulta de forma automática los datos abiertos del SERCOP: el catálogo de
-                procesos publicados en formato OCDS y el listado de necesidades de contratación.
+                Escribes el RUC y traemos del SRI la razón social, la dirección y el representante
+                legal. Si subes tu RUP en PDF, leemos tus códigos CPC y quedan en tu perfil.
               </p>
             </li>
             <li class="pasos__paso">
               <span class="pasos__numero" aria-hidden="true">2</span>
-              <h3 class="pasos__titulo">Se guardan y se ordenan</h3>
+              <h3 class="pasos__titulo">Te mostramos lo que te calza</h3>
               <p>
-                Cada registro se archiva con su entidad, su provincia, su código CPC y sus fechas,
-                para poder buscar por cualquiera de esos campos y no solo por el texto.
+                Con tu perfil armamos «Propuestas para ti» y puedes crear alertas. Lo nuevo del
+                SERCOP llega solo, sin que tengas que entrar al portal a revisar.
               </p>
             </li>
             <li class="pasos__paso">
               <span class="pasos__numero" aria-hidden="true">3</span>
-              <h3 class="pasos__titulo">Se consultan desde el panel</h3>
+              <h3 class="pasos__titulo">Preparas la oferta</h3>
               <p>
-                Buscas, filtras, miras las gráficas y el mapa, y lo que te interesa lo descargas en
-                Excel. Todo desde el navegador, sin instalar nada.
+                Eliges el proceso, revisas los requisitos y escribes tus precios. La proforma sale
+                en PDF o Word, con tus datos y los de la entidad ya puestos.
+              </p>
+            </li>
+            <li class="pasos__paso">
+              <span class="pasos__numero" aria-hidden="true">4</span>
+              <h3 class="pasos__titulo">Sigues cada oferta</h3>
+              <p>
+                En «Mis ofertas» ves en qué etapa va cada una y te avisamos cuando un proceso con
+                tu proforma está por cerrar.
               </p>
             </li>
           </ol>
@@ -128,125 +147,255 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">Qué encontrarás dentro</h2>
           <p class="seccion__entrada">
-            Estas son las piezas del panel, sin más lista de la que hay.
+            Estas son las partes del panel, agrupadas como aparecen en el menú.
           </p>
 
           <div class="rejilla">
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Búsqueda por varias palabras clave</h3>
+              <p class="pieza__area">Buscar oportunidades</p>
+              <h3 class="pieza__titulo">Necesidades e ínfimas, siempre al día</h3>
               <p class="pieza__texto">
-                Escribe varias palabras a la vez y CercoApp encuentra los registros que las contienen,
-                en lugar de obligarte a buscarlas de una en una.
+                Las necesidades de contratación y las ínfimas cuantías del SERCOP se actualizan
+                solas a lo largo del día, cada una con su código CPC, su entidad y su plazo.
               </p>
             </article>
 
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Filtros que se combinan</h3>
+              <p class="pieza__area">Buscar oportunidades</p>
+              <h3 class="pieza__titulo">Filtros, gráficas y mapa</h3>
               <p class="pieza__texto">
-                Acota por provincia, por entidad contratante, por fechas y por el resto de campos de
-                cada registro. Los filtros se suman entre sí.
+                Filtra por código CPC, provincia y varias palabras clave a la vez. Mira las gráficas
+                y el mapa de las 24 provincias, y descarga lo filtrado a Excel.
               </p>
             </article>
 
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Gráficas que filtran al pulsarlas</h3>
+              <p class="pieza__area">Oportunidades para ti</p>
+              <h3 class="pieza__titulo">Propuestas para ti</h3>
               <p class="pieza__texto">
-                La evolución en el tiempo, el reparto por provincia, el origen de los datos y su
-                distribución. Pulsar una barra o un sector ajusta el resto del panel.
+                Las ínfimas abiertas que encajan con tus CPC, con lo que ofreces, con las provincias
+                donde trabajas y con tu rango de presupuesto. Cada una dice por qué te la sugerimos.
               </p>
             </article>
 
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Mapa de las 24 provincias</h3>
+              <p class="pieza__area">Oportunidades para ti</p>
+              <h3 class="pieza__titulo">Alertas con aviso</h3>
               <p class="pieza__texto">
-                El Ecuador entero de un vistazo, con cada provincia pulsable para ver solo lo suyo.
+                Elige códigos CPC o palabras clave, la provincia y cada cuánto quieres revisar. Antes
+                de guardar ves cuántos resultados traería, y cuando sale algo nuevo te avisamos.
               </p>
             </article>
 
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Búsqueda por código CPC</h3>
+              <p class="pieza__area">Asistente</p>
+              <h3 class="pieza__titulo">Asistente con IA</h3>
               <p class="pieza__texto">
-                El código CPC clasifica lo que se contrata. Puedes buscar por él cuando ya sabes
-                exactamente qué familia de bienes o servicios te interesa.
+                Un chat para pedir las cosas con tus palabras: buscar ínfimas, ver cómo va un
+                proceso, consultar los procesos que ha ganado un RUC, crear una alerta o empezar una
+                proforma. Tus conversaciones quedan guardadas.
               </p>
             </article>
 
             <article class="tarjeta pieza">
-              <h3 class="pieza__titulo">Exportación a Excel</h3>
+              <p class="pieza__area">Ofertar</p>
+              <h3 class="pieza__titulo">Preparar oferta en 4 pasos</h3>
               <p class="pieza__texto">
-                Lo que tengas filtrado en pantalla se descarga en una hoja de cálculo, con las
-                columnas del panel, para seguir trabajándolo fuera.
+                Leemos todos los anexos del proceso, marcas los requisitos que cumples, escribes tus
+                precios y descargas la proforma en PDF o Word.
+              </p>
+            </article>
+
+            <article class="tarjeta pieza">
+              <p class="pieza__area">Ofertar</p>
+              <h3 class="pieza__titulo">Mis ofertas</h3>
+              <p class="pieza__texto">
+                Todas tus proformas en un tablero por etapa, con un calendario de cierres y un aviso
+                cuando un proceso está por cerrar.
+              </p>
+            </article>
+
+            <article class="tarjeta pieza">
+              <p class="pieza__area">Mi empresa</p>
+              <h3 class="pieza__titulo">Perfil desde el RUC y el RUP</h3>
+              <p class="pieza__texto">
+                Los datos del SRI se llenan solos. Sube tu RUP o tu RUC en PDF —incluso escaneado—
+                y leemos tus CPC y tus actividades para completar el perfil.
+              </p>
+            </article>
+
+            <article class="tarjeta pieza">
+              <p class="pieza__area">Mi empresa</p>
+              <h3 class="pieza__titulo">Tu equipo en la misma cuenta</h3>
+              <p class="pieza__texto">
+                Quien registra la empresa queda como administrador y puede crear las cuentas de su
+                equipo. Todos trabajan con el mismo perfil y los mismos CPC de la empresa.
               </p>
             </article>
           </div>
         </div>
       </section>
 
-      <section id="para-quien" class="seccion">
+      <section id="preparar-oferta" class="seccion">
         <div class="envoltura">
-          <h2 class="seccion__titulo">A quién le sirve</h2>
+          <h2 class="seccion__titulo">Tu oferta, lista en 4 pasos</h2>
           <p class="seccion__entrada">
-            Sirve para mirar el mercado público desde fuera, antes de decidir nada.
+            Lo que ya sabemos —tus datos, los de la entidad y lo que pide el proceso— llega escrito y
+            marcado para que lo revises. Tú pones tus precios: esos nunca los inventamos.
+          </p>
+
+          <div class="oferta">
+            <ol class="oferta__pasos">
+              <li>
+                <strong>Lee el proceso.</strong>
+                Escribe el código y leemos todos sus anexos: TDR, pliegos, documentos Word, hojas de
+                Excel y archivos ZIP. Si un anexo está escaneado, lo subes y lo leemos igual.
+              </li>
+              <li>
+                <strong>Marca los requisitos.</strong>
+                Te mostramos lo que pide la entidad en una lista para marcar lo que cumples y lo que
+                no aplica.
+              </li>
+              <li>
+                <strong>Arma tu proforma.</strong>
+                Revisa lo marcado como «autollenado» y escribe tus precios. Mientras escribes ves
+                cuánto del presupuesto usas, y te avisamos si te pasas.
+              </li>
+              <li>
+                <strong>Descárgala.</strong>
+                Mira la vista previa y bájala en PDF o Word. Queda guardada en «Mis ofertas».
+              </li>
+            </ol>
+
+            <div class="tarjeta oferta__incluye">
+              <h3 class="oferta__titulo">Qué lleva la proforma</h3>
+              <ul class="oferta__lista">
+                <li>Los datos de tu empresa, sacados de tu perfil.</li>
+                <li>
+                  Los datos de la entidad contratante —RUC, dirección, teléfono y correo—, sacados
+                  de la ficha del proceso y de sus anexos.
+                </li>
+                <li>Un título propio para cada proforma, sin repetidos, para encontrarla después.</li>
+                <li>El control del presupuesto, para no pasarte del monto del proceso.</li>
+                <li>
+                  Tu firma electrónica (archivo .p12 o .pfx) con un sello al estilo FirmaEC y código
+                  QR. Tu certificado y tu clave no se guardan.
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="asistente" class="seccion seccion--alterna">
+        <div class="envoltura">
+          <h2 class="seccion__titulo">Pregúntale al asistente</h2>
+          <p class="seccion__entrada">
+            Si no quieres aprender cada pantalla, escribe lo que necesitas como se lo dirías a una
+            persona. El asistente responde en español sencillo y te muestra los datos con un botón
+            para ir directo a la pantalla que corresponde.
+          </p>
+
+          <ul class="ejemplos" aria-label="Ejemplos de preguntas">
+            <li class="ejemplos__frase">«Recomiéndame ínfimas para mi empresa»</li>
+            <li class="ejemplos__frase">«¿Cómo va el proceso NIC-…?»</li>
+            <li class="ejemplos__frase">«¿Qué procesos ha ganado el RUC 17…001?»</li>
+            <li class="ejemplos__frase">«Crea una alerta de impresoras en Pichincha»</li>
+            <li class="ejemplos__frase">«Prepara la proforma para este proceso»</li>
+          </ul>
+
+          <p class="nota">
+            Cada empresa empieza con <strong>100 créditos de IA de bienvenida</strong>. Las preguntas
+            sencillas —tus alertas, tus ofertas, el estado de un proceso— no gastan créditos; las
+            que necesitan la IA usan uno por respuesta.
+          </p>
+        </div>
+      </section>
+
+      <section id="seguridad" class="seccion">
+        <div class="envoltura">
+          <h2 class="seccion__titulo">Tus datos, seguros</h2>
+          <p class="seccion__entrada">
+            Tus precios y tus ofertas son tuyos. Así los cuidamos.
           </p>
 
           <div class="rejilla rejilla--tres">
             <article class="perfil">
-              <h3 class="perfil__titulo">Empresas proveedoras</h3>
+              <h3 class="perfil__titulo">Cada empresa ve solo lo suyo</h3>
               <p class="perfil__texto">
-                Para ver qué se está necesitando, qué entidad lo publica y en qué provincia, y
-                decidir si merece la pena prepararse para participar.
+                La separación entre empresas la impone la propia base de datos: aunque hubiera un
+                error en una pantalla, una empresa no puede ver los datos de otra.
               </p>
             </article>
 
             <article class="perfil">
-              <h3 class="perfil__titulo">Analistas de mercado</h3>
+              <h3 class="perfil__titulo">Conexión cifrada</h3>
               <p class="perfil__texto">
-                Para seguir la evolución por provincia, entidad y periodo, y llevarse los datos a
-                Excel cuando haga falta un análisis más largo.
+                Todo viaja por HTTPS, el candado del navegador: lo que escribes no se puede leer por
+                el camino.
               </p>
             </article>
 
             <article class="perfil">
-              <h3 class="perfil__titulo">Equipos comerciales y consultoría</h3>
+              <h3 class="perfil__titulo">Sesiones que caducan</h3>
               <p class="perfil__texto">
-                Para tener localizadas las líneas de trabajo de un sector y repartirlas entre varias
-                personas de la misma cuenta.
+                Si dejas el panel sin usar, la sesión se cierra sola. Si olvidas cerrar en otra
+                computadora, nadie podrá seguir usándola indefinidamente.
               </p>
             </article>
           </div>
         </div>
       </section>
 
-      <section id="fuentes" class="seccion seccion--alterna">
+      <section id="para-quien" class="seccion seccion--alterna">
+        <div class="envoltura">
+          <h2 class="seccion__titulo">A quién le sirve</h2>
+          <p class="seccion__entrada">
+            A cualquier negocio que quiera venderle al Estado sin pasar el día revisando el portal.
+          </p>
+
+          <div class="rejilla rejilla--tres">
+            <article class="perfil">
+              <h3 class="perfil__titulo">Pequeñas y medianas empresas</h3>
+              <p class="perfil__texto">
+                Para enterarse a tiempo de las ínfimas que les calzan y armar la proforma sin
+                empezar cada vez desde una hoja en blanco.
+              </p>
+            </article>
+
+            <article class="perfil">
+              <h3 class="perfil__titulo">Equipos comerciales</h3>
+              <p class="perfil__texto">
+                Para repartir el trabajo entre varias personas de la misma empresa y ver en qué
+                etapa va cada oferta.
+              </p>
+            </article>
+
+            <article class="perfil">
+              <h3 class="perfil__titulo">Quien estudia el mercado</h3>
+              <p class="perfil__texto">
+                Para ver qué se compra, dónde y quién lo compra, con gráficas, mapa y descarga a
+                Excel.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="fuentes" class="seccion">
         <div class="envoltura">
           <h2 class="seccion__titulo">De dónde salen los datos</h2>
           <p class="seccion__entrada">
-            De dos fuentes públicas del Servicio Nacional de Contratación Pública. CercoApp no corrige
-            ni completa lo que ellas publican.
+            De fuentes públicas del Servicio Nacional de Contratación Pública. CercoApp no corrige ni
+            completa lo que ellas publican. Los datos de tu empresa en el registro salen del SRI.
           </p>
 
           <ul class="fuentes">
             <li class="fuentes__fila">
-              <h3 class="fuentes__titulo">Datos abiertos en formato OCDS</h3>
+              <h3 class="fuentes__titulo">Necesidades de contratación e ínfimas cuantías</h3>
               <p class="fuentes__texto">
-                El catálogo de procesos de contratación que el SERCOP publica en el estándar Open
-                Contracting Data Standard, pensado para que se pueda leer y comparar por máquinas.
-              </p>
-              <a
-                class="fuentes__enlace"
-                href="https://datosabiertos.compraspublicas.gob.ec/"
-                target="_blank"
-                rel="noopener"
-              >
-                datosabiertos.compraspublicas.gob.ec
-              </a>
-            </li>
-
-            <li class="fuentes__fila">
-              <h3 class="fuentes__titulo">Necesidades de contratación (NCO)</h3>
-              <p class="fuentes__texto">
-                El listado de necesidades que las entidades registran antes de convocar un
-                procedimiento. Es la señal más temprana de que algo se va a contratar.
+                Lo que las entidades publican que van a necesitar y las compras de ínfima cuantía,
+                con sus anexos. Es la señal más temprana de que algo se va a contratar.
               </p>
               <a
                 class="fuentes__enlace"
@@ -257,12 +406,27 @@ const emit = defineEmits(['alternar-tema'])
                 compraspublicas.gob.ec
               </a>
             </li>
+
+            <li class="fuentes__fila">
+              <h3 class="fuentes__titulo">Datos abiertos en formato OCDS</h3>
+              <p class="fuentes__texto">
+                El catálogo de procesos de contratación del SERCOP. De aquí sale, por ejemplo, el
+                historial de procesos que ha ganado un RUC.
+              </p>
+              <a
+                class="fuentes__enlace"
+                href="https://datosabiertos.compraspublicas.gob.ec/"
+                target="_blank"
+                rel="noopener"
+              >
+                datosabiertos.compraspublicas.gob.ec
+              </a>
+            </li>
           </ul>
 
           <p class="aviso-fuente">
-            CercoApp es una herramienta de consulta y no una página oficial. Para consultar el detalle
-            de un procedimiento, presentar una oferta o hacer cualquier trámite, el sitio que vale es
-            el del SERCOP.
+            CercoApp es una herramienta independiente y no una página oficial. Te ayuda a encontrar y
+            preparar, pero la oferta se presenta y cualquier trámite se hace en el portal del SERCOP.
           </p>
 
           <p class="seccion__enlace">
@@ -273,65 +437,65 @@ const emit = defineEmits(['alternar-tema'])
         </div>
       </section>
 
-      <section id="preguntas" class="seccion">
+      <section id="preguntas" class="seccion seccion--alterna">
         <div class="envoltura envoltura--estrecha">
           <h2 class="seccion__titulo">Preguntas frecuentes</h2>
 
           <details class="pregunta">
             <summary>¿CercoApp es una página oficial del SERCOP?</summary>
             <p>
-              No. CercoApp es una herramienta independiente de consulta. Lee los datos que el SERCOP
-              publica en abierto y los muestra ordenados, pero no es un sitio del Estado ni lo
-              representa.
+              No. CercoApp es una herramienta independiente. Lee los datos que el SERCOP publica en
+              abierto y los muestra ordenados, pero no es un sitio del Estado ni lo representa.
             </p>
           </details>
 
           <details class="pregunta">
-            <summary>¿De dónde salen exactamente los datos?</summary>
+            <summary>¿Qué necesito para crear la cuenta?</summary>
             <p>
-              De dos sitios públicos del SERCOP: su catálogo de datos abiertos en formato OCDS y su
-              listado de necesidades de contratación. CercoApp no añade datos propios ni modifica los
-              que la fuente publica.
+              El RUC de tu empresa, un correo y una contraseña. Con el RUC traemos tus datos del SRI;
+              tú solo los revisas. Al crear la cuenta se aceptan los términos y condiciones del
+              servicio.
             </p>
           </details>
 
           <details class="pregunta">
-            <summary>¿Cada cuánto se actualiza?</summary>
+            <summary>¿Cada cuánto se actualizan las ínfimas?</summary>
             <p>
-              La consulta a las fuentes se hace de forma automática y continuada. Un registro aparece
-              en el panel cuando la fuente lo publica; si la fuente todavía no lo ha publicado, no
-              está, y eso es lo correcto.
+              Se revisan de forma automática varias veces por hora. Una ínfima aparece en el panel en
+              cuanto el SERCOP la publica; si todavía no la ha publicado, no está.
             </p>
           </details>
 
           <details class="pregunta">
-            <summary>¿Puedo descargarme los resultados?</summary>
+            <summary>¿CercoApp presenta la oferta por mí?</summary>
             <p>
-              Sí. Lo que tengas filtrado en pantalla se exporta a una hoja de cálculo con las columnas
-              del panel.
+              No. CercoApp te ayuda a encontrar el proceso y a preparar la proforma en PDF o Word.
+              La oferta la presentas tú en el portal del SERCOP, que es el sitio oficial.
             </p>
           </details>
 
           <details class="pregunta">
-            <summary>¿Qué hace falta para entrar?</summary>
+            <summary>¿Qué son los créditos de IA?</summary>
             <p>
-              Una cuenta de empresa, que se crea desde el registro. Al crearla se aceptan las
-              condiciones de uso del servicio, y al entrar por primera vez hay que confirmarlas.
+              Son el saldo para las funciones que usan inteligencia artificial, como el asistente.
+              Cada empresa empieza con 100 créditos de bienvenida. Las preguntas sencillas del
+              asistente no gastan créditos.
             </p>
           </details>
 
           <details class="pregunta">
-            <summary>¿Sirve para presentar una oferta o para hacer un trámite?</summary>
+            <summary>¿Otras empresas pueden ver mis precios u ofertas?</summary>
             <p>
-              No. CercoApp sirve para consultar y seguir. Cualquier trámite se hace en el portal del
-              SERCOP, que es la fuente oficial.
+              No. Cada empresa ve solo sus propios datos, y esa separación la impone la base de datos.
+              Tus precios y tus ofertas no se comparten con nadie de fuera de tu empresa.
             </p>
           </details>
 
           <details class="pregunta">
             <summary>¿Hay que instalar algo?</summary>
             <p>
-              No. Funciona en el navegador. Solo hace falta conexión a internet.
+              No. Funciona en el navegador de la computadora o del celular. Solo hace falta conexión
+              a internet.
             </p>
           </details>
         </div>
@@ -339,13 +503,13 @@ const emit = defineEmits(['alternar-tema'])
 
       <section class="cierre">
         <div class="envoltura cierre__caja">
-          <h2 class="cierre__titulo">Empieza por mirar qué se está contratando</h2>
+          <h2 class="cierre__titulo">Empieza hoy con el RUC de tu empresa</h2>
           <p class="cierre__texto">
-            Crea la cuenta de tu empresa o entra si ya la tienes.
+            7 días de acceso a todo el panel y 100 créditos de IA para probarlo.
           </p>
           <div class="cierre__acciones">
-            <a class="boton boton--principal" href="/login">Ingresar</a>
-            <a class="boton boton--secundario" href="/registro">Crear cuenta</a>
+            <a class="boton boton--principal" href="/registro">Crear la cuenta de mi empresa</a>
+            <a class="boton boton--secundario" href="/login">Ya tengo cuenta</a>
           </div>
         </div>
       </section>
@@ -434,7 +598,7 @@ const emit = defineEmits(['alternar-tema'])
   margin: var(--e-4) 0 0;
   font-size: var(--t-sm);
   color: var(--texto-tenue);
-  max-width: 52ch;
+  max-width: 56ch;
   line-height: 1.6;
 }
 
@@ -511,11 +675,10 @@ const emit = defineEmits(['alternar-tema'])
 
 .pasos {
   list-style: none;
-  counter-reset: paso;
   margin: var(--e-6) 0 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: var(--e-5);
 }
 
@@ -564,6 +727,17 @@ const emit = defineEmits(['alternar-tema'])
   padding: var(--e-5);
 }
 
+/* El área del menú en la que vive cada pieza: así quien entra por primera vez ya sabe dónde
+   buscarla. */
+.pieza__area {
+  margin: 0 0 var(--e-2);
+  font-size: var(--t-xs);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--acento);
+}
+
 .pieza__titulo {
   margin: 0;
   font-size: var(--t-md);
@@ -596,6 +770,101 @@ const emit = defineEmits(['alternar-tema'])
   color: var(--texto-suave);
   font-size: var(--t-base);
   line-height: 1.65;
+}
+
+/* --- Preparar oferta ----------------------------------------------------- */
+
+.oferta {
+  margin-top: var(--e-6);
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: var(--e-6);
+  align-items: start;
+}
+
+.oferta__pasos {
+  margin: 0;
+  padding: 0 0 0 var(--e-5);
+  display: grid;
+  gap: var(--e-4);
+  color: var(--texto-suave);
+  font-size: var(--t-base);
+  line-height: 1.7;
+}
+
+.oferta__pasos li::marker {
+  color: var(--acento);
+  font-weight: 700;
+}
+
+.oferta__pasos strong {
+  color: var(--texto);
+  font-weight: 650;
+}
+
+.oferta__incluye {
+  padding: var(--e-5);
+}
+
+.oferta__titulo {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 650;
+}
+
+.oferta__lista {
+  list-style: none;
+  margin: var(--e-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--e-3);
+  color: var(--texto-suave);
+  font-size: var(--t-base);
+  line-height: 1.6;
+}
+
+.oferta__lista li {
+  position: relative;
+  padding-left: var(--e-5);
+}
+
+.oferta__lista li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: var(--acento);
+  font-weight: 700;
+}
+
+/* --- Asistente ----------------------------------------------------------- */
+
+.ejemplos {
+  list-style: none;
+  margin: var(--e-5) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-3);
+}
+
+.ejemplos__frase {
+  padding: var(--e-2) var(--e-4);
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-redondo);
+  font-size: var(--t-base);
+  color: var(--texto);
+}
+
+.nota {
+  margin: var(--e-5) 0 0;
+  padding: var(--e-4) var(--e-5);
+  border-left: 3px solid var(--acento);
+  background: var(--acento-tenue);
+  border-radius: var(--r-2);
+  line-height: 1.7;
+  font-size: var(--t-base);
+  max-width: 78ch;
 }
 
 /* --- Fuentes ------------------------------------------------------------- */
@@ -728,13 +997,14 @@ const emit = defineEmits(['alternar-tema'])
 /* --- Adaptación a pantallas estrechas ------------------------------------ */
 
 @media (max-width: 960px) {
-  .portada__rejilla {
+  .portada__rejilla,
+  .oferta {
     grid-template-columns: 1fr;
     gap: var(--e-6);
   }
 
   .pasos {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .rejilla,
@@ -768,9 +1038,13 @@ const emit = defineEmits(['alternar-tema'])
     font-size: var(--t-xl);
   }
 
+  .pasos {
+    grid-template-columns: 1fr;
+  }
+
   .portada__acciones .boton,
   .cierre__acciones .boton {
-    flex: 1;
+    flex: 1 1 100%;
   }
 }
 </style>

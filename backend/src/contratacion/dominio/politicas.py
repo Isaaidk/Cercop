@@ -50,12 +50,24 @@ class TipoPolitica(StrEnum):
 TITULO_POLITICA: dict[TipoPolitica, str] = {
     TipoPolitica.TERMINOS_USO: "Términos y condiciones de uso",
     TipoPolitica.AVISO_PRIVACIDAD: "Aviso de privacidad",
-    TipoPolitica.TRATAMIENTO_DATOS: "Tratamiento de datos personales",
+    TipoPolitica.TRATAMIENTO_DATOS: "Política de privacidad y tratamiento de datos personales",
 }
 
-# Lo que hay que aceptar para usar el aplicativo. Hoy es solo un texto, y la lista existe para que
-# añadir un segundo sea cambiar esta tupla en lugar de buscar cada sitio donde se comprueba.
-POLITICAS_OBLIGATORIAS: tuple[TipoPolitica, ...] = (TipoPolitica.TERMINOS_USO,)
+# Lo que hay que aceptar para usar el aplicativo: las condiciones de uso y, desde la migración 0044,
+# la política de privacidad que exige la Ley Orgánica de Protección de Datos Personales. Son dos
+# textos separados a propósito: el consentimiento para tratar datos tiene que ser específico e
+# informado (art. 8 LOPDP), y mezclarlo con las condiciones del contrato lo diluiría.
+#
+# El orden importa: es el orden en que la pantalla de aceptación los encadena.
+POLITICAS_OBLIGATORIAS: tuple[TipoPolitica, ...] = (
+    TipoPolitica.TERMINOS_USO,
+    TipoPolitica.TRATAMIENTO_DATOS,
+)
+
+# Las que cualquiera puede leer sin cuenta, en `/terminos` y `/privacidad`. Son las mismas: un texto
+# que se exige aceptar tiene que poder leerse **antes** de crear la cuenta (art. 12 LOPDP: la
+# información se da en el momento de la recogida, no después).
+POLITICAS_PUBLICAS: tuple[TipoPolitica, ...] = POLITICAS_OBLIGATORIAS
 
 
 @dataclass(frozen=True, slots=True)

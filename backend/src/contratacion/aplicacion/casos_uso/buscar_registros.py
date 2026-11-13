@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 
+from contratacion.aplicacion.coalescer import una_vez
 from contratacion.aplicacion.generaciones import leer_generacion
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.aplicacion.puertos.consultas import RepositorioConsultas
@@ -85,7 +86,14 @@ async def buscar(
         if guardado is not None:
             return _reconstruir(guardado, validados, generacion, avisos)
 
-    elementos, total = await repositorio.buscar(validados)
+    # Peticiones idénticas a la vez (misma clave: misma generación, mismos filtros y mismas fuentes
+    # visibles) comparten una sola consulta. Solo donde el caché ya comparte la respuesta
+    # (`cacheable`): la clave es la misma garantía de «misma pregunta».
+    # Ver `aplicacion/coalescer.py`.
+    if validados.cacheable:
+        elementos, total = await una_vez(clave, lambda: repositorio.buscar(validados))
+    else:
+        elementos, total = await repositorio.buscar(validados)
     pagina = PaginaResultados(
         elementos=elementos,
         total=total,
@@ -143,12 +151,19 @@ async def obtener_estadisticas(
             except Exception:  # noqa: BLE001 - una entrada ilegible equivale a no tenerla
                 registro.warning("Estadísticas ilegibles en caché; se recalculan", exc_info=False)
 
-    datos = dict(await repositorio.estadisticas(validados))
-    # El conteo por fuente sin la familia deja de ser un dato de la respuesta y pasa a ser el total
-    # de cada pestaña. Se quita del diccionario porque su sitio no es el contrato: el panel consume
-    # `por_categoria`, que ya dice «ínfimas» y «ofertas» y no obliga a nadie a saber qué fuente
-    # alimenta a cuál.
-    datos["por_categoria"] = _totales_por_categoria(datos.pop("por_fuente_sin_familia", []))
+    async def calcular() -> dict[str, object]:
+        datos = dict(await repositorio.estadisticas(validados))
+        # El conteo por fuente sin la familia deja de ser un dato de la respuesta y pasa a ser el
+        # total de cada pestaña. Se quita del diccionario porque su sitio no es el contrato: el
+        # panel consume `por_categoria`, que ya dice «ínfimas» y «ofertas» y no obliga a nadie a
+        # saber qué fuente alimenta a cuál.
+        datos["por_categoria"] = _totales_por_categoria(datos.pop("por_fuente_sin_familia", []))
+        return datos
+
+    # Tras subir la generación, todos los paneles piden a la vez las mismas gráficas: una consulta
+    # para todas las peticiones idénticas en curso (ver `aplicacion/coalescer.py`). Cada una se
+    # lleva su copia, para que nadie pueda tocar el diccionario de otra.
+    datos = dict(await una_vez(clave, calcular)) if validados.cacheable else await calcular()
     if validados.cacheable:
         try:
             await cache.guardar(clave, a_json(datos), ttl_seg)
@@ -226,7 +241,9 @@ async def obtener_catalogos(
         except Exception:  # noqa: BLE001 - una entrada ilegible equivale a no tenerla
             registro.warning("Catálogos ilegibles en caché; se recalculan", exc_info=False)
 
-    datos = dict(await repositorio.catalogos())
+    # La consulta más cara del sistema y la misma para todos: si el caché acaba de quedarse sin
+    # ella, una sola petición la calcula y las demás esperan su resultado.
+    datos = dict(await una_vez(clave, repositorio.catalogos))
     try:
         await cache.guardar(clave, a_json(datos), ttl_seg)
     except Exception:  # noqa: BLE001 - no guardar no impide responder

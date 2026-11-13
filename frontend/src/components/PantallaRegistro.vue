@@ -24,6 +24,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/endpoints'
 import CampoContrasena from '@/components/CampoContrasena.vue'
+import PiePublico from '@/components/PiePublico.vue'
 import {
   consultarContratosEnNavegador,
   consultarRucEnNavegador,
@@ -334,8 +335,19 @@ async function registrar() {
         </ol>
 
         <p class="registro__aviso-prueba">
-          Tu empresa empieza con <strong>7 días de acceso a todas las vistas</strong>, para que
-          compruebes si el producto te sirve antes de decidir nada.
+          Tu empresa empieza con <strong>7 días de acceso a todas las vistas</strong> y
+          <strong>100 créditos de IA de bienvenida</strong>, para que compruebes si el producto te
+          sirve antes de decidir nada.
+        </p>
+        <ul class="registro__incluye" aria-label="Qué tendrás al entrar">
+          <li>Ínfimas cuantías y necesidades de contratación del SERCOP, al día.</li>
+          <li>Propuestas para ti y alertas por tus códigos CPC o palabras clave.</li>
+          <li>Un asistente con IA al que le preguntas con tus palabras.</li>
+          <li>Tu proforma en 4 pasos, en PDF o Word, y el seguimiento de tus ofertas.</li>
+        </ul>
+        <p class="registro__nota">
+          Después, en «Perfil de empresa», puedes subir tu RUP en PDF —aunque esté escaneado— y
+          leemos tus códigos CPC para afinar las propuestas.
         </p>
         <p class="registro__nota">
           Quien se registra queda como <strong>administrador de la empresa</strong> y podrá crear las
@@ -646,6 +658,8 @@ async function registrar() {
         </div>
       </form>
     </main>
+
+    <PiePublico />
   </div>
 </template>
 
@@ -734,6 +748,32 @@ html[data-tema='oscuro'] .marca__icono {
   background: var(--ok-suave);
   color: var(--texto) !important;
   font-size: var(--t-sm);
+}
+
+/* Lo que trae la cuenta, para quien duda antes de escribir el RUC. En pantallas estrechas se oculta
+   (más abajo): ahí la introducción va encima del formulario y no debe empujarlo fuera de la vista. */
+.registro__incluye {
+  list-style: none;
+  margin: 0 0 var(--e-3);
+  padding: 0;
+  display: grid;
+  gap: var(--e-2);
+  color: var(--texto-suave);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+}
+
+.registro__incluye li {
+  position: relative;
+  padding-left: var(--e-5);
+}
+
+.registro__incluye li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: var(--acento);
+  font-weight: 700;
 }
 
 .registro__formulario {
@@ -1169,6 +1209,10 @@ html[data-tema='oscuro'] .marca__icono {
 
   .registro__intro h1 {
     font-size: var(--t-2xl);
+  }
+
+  .registro__incluye {
+    display: none;
   }
 }
 

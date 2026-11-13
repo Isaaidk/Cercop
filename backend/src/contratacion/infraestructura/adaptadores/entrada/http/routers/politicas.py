@@ -32,7 +32,8 @@ from fastapi import APIRouter, Header, status
 from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.consentimiento import aceptar, estado, revocar, texto
-from contratacion.dominio.politicas import TipoPolitica
+from contratacion.dominio.errores import NoEncontrado
+from contratacion.dominio.politicas import POLITICAS_PUBLICAS, TipoPolitica
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
@@ -77,6 +78,33 @@ async def consultar_estado(
     """
     resultado = await estado(actor, politicas=politicas, consentimientos=consentimientos)
     return cuerpo_json(resultado.como_diccionario())
+
+
+@router.get("/publicas/{tipo}", summary="Texto vigente de una política, sin cuenta")
+async def consultar_texto_publico(tipo: TipoPolitica, politicas: PoliticasDep) -> dict[str, Any]:
+    """El texto vigente para quien todavía no tiene cuenta: las páginas `/terminos` y `/privacidad`.
+
+    Existe porque la información sobre el tratamiento de datos se debe dar **antes** de recogerlos
+    (art. 12 LOPDP): quien está a punto de registrarse tiene que poder leer lo que va a aceptar.
+    Solo sirve los textos de `POLITICAS_PUBLICAS`; cualquier otro tipo responde 404, aunque esté
+    publicado, para que esta puerta abierta no crezca sin que nadie lo decida.
+
+    No lleva actor ni consentimiento y no toca datos de nadie: lee una tabla global. Tiene freno por
+    IP en `proteccion.py`, como las demás entradas sin cuenta.
+    """
+    if tipo not in POLITICAS_PUBLICAS:
+        raise NoEncontrado("Ese texto no se publica fuera del aplicativo.")
+    publicada = await texto(tipo, politicas=politicas)
+    return cuerpo_json(
+        {
+            "tipo": str(publicada.tipo),
+            "titulo": publicada.titulo,
+            "version": publicada.version,
+            "hash": publicada.hash,
+            "vigente_desde": publicada.vigente_desde.isoformat(),
+            "texto": publicada.texto,
+        }
+    )
 
 
 @router.get("/{tipo}", summary="Texto completo de una política")

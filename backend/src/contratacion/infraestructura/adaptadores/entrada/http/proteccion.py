@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from contratacion.dominio.politicas import POLITICAS_PUBLICAS
+
 # Ruta y método → (peticiones, segundos).
 _LIMITES: dict[tuple[str, str], tuple[int, int]] = {
     ("POST", "/v1/auth/sesion"): (20, 300),
@@ -35,6 +37,10 @@ _LIMITES: dict[tuple[str, str], tuple[int, int]] = {
     # Las rutas de la oferta ya no están aquí: su tope es por persona (`limites.py`). Una IP puede
     # ser una oficina entera, y con tope por IP se acaba el cupo de todos a la vez.
     ("POST", "/v1/ia/compras"): (10, 3600),
+    # Lectura pública de los textos legales (`/terminos`, `/privacidad`). Holgado para quien los lee
+    # —son dos textos que no cambian—, y corto para quien los pidiera en bucle. Una entrada por tipo
+    # porque la tabla compara la ruta exacta; salen de la misma tupla que usa el enrutador.
+    **{("GET", f"/v1/politicas/publicas/{tipo}"): (60, 600) for tipo in POLITICAS_PUBLICAS},
 }
 _TOPE_IPS = 50_000
 

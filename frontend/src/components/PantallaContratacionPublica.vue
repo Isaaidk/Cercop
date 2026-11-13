@@ -85,7 +85,8 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">Las palabras que hay que conocer</h2>
           <p class="seccion__entrada">
-            Estas cuatro siglas aparecen en cualquier búsqueda. Sin entenderlas, buscar es adivinar.
+            Estas palabras y siglas aparecen en cualquier búsqueda. Sin entenderlas, buscar es
+            adivinar.
           </p>
 
           <dl class="glosario">
@@ -122,6 +123,23 @@ const emit = defineEmits(['alternar-tema'])
               <dd>
                 El listado de necesidades de contratación del portal: lo que las entidades han
                 registrado que van a necesitar, antes de convocar nada.
+              </dd>
+            </div>
+
+            <div class="glosario__fila">
+              <dt>Ínfima cuantía</dt>
+              <dd>
+                Las compras de menor monto, que la entidad hace de forma directa pidiendo proformas
+                a los proveedores. Son las más numerosas y suelen ser la puerta de entrada de una
+                empresa pequeña al Estado. El monto máximo lo fija la norma vigente.
+              </dd>
+            </div>
+
+            <div class="glosario__fila">
+              <dt>Proforma</dt>
+              <dd>
+                El documento con el que el proveedor dice qué ofrece y a qué precio. En una ínfima
+                cuantía es lo que la entidad compara entre proveedores antes de comprar.
               </dd>
             </div>
 
@@ -250,28 +268,47 @@ const emit = defineEmits(['alternar-tema'])
         <div class="envoltura">
           <h2 class="seccion__titulo">Cómo lo resuelve CercoApp</h2>
           <p class="seccion__entrada">
-            CercoApp hace el trabajo de ordenar todo eso y lo deja en una pantalla.
+            CercoApp hace el trabajo de ordenar todo eso, te muestra lo que calza con tu empresa y te
+            ayuda a preparar la oferta.
           </p>
 
           <ul class="lista-ventajas">
             <li>
-              Reúne las necesidades y los procesos del SERCOP en un mismo sitio, para no tener que
-              ir a mirarlos a dos listados distintos.
+              <strong>Registro con tu RUC.</strong> Traemos tus datos del SRI y, si subes tu RUP o tu
+              RUC en PDF (aunque esté escaneado), leemos tus códigos CPC para completar tu perfil.
             </li>
             <li>
-              Guarda cada registro con su entidad, su provincia, su código CPC y sus fechas, para
-              poder buscar por cualquiera de esos campos.
+              <strong>Necesidades e ínfimas al día.</strong> Las necesidades de contratación y las
+              ínfimas cuantías del SERCOP se actualizan solas, con su entidad, provincia, código CPC
+              y plazo.
             </li>
             <li>
-              Deja filtrar por varias palabras clave a la vez y por código CPC, y combinar los
-              filtros.
+              <strong>Filtros y gráficas.</strong> Busca por código CPC, por provincia y por varias
+              palabras clave a la vez; mira las gráficas y el mapa de las 24 provincias, y descarga
+              lo filtrado a Excel.
             </li>
             <li>
-              Muestra la evolución, el reparto por provincia y el mapa de las 24 provincias, con
-              gráficas que filtran al pulsarlas.
+              <strong>Propuestas para ti.</strong> Las ínfimas abiertas que encajan con el perfil de
+              tu empresa, con la razón de cada sugerencia.
             </li>
             <li>
-              Exporta a Excel lo que tengas en pantalla, con las columnas del panel.
+              <strong>Alertas.</strong> Por códigos CPC o palabras clave; cuando sale algo nuevo, te
+              avisamos.
+            </li>
+            <li>
+              <strong>Asistente con IA.</strong> Un chat para buscar ínfimas, revisar un proceso, ver
+              qué procesos ha ganado un RUC, crear alertas o empezar una proforma. Cada empresa
+              empieza con 100 créditos de IA de bienvenida.
+            </li>
+            <li>
+              <strong>Preparar oferta en 4 pasos.</strong> Leemos todos los anexos (TDR, pliegos,
+              Word, Excel y ZIP), marcas los requisitos, escribes tus precios sin pasarte del
+              presupuesto y descargas la proforma en PDF o Word, con los datos de la entidad y tu
+              firma electrónica.
+            </li>
+            <li>
+              <strong>Mis ofertas.</strong> En qué etapa va cada oferta y un aviso antes de que
+              cierre el plazo.
             </li>
           </ul>
 
@@ -326,8 +363,9 @@ const emit = defineEmits(['alternar-tema'])
           </ul>
 
           <p class="aviso-fuente">
-            CercoApp no es una página oficial ni sustituye a ninguna de las dos. Es una herramienta de
-            consulta que lee esos datos públicos y los muestra ordenados.
+            CercoApp no es una página oficial ni sustituye a ninguna de las dos. Es una herramienta
+            independiente que lee esos datos públicos, los muestra ordenados y te ayuda a preparar la
+            proforma. La oferta se presenta siempre en el portal del SERCOP.
           </p>
         </div>
       </section>
@@ -565,6 +603,11 @@ const emit = defineEmits(['alternar-tema'])
   color: var(--texto-suave);
   font-size: var(--t-base);
   line-height: 1.65;
+}
+
+.lista-ventajas strong {
+  color: var(--texto);
+  font-weight: 650;
 }
 
 .lista-ventajas {

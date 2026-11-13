@@ -69,6 +69,20 @@ const FICHAS = {
     // No se indexa: una página de alta en un buscador solo trae registros que nadie ha pedido.
     indexar: false,
   },
+  'legal-terminos': {
+    titulo: 'Términos y condiciones de uso · CercoApp',
+    descripcion:
+      'Condiciones de uso de CercoApp: qué es el servicio, uso permitido, inteligencia artificial, propiedad intelectual, responsabilidad y ley aplicable.',
+    ruta: '/terminos',
+    indexar: true,
+  },
+  'legal-privacidad': {
+    titulo: 'Política de privacidad y tratamiento de datos personales · CercoApp',
+    descripcion:
+      'Cómo trata CercoApp los datos personales conforme a la Ley Orgánica de Protección de Datos Personales del Ecuador: finalidades, bases legales, encargados, transferencias y derechos.',
+    ruta: '/privacidad',
+    indexar: true,
+  },
   'no-encontrada': {
     titulo: 'Esta dirección no existe · CercoApp',
     descripcion: 'La dirección que has escrito no corresponde a ninguna página de CercoApp.',

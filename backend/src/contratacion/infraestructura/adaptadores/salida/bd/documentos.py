@@ -25,6 +25,10 @@ _TTL_FICHA_AUSENTE_SEG = 5.0
 _TTL_FICHA_SIN_ITEMS_SEG = 3.0
 _MAX_FICHAS = 4096
 # Tipos cuyo título no se repite dentro de la empresa (las fichas técnicas sí pueden repetirse).
+# Tope del checklist pedido sin lectura (ver `requisitos`). Quinientos son las listas de unos veinte
+# TDR recientes: más de lo que nadie revisa de una vez y 35 veces menos que lo que salía antes.
+LIMITE_REQUISITOS_SIN_LECTURA = 500
+
 _TIPOS_CON_TITULO_UNICO = frozenset({"proforma", "cotizacion"})
 # Fichas públicas del portal. La llave lleva las fuentes que la persona puede ver: quien no tiene
 # la vista de ínfimas no recibe una ficha NCO recordada para otro. LRU acotada.
@@ -240,18 +244,52 @@ class RepositorioDocumentos:
             )
 
     async def requisitos(
-        self, *, negocio_id: UUID, lectura_id: UUID | None = None
+        self,
+        *,
+        negocio_id: UUID,
+        lectura_id: UUID | None = None,
+        estado: str | None = None,
+        limite: int = LIMITE_REQUISITOS_SIN_LECTURA,
     ) -> list[dict[str, Any]]:
-        consulta = """
-            SELECT id, lectura_id, texto, estado, orden
-            FROM requisito_proceso
-            WHERE negocio_id = :negocio_id
+        """Checklist de una lectura o, sin lectura, el de las lecturas más recientes.
+
+        Con `lectura_id` devuelve la lista de ese TDR entera y en su orden, como siempre: un TDR
+        trae decenas de requisitos, no miles.
+
+        **Sin** lectura no tenía tope y no estaba ordenada por nada útil: devolvía todos los
+        requisitos de todas las lecturas de la empresa intercalados por su número (el R1 de cada
+        TDR, después el R2…). Medido en local con una empresa de 1.252 lecturas: 21.214 filas,
+        6,8 MB de JSON y 240 ms por petición, y el panel la pedía **cada vez que se abría**
+        «Preparar oferta». Ahora van las de las lecturas más recientes primero, agrupadas por
+        lectura y con tope.
         """
         params: dict[str, Any] = {"negocio_id": negocio_id}
         if lectura_id is not None:
-            consulta += " AND lectura_id = :lectura_id"
+            consulta = """
+                SELECT id, lectura_id, texto, estado, orden
+                FROM requisito_proceso
+                WHERE negocio_id = :negocio_id AND lectura_id = :lectura_id
+            """
             params["lectura_id"] = lectura_id
-        consulta += " ORDER BY orden"
+            if estado is not None:
+                consulta += " AND estado = :estado"
+                params["estado"] = estado
+            consulta += " ORDER BY orden"
+        else:
+            filtro_estado = ""
+            if estado is not None:
+                filtro_estado = " AND r.estado = :estado"
+                params["estado"] = estado
+            consulta = f"""
+                SELECT r.id, r.lectura_id, r.texto, r.estado, r.orden
+                FROM requisito_proceso r
+                LEFT JOIN lectura_documento l
+                       ON l.id = r.lectura_id AND l.negocio_id = r.negocio_id
+                WHERE r.negocio_id = :negocio_id{filtro_estado}
+                ORDER BY l.creado_en DESC NULLS LAST, r.lectura_id, r.orden
+                LIMIT :limite
+            """
+            params["limite"] = max(1, min(limite, LIMITE_REQUISITOS_SIN_LECTURA))
         async with contexto_negocio(self._motor, negocio_id) as conexion:
             filas = (await conexion.execute(text(consulta), params)).mappings().all()
         return [dict(fila) for fila in filas]

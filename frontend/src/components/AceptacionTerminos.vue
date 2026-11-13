@@ -44,6 +44,17 @@ const zonaTexto = ref(null)
 /** La política que el servidor dice que falta. Solo se atiende a la primera: se encadenan. */
 const pendiente = computed(() => sesion.estado.pendientes[0] || null)
 
+/**
+ * El nombre del documento que se está aceptando, tal y como lo da el servidor.
+ *
+ * Desde que hay dos textos obligatorios (términos y política de privacidad), la casilla no puede
+ * decir siempre «términos y condiciones»: la persona estaría marcando una frase que no corresponde
+ * al documento que tiene delante.
+ */
+const nombreDocumento = computed(
+  () => politica.value?.titulo || pendiente.value?.titulo || 'el documento',
+)
+
 const puedeAceptar = computed(
   () => Boolean(politica.value) && leidoHastaElFinal.value && aceptada.value && !enviando.value,
 )
@@ -173,9 +184,9 @@ async function aceptar() {
         <p class="terminos__paso">Un paso antes de empezar</p>
         <h1>Para usar el panel necesitamos tu consentimiento</h1>
         <p class="terminos__intro">
-          {{ sesion.estado.nombre ? `${sesion.estado.nombre}, lee` : 'Lee' }} y acepta las condiciones
-          de uso del aplicativo. Sin este paso el panel permanece bloqueado, y lo decide el servidor:
-          no es una pantalla que se pueda saltar.
+          {{ sesion.estado.nombre ? `${sesion.estado.nombre}, lee` : 'Lee' }} y acepta los términos y
+          condiciones de uso y la política de privacidad. Sin este paso el panel permanece bloqueado,
+          y lo decide el servidor: no es una pantalla que se pueda saltar.
         </p>
 
         <div v-if="error" class="aviso-error" role="alert">
@@ -208,7 +219,7 @@ async function aceptar() {
             aria-controls="texto-terminos"
             @click="abrirTexto"
           >
-            {{ expandido ? 'Ocultar los términos y condiciones' : 'términos y condiciones' }}
+            {{ expandido ? `Ocultar: ${nombreDocumento}` : `Leer: ${nombreDocumento}` }}
             <span class="enlace__flecha" :class="{ 'enlace__flecha--arriba': expandido }" aria-hidden="true">▾</span>
           </button>
 
@@ -224,7 +235,7 @@ async function aceptar() {
                 class="terminos__texto"
                 tabindex="0"
                 role="region"
-                aria-label="Texto completo de los términos y condiciones"
+                :aria-label="`Texto completo: ${nombreDocumento}`"
                 @scroll="comprobarFinal"
               >
                 <pre class="terminos__pre">{{ politica.texto }}</pre>
@@ -246,7 +257,7 @@ async function aceptar() {
             />
             <span class="casilla__marca" aria-hidden="true" />
             <span class="casilla__texto">
-              Acepto los términos y condiciones
+              He leído y acepto: {{ nombreDocumento }}
               <small v-if="!leidoHastaElFinal">
                 Primero abre el enlace y lee el documento completo.
               </small>

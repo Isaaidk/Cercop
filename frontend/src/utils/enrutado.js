@@ -37,7 +37,20 @@ export const RUTAS = Object.freeze({
   login: '/login',
   registro: '/registro',
   contratacion: '/contratacion-publica-ecuador',
+  // Los textos legales. El nombre no es `terminos` porque así se llama en `App.vue` la pantalla de
+  // aceptación, que es otra cosa: aquí solo se leen.
+  'legal-terminos': '/terminos',
+  'legal-privacidad': '/privacidad',
 })
+
+/**
+ * Las páginas que se pueden ver **también con la sesión abierta**.
+ *
+ * Son los textos legales: no llevan datos de nadie, y quien está dentro —o quien está a punto de
+ * aceptarlos— tiene que poder releerlos sin cerrar sesión. Que se vean no abre nada: el panel sigue
+ * detrás de la puerta del servidor.
+ */
+export const PAGINAS_LEGALES = Object.freeze(['legal-terminos', 'legal-privacidad'])
 
 /** El camino inverso, para traducir una dirección escrita a mano en un nombre de página. */
 const PAGINA_POR_RUTA = Object.freeze({
@@ -45,6 +58,8 @@ const PAGINA_POR_RUTA = Object.freeze({
   [RUTAS.login]: 'login',
   [RUTAS.registro]: 'registro',
   [RUTAS.contratacion]: 'contratacion',
+  [RUTAS['legal-terminos']]: 'legal-terminos',
+  [RUTAS['legal-privacidad']]: 'legal-privacidad',
 })
 
 /**

@@ -38,6 +38,11 @@ from contratacion.infraestructura.adaptadores.salida.bd.cuentas import agente_va
 registro = logging.getLogger(__name__)
 
 CAMPOS_POLITICA = "id, tipo, version, texto, hash, vigente_desde"
+
+# Lo comparte la puerta de entrada (`bd/entrada.py`), que lee el marcador en su consulta única.
+CUENTA_NO_VISIBLE = (
+    "Tu cuenta no está disponible en este espacio de trabajo. Vuelve a iniciar sesión."
+)
 CAMPOS_CONSENTIMIENTO = "tipo, version_texto, texto_hash, aceptado_en, revocado_en"
 
 
@@ -330,9 +335,7 @@ class RepositorioConsentimientosBd:
             # La cuenta no está a la vista dentro de este negocio. No se devuelve «nada pendiente»:
             # afirmar que esta persona no debe aceptar nada cuando no se ha podido leer su fila
             # sería abrir la puerta justo cuando no se puede comprobar si debía estar cerrada.
-            raise NoEncontrado(
-                "Tu cuenta no está disponible en este espacio de trabajo. Vuelve a iniciar sesión."
-            )
+            raise NoEncontrado(CUENTA_NO_VISIBLE)
         return None if fila[0] is None else int(fila[0])
 
     async def marcar_pendiente(self, *, negocio_id: UUID, usuario_id: UUID, version: int) -> None:

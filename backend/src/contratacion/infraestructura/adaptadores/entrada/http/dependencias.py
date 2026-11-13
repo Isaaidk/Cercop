@@ -26,7 +26,10 @@ from uuid import UUID
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from contratacion.aplicacion.actor import Actor
-from contratacion.aplicacion.casos_uso.consentimiento import exigir_aceptado
+from contratacion.aplicacion.casos_uso.consentimiento import (
+    exigir_aceptado,
+    exigir_sin_pendiente,
+)
 from contratacion.aplicacion.casos_uso.gestionar_acceso import vistas_vigentes
 from contratacion.aplicacion.puertos.accesos import RepositorioAccesos
 from contratacion.aplicacion.puertos.cache import Cache
@@ -63,6 +66,7 @@ from contratacion.dominio.acceso import VISTAS_DEL_CATALOGO, Vista
 from contratacion.dominio.errores import (
     CambioDeContrasenaPendiente,
     EmpresaSuspendida,
+    NoEncontrado,
     SesionRevocada,
 )
 from contratacion.dominio.roles import es_de_plataforma
@@ -79,11 +83,16 @@ from contratacion.infraestructura.adaptadores.salida.bd.cuentas import (
     RepositorioSesionesBd,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.documentos import RepositorioDocumentos
+from contratacion.infraestructura.adaptadores.salida.bd.entrada import (
+    EstadoDeEntrada,
+    PuertaDeEntradaBd,
+)
 from contratacion.infraestructura.adaptadores.salida.bd.mercado import RepositorioMercado
 from contratacion.infraestructura.adaptadores.salida.bd.negocios import RepositorioNegociosBd
 from contratacion.infraestructura.adaptadores.salida.bd.perfil import RepositorioPerfil
 from contratacion.infraestructura.adaptadores.salida.bd.plantillas import RepositorioPlantillasBd
 from contratacion.infraestructura.adaptadores.salida.bd.politicas import (
+    CUENTA_NO_VISIBLE,
     RepositorioConsentimientosBd,
     RepositorioPoliticasBd,
 )
@@ -300,11 +309,23 @@ async def _resolver_clave_ausente(
     )
 
 
+def puerta_de_entrada() -> PuertaDeEntradaBd:
+    """Lectura única de empresa y cuenta para las puertas de cada petición (`bd/entrada.py`)."""
+    return PuertaDeEntradaBd(obtener_motor())
+
+
+PuertaDep = Annotated[PuertaDeEntradaBd, Depends(puerta_de_entrada)]
+
+# Dónde deja `obtener_actor` lo que leyó, para que `consentimiento_del_actor` no vuelva a preguntar.
+# Vive en `request.state`, que es de **esta** petición: no se comparte con ninguna otra.
+_ESTADO_DE_ENTRADA = "estado_de_entrada"
+
+
 async def obtener_actor(
     peticion: Request,
     ajustes: AjustesDep,
     sesiones: SesionesDep,
-    negocios: NegociosDep,
+    puerta: PuertaDep,
     # El alias explícito no es cosmético: FastAPI convierte los guiones bajos del nombre del
     # parámetro en guiones, así que sin él la cabecera esperada sería `autorizacion` y ningún
     # cliente la manda. El síntoma era el peor posible: el inicio de sesión respondía bien y
@@ -356,9 +377,14 @@ async def obtener_actor(
         # Se deja tal cual aunque la sesión ya no cueste una lectura: convertirla en una caché con
         # unos segundos de vida retrasaría la suspensión, y la suspensión es justo lo que tiene que
         # notarse en la petición siguiente.
-        empresa = await negocios.obtener(negocio_id=claims.negocio_id)
-        if empresa is None or not empresa.activo:
+        #
+        # La misma consulta trae la cuenta (contraseña temporal y políticas pendientes), que es lo
+        # que mira `consentimiento_del_actor` justo después: antes eran tres conexiones y doce
+        # viajes a la base en cada petición, ahora una y cuatro. Ver `bd/entrada.py`.
+        estado = await puerta.leer(negocio_id=claims.negocio_id, usuario_id=claims.usuario_id)
+        if estado.negocio is None or not estado.negocio.activo:
             raise EmpresaSuspendida()
+        setattr(peticion.state, _ESTADO_DE_ENTRADA, estado)
 
         return Actor(
             usuario_id=claims.usuario_id,
@@ -602,7 +628,10 @@ VistasDep = Annotated[frozenset[Vista], Depends(vistas_del_actor)]
 
 
 async def consentimiento_del_actor(
-    actor: ActorDep, consentimientos: ConsentimientosDep, cuentas: CuentasDep
+    peticion: Request,
+    actor: ActorDep,
+    consentimientos: ConsentimientosDep,
+    cuentas: CuentasDep,
 ) -> None:
     """Puerta de bloqueo: niega el paso si la cuenta debe aceptar alguna política.
 
@@ -621,13 +650,30 @@ async def consentimiento_del_actor(
     quién tiene la página abierta: la presencia no da ningún dato del sistema, y bloquearla dejaría
     a la pantalla de aceptación sin poder avisar de que sigue abierta.
     """
+    estado = getattr(peticion.state, _ESTADO_DE_ENTRADA, None)
+    if (
+        isinstance(estado, EstadoDeEntrada)
+        and estado.negocio_id == actor.negocio_id
+        and estado.usuario_id == actor.usuario_id
+    ):
+        # Lo leyó `obtener_actor` en esta misma petición, con la misma consulta y el mismo contexto
+        # de empresa: se aplican las mismas reglas, en el mismo orden, sin volver a la base.
+        if estado.cuenta_visible and estado.debe_cambiar_contrasena:
+            raise CambioDeContrasenaPendiente(MENSAJE_CONTRASENA_TEMPORAL)
+        if not estado.cuenta_visible:
+            raise NoEncontrado(CUENTA_NO_VISIBLE)
+        exigir_sin_pendiente(estado.politica_pendiente)
+        return
+
     cuenta = await cuentas.obtener(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id)
     if cuenta is not None and cuenta.debe_cambiar_contrasena:
-        raise CambioDeContrasenaPendiente(
-            "La contraseña de tu cuenta es temporal. Elige una nueva para seguir usando el panel."
-        )
+        raise CambioDeContrasenaPendiente(MENSAJE_CONTRASENA_TEMPORAL)
     await exigir_aceptado(actor, consentimientos=consentimientos)
 
+
+MENSAJE_CONTRASENA_TEMPORAL = (
+    "La contraseña de tu cuenta es temporal. Elige una nueva para seguir usando el panel."
+)
 
 # El valor que devuelve la dependencia no se usa: existe para que la comprobación se ejecute. Se
 # tipa como `None` para que quede claro que ningún endpoint debe leerlo.

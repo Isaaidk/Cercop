@@ -33,6 +33,12 @@ export const api = {
   estadoConsentimiento: () => http.get('/v1/politicas'),
   textoPolitica: (tipo) => http.get(`/v1/politicas/${tipo}`),
 
+  /**
+   * El texto vigente para quien no tiene cuenta: las páginas `/terminos` y `/privacidad`.
+   * Solo sirve los textos públicos (términos de uso y política de privacidad).
+   */
+  textoPoliticaPublica: (tipo) => http.get(`/v1/politicas/publicas/${tipo}`),
+
   aceptarPolitica: (tipo, version, hash) =>
     http.post(`/v1/politicas/${tipo}/aceptacion`, { version, hash }),
 

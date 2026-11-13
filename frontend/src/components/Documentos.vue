@@ -1378,7 +1378,10 @@ watch(
 )
 
 onMounted(() => {
-  cargarRequisitos().catch(() => {})
+  // Sin lectura no hay checklist que enseñar: el paso de requisitos se abre después de leer un TDR
+  // o resumir un proceso, y ahí se piden los de esa lectura. Pedirlos al montar traía el checklist
+  // de **todas** las lecturas de la empresa (medido: 6,8 MB) cada vez que se abría esta pestaña.
+  if (lectura.value?.lectura_id) cargarRequisitos().catch(() => {})
   aplicarEmpresa().catch(() => {})
   cargarCreditos().catch(() => {})
   cargarTitulosUsados()

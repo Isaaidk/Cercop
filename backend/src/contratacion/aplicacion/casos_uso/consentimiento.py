@@ -53,7 +53,8 @@ from contratacion.dominio.politicas import (
 registro = logging.getLogger(__name__)
 
 MENSAJE_PENDIENTE = (
-    "Tienes que aceptar los términos y condiciones para usar el aplicativo. "
+    "Tienes que aceptar los términos y condiciones y la política de privacidad para usar el "
+    "aplicativo. "
     "Abre la pantalla de aceptación y vuelve a intentarlo."
 )
 MENSAJE_TEXTO_CAMBIADO = (
@@ -186,9 +187,7 @@ async def aceptar(
         user_agent=user_agent,
         metodo="formulario",
     )
-    await consentimientos.limpiar_pendiente(
-        negocio_id=actor.negocio_id, usuario_id=actor.usuario_id
-    )
+    await _actualizar_marcador(actor, politicas=politicas, consentimientos=consentimientos)
     await cuentas.auditar(
         accion="consentimiento_aceptado",
         negocio_id=actor.negocio_id,
@@ -214,6 +213,37 @@ async def aceptar(
         actor.usuario_id,
     )
     return publicada
+
+
+async def _actualizar_marcador(
+    actor: Actor,
+    *,
+    politicas: RepositorioPoliticas,
+    consentimientos: RepositorioConsentimientos,
+) -> None:
+    """Levanta el bloqueo solo si ya no queda **ningún** texto obligatorio por aceptar.
+
+    Mientras hubo un único texto obligatorio, aceptar ese texto era lo mismo que estar al día y el
+    marcador se limpiaba sin más. Con dos (términos y política de privacidad) eso abría una puerta:
+    aceptar los términos limpiaba el marcador y la persona entraba sin haber aceptado la política de
+    privacidad. Ahora se recalcula el estado real después de registrar la aceptación y, si aún falta
+    algo, el marcador se deja apuntando a la versión más alta de lo que falta.
+    """
+    publicadas = tuple(await politicas.vigentes())
+    aceptadas = tuple(
+        await consentimientos.del_usuario(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id)
+    )
+    faltantes = calcular_pendientes(publicadas=publicadas, aceptadas=aceptadas)
+    if faltantes.hay_pendientes:
+        await consentimientos.marcar_pendiente(
+            negocio_id=actor.negocio_id,
+            usuario_id=actor.usuario_id,
+            version=max(politica.version for politica in faltantes.politicas),
+        )
+        return
+    await consentimientos.limpiar_pendiente(
+        negocio_id=actor.negocio_id, usuario_id=actor.usuario_id
+    )
 
 
 async def revocar(
@@ -288,9 +318,14 @@ async def exigir_aceptado(actor: Actor, *, consentimientos: RepositorioConsentim
     **Falla cerrada**: ante un error al consultar el marcador no se deja pasar. Un bloqueo legal
     que se abre cuando la base tiene un problema no es un bloqueo.
     """
-    pendiente = await consentimientos.pendiente_de(
-        negocio_id=actor.negocio_id, usuario_id=actor.usuario_id
+    exigir_sin_pendiente(
+        await consentimientos.pendiente_de(negocio_id=actor.negocio_id, usuario_id=actor.usuario_id)
     )
+
+
+def exigir_sin_pendiente(pendiente: int | None) -> None:
+    """La regla de la puerta sobre un marcador ya leído (la puerta de entrada lo trae junto con la
+    empresa y la cuenta en una sola consulta: `bd/entrada.py`)."""
     if pendiente is not None:
         raise ConsentimientoPendiente(MENSAJE_PENDIENTE)
 

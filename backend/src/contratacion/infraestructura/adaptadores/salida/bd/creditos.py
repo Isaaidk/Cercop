@@ -37,21 +37,21 @@ class RepositorioCreditos:
         self._motor = motor
 
     async def saldo(self, negocio_id: UUID) -> dict[str, Any]:
+        leer_saldo = text(
+            "SELECT disponibles, usados, actualizado_en FROM saldo_ia WHERE negocio_id = :negocio"
+        )
         async with contexto_negocio(self._motor, negocio_id) as conexion:
-            await conexion.execute(_ABRIR, {"negocio": negocio_id, "regalo": REGALO_INICIAL})
-            fila = (
-                (
-                    await conexion.execute(
-                        text(
-                            "SELECT disponibles, usados, actualizado_en FROM saldo_ia "
-                            "WHERE negocio_id = :negocio"
-                        ),
-                        {"negocio": negocio_id},
-                    )
+            # Se lee primero y solo se abre el saldo si aún no existe. Antes cada lectura del saldo
+            # (el inicio del asistente, la pantalla de créditos) empezaba por un `INSERT … ON
+            # CONFLICT DO NOTHING`: una escritura intentada en cada consulta para algo que pasa una
+            # vez en la vida de la empresa. Si dos peticiones llegan a la vez la primera vez, el
+            # `ON CONFLICT` sigue garantizando un solo saldo y un solo regalo.
+            fila = (await conexion.execute(leer_saldo, {"negocio": negocio_id})).mappings().first()
+            if fila is None:
+                await conexion.execute(_ABRIR, {"negocio": negocio_id, "regalo": REGALO_INICIAL})
+                fila = (
+                    (await conexion.execute(leer_saldo, {"negocio": negocio_id})).mappings().one()
                 )
-                .mappings()
-                .one()
-            )
             compras = (
                 (
                     await conexion.execute(

@@ -15,6 +15,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/endpoints'
 import CampoContrasena from '@/components/CampoContrasena.vue'
+import PiePublico from '@/components/PiePublico.vue'
 import { sesion } from '@/stores/sesion'
 
 const props = defineProps({
@@ -78,23 +79,27 @@ async function entrar() {
 
     <main class="acceso__cuerpo">
       <section class="acceso__presentacion aparece">
-        <h1>La contratación pública del Ecuador, en un solo panel</h1>
+        <h1>Encuentra ínfimas cuantías y prepara tu oferta</h1>
         <p>
-          CercoApp reúne las <strong>necesidades de contratación</strong> y los
-          <strong>procesos publicados</strong> por el SERCOP en los datos abiertos, y los muestra en
-          una tabla filtrable, gráficas y un mapa de las 24 provincias.
+          CercoApp revisa por ti las <strong>necesidades de contratación</strong> y las
+          <strong>ínfimas cuantías</strong> del SERCOP, te muestra lo que calza con tu empresa y te
+          ayuda a armar la proforma.
         </p>
         <ul class="acceso__lista">
-          <li><span aria-hidden="true">◆</span> Búsqueda por varias palabras clave a la vez</li>
-          <li><span aria-hidden="true">◆</span> Mapa del Ecuador con las 24 provincias</li>
-          <li><span aria-hidden="true">◆</span> Gráficas que filtran al pulsarlas</li>
-          <li><span aria-hidden="true">◆</span> El resultado se exporta a Excel</li>
+          <li><span aria-hidden="true">◆</span> Propuestas para ti según el perfil de tu empresa</li>
+          <li><span aria-hidden="true">◆</span> Alertas por CPC o palabras clave</li>
+          <li><span aria-hidden="true">◆</span> Asistente con IA que responde en español sencillo</li>
+          <li><span aria-hidden="true">◆</span> Proforma en 4 pasos, en PDF o Word</li>
+          <li><span aria-hidden="true">◆</span> Seguimiento de tus ofertas y avisos de cierre</li>
         </ul>
       </section>
 
       <section class="acceso__tarjeta aparece retardo-1">
         <h2>Entrar</h2>
-        <p class="acceso__ayuda">Usa las credenciales que te entregó el administrador.</p>
+        <p class="acceso__ayuda">
+          Usa el correo y la contraseña de tu cuenta. Si te la creó el administrador de tu empresa,
+          usa los datos que te entregó.
+        </p>
 
         <!--
           Confirmación de la vuelta desde el registro. Sin esto, quien acaba de crear su empresa
@@ -149,7 +154,8 @@ async function entrar() {
           Crear la cuenta de mi empresa
         </button>
         <p class="acceso__registro-nota">
-          El registro da acceso al panel durante 7 días, con todas las vistas y sin coste.
+          Solo necesitas tu RUC. Tu empresa empieza con 7 días de acceso a todo el panel, sin
+          costo, y 100 créditos de IA de bienvenida.
         </p>
 
         <p
@@ -158,7 +164,7 @@ async function entrar() {
           role="status"
         >
           <span aria-hidden="true">●</span>
-          La API no responde. Comprueba que el servidor está en marcha.
+          El servicio no responde en este momento. Inténtalo de nuevo en unos minutos.
         </p>
         <p v-else-if="servicioListo === true" class="acceso__servicio">
           <span aria-hidden="true">●</span>
@@ -166,6 +172,8 @@ async function entrar() {
         </p>
       </section>
     </main>
+
+    <PiePublico />
   </div>
 </template>
 
