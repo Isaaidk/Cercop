@@ -88,13 +88,36 @@ def upgrade() -> None:
         """
     )
     op.execute("ALTER TABLE aviso FORCE ROW LEVEL SECURITY")
-    with op.get_context().autocommit_block():
-        op.execute(
-            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ux_aviso_alerta_registro "
-            "ON aviso (alerta_id, registro_id) WHERE alerta_id IS NOT NULL"
-        )
-        for nombre, definicion in _INDICES_CONCURRENTES:
-            op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {nombre} {definicion}")
+    # Sin CONCURRENTLY: un índice concurrente espera a que termine **toda** transacción abierta en
+    # la base, y el worker mantiene una abierta durante el ciclo de ingesta (su bloqueo). En el
+    # deploy de Railway eso lo dejó esperando hasta que la plataforma mató el contenedor. Un índice
+    # normal solo frena las escrituras de su tabla mientras se construye (segundos), y va en la
+    # misma transacción que el resto de la migración.
+    #
+    # Un intento cortado deja el índice concurrente a medio hacer (`indisvalid = false`) con su
+    # nombre: `IF NOT EXISTS` lo daría por bueno. Se borra antes.
+    nombres = ["ux_aviso_alerta_registro", *(nombre for nombre, _ in _INDICES_CONCURRENTES)]
+    lista = ", ".join(f"'{nombre}'" for nombre in nombres)
+    op.execute(
+        f"""
+        DO $$
+        DECLARE fila record;
+        BEGIN
+            FOR fila IN
+                SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                WHERE NOT i.indisvalid AND c.relname IN ({lista})
+            LOOP
+                EXECUTE format('DROP INDEX IF EXISTS %I', fila.relname);
+            END LOOP;
+        END $$
+        """
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_aviso_alerta_registro "
+        "ON aviso (alerta_id, registro_id) WHERE alerta_id IS NOT NULL"
+    )
+    for nombre, definicion in _INDICES_CONCURRENTES:
+        op.execute(f"CREATE INDEX IF NOT EXISTS {nombre} {definicion}")
 
 
 def downgrade() -> None:
