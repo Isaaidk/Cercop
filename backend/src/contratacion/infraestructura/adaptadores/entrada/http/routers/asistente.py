@@ -45,7 +45,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     UsuariosDep,
     VistasDep,
 )
-from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.bd.asistente import (
     RepositorioConversacionesBd,
 )
@@ -203,7 +203,7 @@ async def borrar(
 @router.post(
     "/mensajes",
     summary="Enviar un mensaje al asistente y recibir su respuesta",
-    dependencies=[Depends(LimitePorUsuario("asistente.mensajes", 20, 60))],
+    dependencies=[Depends(LimitePorUsuario("asistente.mensajes", 20, 60)), Depends(Turno("ia"))],
 )
 async def mensaje(
     cuerpo: MensajeNuevo,

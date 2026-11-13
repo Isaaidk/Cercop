@@ -49,7 +49,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     PlantillasDep,
     VistasDep,
 )
-from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
 
 router = APIRouter(prefix="/v1", tags=["Búsqueda"])
@@ -370,7 +370,7 @@ async def buscar_registros(
 @router.get(
     "/registros/exportacion",
     summary="Descargar en Excel los registros que cumplen los filtros",
-    dependencies=[_LIMITE_EXPORTACION],
+    dependencies=[_LIMITE_EXPORTACION, Depends(Turno("exportacion"))],
     response_class=Response,
     responses={
         200: {

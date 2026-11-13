@@ -12,8 +12,11 @@ efectivo es el de cada uno multiplicado por los procesos.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from fastapi import HTTPException
 
+from contratacion.aplicacion.encolador import ENCOLADORES
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import ActorDep
 from contratacion.infraestructura.adaptadores.entrada.http.proteccion import FrenoPorIp
 
@@ -37,3 +40,20 @@ class LimitePorUsuario:
                 detail=f"Estás pidiendo demasiado rápido. Vuelve a probar en {espera} segundos.",
                 headers={"Retry-After": str(espera)},
             )
+
+
+class Turno:
+    """Dependencia de FastAPI que hace pasar la ruta entera por el encolador de su tipo.
+
+    `Depends(Turno("lectura"))`. Es una dependencia con `yield`: el turno se toma antes de ejecutar
+    la ruta y se suelta al terminar, falle o no. La empresa de quien llama es la llave del reparto
+    justo (ver `aplicacion/encolador.py`).
+    """
+
+    def __init__(self, tipo: str) -> None:
+        self._encolador = ENCOLADORES[tipo]
+
+    async def __call__(self, actor: ActorDep) -> AsyncIterator[None]:
+        empresa = str(actor.negocio_id or actor.usuario_id)
+        async with self._encolador.turno(empresa):
+            yield

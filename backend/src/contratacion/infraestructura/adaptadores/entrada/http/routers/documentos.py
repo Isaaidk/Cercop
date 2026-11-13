@@ -44,7 +44,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     TdrDep,
     VistasDep,
 )
-from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.firma import TOPE_CERTIFICADO, firmar_pdf
 from contratacion.infraestructura.adaptadores.salida.oficina import docx, parrafos_de
 from contratacion.infraestructura.adaptadores.salida.proforma_pdf import (
@@ -64,6 +64,11 @@ _ESTADO_TDR = Depends(LimitePorUsuario("documentos.estado_tdr", 120, 60))
 _PREGUNTAR = Depends(LimitePorUsuario("documentos.preguntar", 60, 60))
 _GENERAR = Depends(LimitePorUsuario("documentos.generar", 20, 60))
 _ARCHIVO = Depends(LimitePorUsuario("documentos.archivo", 40, 60))
+# Encolador (aplicacion/encolador.py): leer anexos es CPU, la IA es espera a un tercero y el
+# PDF/Word es CPU. Cada tipo con sus turnos, su fila acotada y su reparto entre empresas.
+_TURNO_LECTURA = Depends(Turno("lectura"))
+_TURNO_IA = Depends(Turno("ia"))
+_TURNO_DOCUMENTO = Depends(Turno("documento"))
 
 
 class ResumenPedido(BaseModel):
@@ -142,7 +147,7 @@ class Pregunta(BaseModel):
 @router.post(
     "/leer",
     summary="Leer un PDF o un texto y extraer los apartados titulados",
-    dependencies=[_LEER],
+    dependencies=[_LEER, _TURNO_LECTURA],
 )
 async def leer(
     actor: ActorDep,
@@ -170,7 +175,9 @@ async def lecturas(
 
 
 @router.post(
-    "/desde-codigo", summary="Bajar el TDR de un código y leerlo", dependencies=[_BAJAR_TDR]
+    "/desde-codigo",
+    summary="Bajar el TDR de un código y leerlo",
+    dependencies=[_BAJAR_TDR, _TURNO_LECTURA],
 )
 async def desde_codigo(
     cuerpo: DesdeCodigo,
@@ -324,7 +331,9 @@ async def contrastar(
 
 
 @router.post(
-    "/preguntar", summary="Pregunta contestada con datos guardados", dependencies=[_PREGUNTAR]
+    "/preguntar",
+    summary="Pregunta contestada con datos guardados",
+    dependencies=[_PREGUNTAR, _TURNO_IA],
 )
 async def pregunta(
     cuerpo: Pregunta,
@@ -359,7 +368,7 @@ async def pregunta(
 @router.post(
     "/generar",
     summary="Borrador de oferta: plantilla o IA con los datos de la empresa",
-    dependencies=[_GENERAR],
+    dependencies=[_GENERAR, _TURNO_IA],
 )
 async def generar(
     cuerpo: GenerarPedido,
@@ -420,7 +429,7 @@ async def verificacion(
 @router.post(
     "/proformas/{proforma_id}/firmar",
     summary="PDF firmado con tu .p12 o .pfx",
-    dependencies=[_ARCHIVO],
+    dependencies=[_ARCHIVO, _TURNO_DOCUMENTO],
 )
 async def firmar(
     proforma_id: UUID,
@@ -500,7 +509,7 @@ def _cajas_del_cliente(texto: str) -> list[tuple[int, tuple[float, float, float,
 @router.post(
     "/proformas/{proforma_id}/firmar-pdf",
     summary="Firma el PDF que armó el navegador, en cada recuadro",
-    dependencies=[_ARCHIVO],
+    dependencies=[_ARCHIVO, _TURNO_DOCUMENTO],
 )
 async def firmar_pdf_del_navegador(
     proforma_id: UUID,
@@ -560,7 +569,11 @@ async def firmar_pdf_del_navegador(
     )
 
 
-@router.get("/proformas/{proforma_id}/docx", summary="Descargar Word", dependencies=[_ARCHIVO])
+@router.get(
+    "/proformas/{proforma_id}/docx",
+    summary="Descargar Word",
+    dependencies=[_ARCHIVO, _TURNO_DOCUMENTO],
+)
 async def bajar_docx(
     proforma_id: UUID,
     actor: ActorDep,
@@ -570,7 +583,11 @@ async def bajar_docx(
     return await _bajar(actor, documentos, proforma_id, "docx")
 
 
-@router.get("/proformas/{proforma_id}/pdf", summary="Descargar PDF", dependencies=[_ARCHIVO])
+@router.get(
+    "/proformas/{proforma_id}/pdf",
+    summary="Descargar PDF",
+    dependencies=[_ARCHIVO, _TURNO_DOCUMENTO],
+)
 async def bajar_pdf(
     proforma_id: UUID,
     actor: ActorDep,

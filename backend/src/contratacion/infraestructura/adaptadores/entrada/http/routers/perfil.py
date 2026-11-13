@@ -28,7 +28,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     CpcDep,
     PerfilDep,
 )
-from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.historial import (
     HistorialOcds,
     obtener_historial,
@@ -197,7 +197,7 @@ async def consulta_contratos(
 @router.post(
     "/leer-rup",
     summary="Leer el certificado del RUP en PDF: datos y CPC con su descripción",
-    dependencies=[Depends(LimitePorUsuario("perfil.leer_rup", 10, 60))],
+    dependencies=[Depends(LimitePorUsuario("perfil.leer_rup", 10, 60)), Depends(Turno("lectura"))],
 )
 async def leer_rup(
     actor: ActorDep, _: ConsentimientoDep, archivo: Annotated[UploadFile, File()]
@@ -214,7 +214,10 @@ async def leer_rup(
 @router.post(
     "/leer-rup-texto",
     summary="Leer el RUP a partir del texto sacado por OCR en el navegador",
-    dependencies=[Depends(LimitePorUsuario("perfil.leer_rup_texto", 10, 60))],
+    dependencies=[
+        Depends(LimitePorUsuario("perfil.leer_rup_texto", 10, 60)),
+        Depends(Turno("lectura")),
+    ],
 )
 async def leer_rup_texto_ruta(
     cuerpo: TextoRup, actor: ActorDep, _: ConsentimientoDep

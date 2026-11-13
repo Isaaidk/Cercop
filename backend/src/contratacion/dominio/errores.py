@@ -57,6 +57,20 @@ class ServicioNoDisponible(EstadoInvalido):
     codigo = "servicio_no_disponible"
 
 
+class Saturado(ServicioNoDisponible):
+    """Hay demasiado trabajo pesado en curso y en espera: se rechaza enseguida, sin hacer cola.
+
+    Lo lanza el encolador (`aplicacion/encolador.py`). Es un 503 con `Retry-After`: el panel lo
+    muestra como «hay mucha demanda, vuelve a intentar en N segundos».
+    """
+
+    codigo = "saturado"
+
+    def __init__(self, mensaje: str, *, reintentar_en: int = 15) -> None:
+        super().__init__(mensaje)
+        self.reintentar_en = reintentar_en
+
+
 class SinPermiso(ErrorDominio):
     """El actor no tiene autorización para esta operación.
 

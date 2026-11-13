@@ -178,6 +178,13 @@ async def _manejador_de_dominio(peticion: Request, exc: Exception) -> JSONRespon
     motivo = getattr(exc, "motivo", None)
     if motivo:
         cuerpo["motivo"] = motivo
+    # El encolador dice cuándo reintentar (`Saturado`): va en el cuerpo y en `Retry-After`.
+    reintentar = getattr(exc, "reintentar_en", None)
+    if reintentar:
+        cuerpo["reintentar_en"] = reintentar
+        return JSONResponse(
+            status_code=codigo, content=cuerpo, headers={"Retry-After": str(reintentar)}
+        )
     return JSONResponse(status_code=codigo, content=cuerpo)
 
 
