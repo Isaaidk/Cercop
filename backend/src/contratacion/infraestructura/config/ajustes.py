@@ -153,9 +153,10 @@ class Ajustes(BaseSettings):
     # --- Borde HTTP (auditoría de seguridad, doc 38) ------------------------
     # Cuántos proxys propios hay delante de la API. La IP de quien llama se toma de la dirección
     # que añade el último de ellos en `X-Forwarded-For`, y no de la primera, que la escribe el
-    # cliente. `0`: sin proxy delante, se usa la conexión directa. **En Railway y detrás de Caddy
-    # tiene que ser `1`**: con `0` todas las peticiones parecen venir del proxy y el freno de inicio
-    # de sesión se reparte entre todos los usuarios. Ver `entrada/http/proteccion.py`.
+    # cliente. `0`: sin proxy delante, se usa la conexión directa. **En Railway tiene que ser `2`**
+    # (llega `<cliente>, <proxy interno de Railway>`, medido con /v1/plataforma/eco-ip) y detrás de
+    # Caddy `1`. Con un valor menor, el freno cuenta la IP de un proxy y se reparte entre todos los
+    # usuarios. Ver `entrada/http/proteccion.py`.
     proxy_saltos: int = Field(default=0, ge=0, le=5)
     # Tamaño máximo del cuerpo de cualquier petición, en MB. El archivo más grande que acepta una
     # ruta son 8 MB (RUP, PDF a firmar, plantilla de Excel); el tope deja margen para el resto del

@@ -271,10 +271,10 @@ PLANTILLAS_DIR=/app/plantillas
 LOG_NIVEL=INFO
 PURGA_PLAZO_DIAS=7
 PURGA_MAX_FILAS_POR_VUELTA=500
-PROXY_SALTOS=1
+PROXY_SALTOS=2
 ```
 
-`PROXY_SALTOS=1` es obligatorio en Railway: el borde de Railway es el proxy que hay delante de la
+`PROXY_SALTOS=2` es obligatorio en Railway. Railway entrega `X-Forwarded-For: <cliente>, <proxy interno de Railway>` (medido el 2026-11-13 con `GET /v1/plataforma/eco-ip`): son **2** saltos. Con `1` el freno contaba la IP del proxy de Railway y lo compartían todos los usuarios. Motivo: el borde de Railway es el proxy que hay delante de la
 API, y sin esta variable la IP del cliente sale de una cabecera que el propio cliente escribe (ver
 `docs/38-auditoria-seguridad.md`). Antes de abrir el servicio al público, revisa también la lista de
 comprobación de ese documento: en particular, el rol de la base de datos con el que se conecta la
