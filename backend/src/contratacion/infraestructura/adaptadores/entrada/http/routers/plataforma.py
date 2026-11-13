@@ -12,9 +12,11 @@ desde la API, desde el worker o desde una tarea programada.
 
 from __future__ import annotations
 
+import time
 from typing import Annotated, Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
 
@@ -28,6 +30,8 @@ from contratacion.aplicacion.casos_uso.administrar_negocios import (
     suspender_empresa,
 )
 from contratacion.aplicacion.casos_uso.operar_ingesta import solicitar_ciclo, tablero_ingesta
+from contratacion.dominio.errores import SinPermiso
+from contratacion.dominio.roles import Rol
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
@@ -54,6 +58,58 @@ async def empresas(actor: ActorDep, negocios: NegociosDep) -> dict[str, Any]:
     """
     fichas = await listar_empresas(actor, repositorio=negocios)
     return cuerpo_json({"empresas": [ficha.como_diccionario() for ficha in fichas]})
+
+
+_PRUEBAS_DE_SALIDA = (
+    (
+        "Portal: listado de necesidades (NCO)",
+        "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/NCO/FrmNCOListado.cpe",
+    ),
+    (
+        "Portal: ingreso al sistema",
+        "https://www.compraspublicas.gob.ec/ProcesoContratacion/compras/",
+    ),
+    (
+        "Datos abiertos (OCDS)",
+        "https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/search_ocds?year=2025&page=1",
+    ),
+)
+
+
+@router.get("/salida-portal", summary="¿Llega este servidor al portal de compras públicas?")
+async def salida_portal(actor: ActorDep) -> dict[str, Any]:
+    """Prueba, desde el propio servidor, la salida directa (sin proxy) hacia el portal.
+
+    Responde la pregunta de la que depende la descarga de TDR en el despliegue: si el portal acepta
+    conexiones desde la IP del servidor o las corta. Solo el superadministrador.
+    """
+    if str(actor.rol) != Rol.SUPER_ADMIN.value:
+        raise SinPermiso("Solo el superadministrador puede probar la salida al portal.")
+    resultados: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(20.0), follow_redirects=False, headers={"User-Agent": "Mozilla/5.0"}
+    ) as cliente:
+        for nombre, url in _PRUEBAS_DE_SALIDA:
+            inicio = time.monotonic()
+            try:
+                respuesta = await cliente.get(url)
+                resultados.append(
+                    {
+                        "prueba": nombre,
+                        "estado": respuesta.status_code,
+                        "bytes": len(respuesta.content),
+                        "segundos": round(time.monotonic() - inicio, 2),
+                    }
+                )
+            except httpx.HTTPError as exc:
+                resultados.append(
+                    {
+                        "prueba": nombre,
+                        "error": type(exc).__name__,
+                        "segundos": round(time.monotonic() - inicio, 2),
+                    }
+                )
+    return {"salida": "directa", "resultados": resultados}
 
 
 @router.get("/ingesta/historial", summary="Lo que han trabajado los workers")
