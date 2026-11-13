@@ -84,9 +84,12 @@ _un_nodo() {
 }
 
 _tunel() {
-    # Un proxy propio en Ecuador (deploy/proxy-ecuador) tiene prioridad: no hace falta túnel.
-    if [ -n "${NCO_PROXY_URLS:-}" ]; then
-        echo "NCO_PROXY_URLS definido: se sale por ese proxy, sin túnel de Tailscale."
+    # Las salidas se suman: los proxies fijos de `NCO_PROXY_URLS` (p. ej. el VPS de
+    # deploy/proxy-ecuador) y un túnel por cada dispositivo de `TAILSCALE_EXIT_NODES` (casas, ver
+    # docs/42). El worker reparte entre todas y enfría la que falla. Sin dispositivos de Tailscale,
+    # solo se usan los proxies fijos.
+    if [ -n "${NCO_PROXY_URLS:-}" ] && [ -z "${TAILSCALE_EXIT_NODES:-}" ]; then
+        echo "NCO_PROXY_URLS definido y sin TAILSCALE_EXIT_NODES: se sale por esos proxies."
         return 0
     fi
     if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
@@ -117,8 +120,8 @@ _tunel() {
         done
         IFS=$viejo_ifs
         if [ -n "$urls" ]; then
-            export NCO_PROXY_URLS="$urls"
-            echo "Túneles listos. NCO saldrá por ${NCO_PROXY_URLS}."
+            export NCO_PROXY_URLS="${NCO_PROXY_URLS:+${NCO_PROXY_URLS},}${urls}"
+            echo "Túneles listos. Salidas del worker: ${NCO_PROXY_URLS}" | sed -E 's#//[^@/]*@#//***@#g'
         fi
         return 0
     fi

@@ -18,7 +18,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.administrar_negocios import (
@@ -44,6 +44,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     NegociosDep,
     UsuariosDep,
 )
+from contratacion.infraestructura.adaptadores.entrada.http.proteccion import ip_cliente
 
 router = APIRouter(prefix="/v1/plataforma", tags=["Plataforma"])
 
@@ -75,6 +76,24 @@ _PRUEBAS_DE_SALIDA = (
         "https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api/search_ocds?year=2025&page=1",
     ),
 )
+
+
+@router.get("/eco-ip", summary="Cómo ve el servidor la IP de quien llama (diagnóstico)")
+async def eco_ip(actor: ActorDep, peticion: Request) -> dict[str, Any]:
+    """Cabeceras de proxy tal como llegan y la IP que usa el freno. Solo el superadministrador.
+
+    Sirve para comprobar `PROXY_SALTOS` en el despliegue: si la IP calculada es la del proxy de la
+    plataforma y no la del cliente, el freno de inicio de sesión se reparte entre todos.
+    """
+    if str(actor.rol) != Rol.SUPER_ADMIN.value:
+        raise SinPermiso("Solo el superadministrador puede ver este diagnóstico.")
+    cliente = peticion.client.host if peticion.client else None
+    return {
+        "client_host": cliente,
+        "x_forwarded_for": peticion.headers.getlist("x-forwarded-for"),
+        "x_real_ip": peticion.headers.get("x-real-ip"),
+        "ip_para_el_freno": ip_cliente(peticion),
+    }
 
 
 @router.get("/salida-portal", summary="¿Llega este servidor al portal de compras públicas?")

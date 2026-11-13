@@ -96,7 +96,7 @@ async def _crear(cantidad: int, api: str, salida: Path) -> int:
                 admin_nombre=f"Carga {indice:05d}",
                 admin_rol=Rol.SUPER_ADMIN,
                 huella=huella,
-                vistas_prueba=tuple(Vista),
+                vistas_prueba=tuple(v for v in Vista if v is not Vista.CONTRATACIONES),
                 plazo_prueba=Plazo.A1,
                 momento=momento,
             )
