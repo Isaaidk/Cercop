@@ -6,7 +6,8 @@
 # puede leer necesidades ni bajar TDR desde allí. Un VPS en Ecuador con este proxy le da una IP
 # ecuatoriana fija, encendida 24/7, sin depender de ningún PC.
 #
-# Uso, en un VPS nuevo con Ubuntu 22.04 o 24.04 (como root):
+# Uso, en un VPS nuevo con Ubuntu 22.04 o 24.04 (como root). Sirve también una VM gratis de Oracle
+# Cloud «Always Free» (región Bogotá): abrir antes TCP 3128 en la Security List de la VCN.
 #     curl -fsSL <url-de-este-archivo> -o instalar.sh   (o copiarlo a mano)
 #     bash instalar.sh
 #
@@ -69,9 +70,20 @@ squid -k parse >/dev/null 2>&1
 systemctl enable squid >/dev/null 2>&1
 systemctl restart squid
 
-ufw allow OpenSSH >/dev/null
-ufw allow "${PUERTO}/tcp" >/dev/null
-ufw --force enable >/dev/null
+# Oracle Cloud: sus imágenes de Ubuntu traen reglas de iptables propias que rechazan todo menos SSH
+# (y además hay que abrir el puerto en la «Security List» de la VCN, desde la consola de Oracle).
+# Se inserta la regla antes de su REJECT y se guarda para que sobreviva al reinicio.
+if iptables -S INPUT 2>/dev/null | grep -q "REJECT"; then
+    iptables -I INPUT 5 -p tcp -m state --state NEW --dport "${PUERTO}" -j ACCEPT
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 || true
+    fi
+    echo "Reglas de iptables (Oracle) ajustadas para el puerto ${PUERTO}."
+else
+    ufw allow OpenSSH >/dev/null
+    ufw allow "${PUERTO}/tcp" >/dev/null
+    ufw --force enable >/dev/null
+fi
 
 IP="$(curl -fsS https://api.ipify.org || hostname -I | awk '{print $1}')"
 
