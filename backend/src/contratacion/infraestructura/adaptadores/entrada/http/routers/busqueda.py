@@ -49,9 +49,19 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     PlantillasDep,
     VistasDep,
 )
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
 from contratacion.infraestructura.adaptadores.salida.cache.cliente import obtener_cache
 
 router = APIRouter(prefix="/v1", tags=["Búsqueda"])
+
+# Tope por persona contra la descarga masiva: con una cuenta válida —también una de prueba— un
+# script podía recorrer todas las páginas y llevarse la base entera. Una persona cambia de página o
+# de filtro unas pocas veces por minuto; los topes quedan muy por encima de eso y muy por debajo de
+# lo que necesita un raspado. El Excel es lo más caro y lo más fácil de abusar: pocos por hora.
+_LIMITE_REGISTROS = Depends(LimitePorUsuario("busqueda.registros", 90, 60))
+_LIMITE_ESTADISTICAS = Depends(LimitePorUsuario("busqueda.estadisticas", 60, 60))
+_LIMITE_CATALOGOS = Depends(LimitePorUsuario("busqueda.catalogos", 60, 60))
+_LIMITE_EXPORTACION = Depends(LimitePorUsuario("busqueda.exportacion", 10, 3600))
 
 registro = logging.getLogger(__name__)
 
@@ -331,7 +341,11 @@ async def criterios(
 CriteriosDep = Annotated[Filtros, Depends(criterios)]
 
 
-@router.get("/registros", summary="Buscar en el histórico de contrataciones")
+@router.get(
+    "/registros",
+    summary="Buscar en el histórico de contrataciones",
+    dependencies=[_LIMITE_REGISTROS],
+)
 async def buscar_registros(
     consultas: ConsultasDep,
     ajustes: AjustesDep,
@@ -356,6 +370,7 @@ async def buscar_registros(
 @router.get(
     "/registros/exportacion",
     summary="Descargar en Excel los registros que cumplen los filtros",
+    dependencies=[_LIMITE_EXPORTACION],
     response_class=Response,
     responses={
         200: {
@@ -431,7 +446,11 @@ async def exportar_registros(
     )
 
 
-@router.get("/catalogos", summary="Valores disponibles para los filtros")
+@router.get(
+    "/catalogos",
+    summary="Valores disponibles para los filtros",
+    dependencies=[_LIMITE_CATALOGOS],
+)
 async def catalogos(
     consultas: ConsultasDep,
     ajustes: AjustesDep,
@@ -460,7 +479,11 @@ async def catalogos(
     return cuerpo_json(dict(datos))
 
 
-@router.get("/estadisticas", summary="Agregados para las gráficas")
+@router.get(
+    "/estadisticas",
+    summary="Agregados para las gráficas",
+    dependencies=[_LIMITE_ESTADISTICAS],
+)
 async def estadisticas(
     consultas: ConsultasDep,
     ajustes: AjustesDep,
