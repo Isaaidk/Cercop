@@ -105,8 +105,8 @@ def test_la_cuenta_independiente_y_la_del_codigo_coinciden(
     La de aquí sigue la documentación del SRI con los coeficientes a la vista; la del código es la
     que se usa de verdad. Si divergen, una de las dos tiene un coeficiente mal.
     """
-    for base in ("179001234", "099234567", "019034567", "171003406", "060234567"):
-        if generador is _ruc_de_sociedad and base[2] not in {"6", "9"}:
+    for base in ("179001234", "099234567", "019034567", "171003406"):
+        if generador is _ruc_de_sociedad and base[2] != "9":
             continue
         if generador is _ruc_de_persona and base[2] in {"6", "9"}:
             continue
@@ -117,10 +117,24 @@ def test_la_cuenta_independiente_y_la_del_codigo_coinciden(
 
 def test_rechaza_un_digito_verificador_equivocado() -> None:
     # Un dígito cambiado es el error más probable al teclear un RUC, y es justo el que la
-    # comprobación de longitud no detecta.
-    malo = "1790012345001"
+    # comprobación de longitud no detecta. Se comprueba en personas naturales y entidades
+    # públicas, cuyos algoritmos el SRI respeta siempre.
     with pytest.raises(DatoInvalido, match="dígito verificador"):
-        validar_ruc(malo)
+        validar_ruc("1710034066001")
+    with pytest.raises(DatoInvalido, match="dígito verificador"):
+        validar_ruc("1760013220001")
+
+
+def test_acepta_ruc_reales_de_entidades_publicas() -> None:
+    # RUC activos en el SRI (consultados en su servicio público). El del propio SRI y el de un
+    # municipio se rechazaban porque se les aplicaba el cálculo de las sociedades.
+    assert validar_ruc("1760013210001") == "1760013210001"
+    assert digito_verificador_ruc("176001321") == 1
+
+
+def test_no_bloquea_una_sociedad_cuyo_verificador_no_cumple_el_modulo_11() -> None:
+    # El SRI emite RUC de sociedades que no cumplen el módulo 11: no se puede bloquear el registro.
+    assert validar_ruc("1790012345001") == "1790012345001"
 
 
 def test_rechaza_una_provincia_inexistente() -> None:
@@ -298,4 +312,4 @@ def test_el_minimo_para_registrar_es_el_nombre() -> None:
 def test_un_dato_malo_impide_construir_el_bloque_entero() -> None:
     # Se valida todo antes de devolver nada: el caso de uso no recibe nunca un objeto a medias.
     with pytest.raises(DatoInvalido, match="dígito verificador"):
-        construir_datos_empresa(nombre="Mi empresa", ruc="1790012345001")
+        construir_datos_empresa(nombre="Mi empresa", ruc="1710034066001")

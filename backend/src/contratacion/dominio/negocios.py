@@ -58,6 +58,9 @@ TIPOS_DE_RUC: frozenset[str] = frozenset({"0", "1", "2", "3", "4", "5", "6", "9"
 # puede equivocar en silencio: un coeficiente cambiado produce un dígito que valida otro número.
 COEFICIENTES_CEDULA = (2, 1, 2, 1, 2, 1, 2, 1, 2)
 COEFICIENTES_SOCIEDAD = (4, 3, 2, 7, 6, 5, 4, 3, 2)
+# Entidades públicas (tercer dígito 6): el verificador es el **noveno** dígito, calculado sobre los
+# ocho primeros, y el establecimiento son los cuatro últimos («0001»).
+COEFICIENTES_PUBLICA = (3, 2, 7, 6, 5, 4, 3, 2)
 
 CORREO = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
 
@@ -122,28 +125,32 @@ def normalizar_ruc(valor: str | None) -> str | None:
     return limpio or None
 
 
+def _modulo_11(digitos: str, coeficientes: tuple[int, ...]) -> int:
+    total = sum(int(d) * c for d, c in zip(digitos, coeficientes, strict=True))
+    verificador = 11 - total % 11
+    if verificador == 11:
+        return 0
+    if verificador == 10:
+        return 1
+    return verificador
+
+
 def digito_verificador_ruc(base: str) -> int:
     """Calcula el dígito verificador de los nueve primeros dígitos de un RUC.
 
-    Los dos algoritmos son del Servicio de Rentas Internas y se distinguen por el tercer dígito:
-    las personas naturales usan el de la cédula —donde el producto de dos dígitos se suma como sus
-    cifras, no como el número— y las sociedades y entidades públicas el módulo 11.
+    Los algoritmos son del Servicio de Rentas Internas y se distinguen por el tercer dígito: las
+    personas naturales usan el de la cédula —donde el producto de dos dígitos se suma como sus
+    cifras, no como el número—, las sociedades el módulo 11 sobre nueve dígitos y las entidades
+    públicas el módulo 11 sobre **ocho** (su verificador es el noveno dígito, ver
+    `posicion_verificador`).
     """
     if len(base) != 9 or not base.isdigit():
         raise DatoInvalido("Para calcular el dígito verificador hacen falta nueve dígitos.")
 
-    if base[2] in {"6", "9"}:
-        total = sum(
-            int(digito) * coeficiente
-            for digito, coeficiente in zip(base, COEFICIENTES_SOCIEDAD, strict=True)
-        )
-        residuo = total % 11
-        verificador = 11 - residuo
-        if verificador == 11:
-            return 0
-        if verificador == 10:
-            return 1
-        return verificador
+    if base[2] == "6":
+        return _modulo_11(base[:8], COEFICIENTES_PUBLICA)
+    if base[2] == "9":
+        return _modulo_11(base, COEFICIENTES_SOCIEDAD)
 
     total = 0
     for digito, coeficiente in zip(base, COEFICIENTES_CEDULA, strict=True):
@@ -155,6 +162,11 @@ def digito_verificador_ruc(base: str) -> int:
             producto -= 9
         total += producto
     return (10 - total % 10) % 10
+
+
+def posicion_verificador(ruc: str) -> int:
+    """Índice del dígito verificador: el noveno en entidades públicas, el décimo en el resto."""
+    return 8 if ruc[2] == "6" else 9
 
 
 def validar_ruc(valor: str | None) -> str | None:
@@ -183,11 +195,25 @@ def validar_ruc(valor: str | None) -> str | None:
             "establecimiento válido."
         )
 
-    esperado = digito_verificador_ruc(limpio[:9])
-    if int(limpio[9]) != esperado:
+    if limpio[2] == "6" and limpio[9:] == "0000":
         raise DatoInvalido(
-            f"El dígito verificador del RUC no cuadra: debería ser {esperado} y es {limpio[9]}. "
-            "Revisa el número."
+            "En el RUC de una entidad pública los cuatro últimos dígitos son el establecimiento y "
+            "«0000» no es un establecimiento válido."
+        )
+
+    # Sociedades: el SRI asigna desde hace unos años RUC que **no cumplen** el módulo 11 clásico
+    # (comprobado: RUC activos en el SRI rechazados por este cálculo). Bloquear el registro de una
+    # empresa real por eso es peor que dejar pasar una errata: el formulario consulta el RUC en el
+    # SRI y muestra la razón social, que es donde se ve si el número está mal escrito.
+    if limpio[2] == "9":
+        return limpio
+
+    posicion = posicion_verificador(limpio)
+    esperado = digito_verificador_ruc(limpio[:9])
+    if int(limpio[posicion]) != esperado:
+        raise DatoInvalido(
+            f"El dígito verificador del RUC no cuadra: debería ser {esperado} y es "
+            f"{limpio[posicion]}. Revisa el número."
         )
     return limpio
 
