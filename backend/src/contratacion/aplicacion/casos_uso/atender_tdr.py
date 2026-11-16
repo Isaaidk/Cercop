@@ -27,10 +27,12 @@ import httpx
 from contratacion.dominio.anexos import ACTA, clasificar, elegir_anexos
 from contratacion.infraestructura.adaptadores.salida.archivos.tdr import (
     EnlaceNoPermitido,
+    PortalEnMantenimiento,
     TopeExcedido,
     descargar_a,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.tdr import RepositorioTdr
+from contratacion.infraestructura.adaptadores.salida.fuentes.portal import estado_portal
 from contratacion.infraestructura.adaptadores.salida.fuentes.salidas import PoolSalidas
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
 
@@ -63,10 +65,15 @@ async def atender_lote(
     repositorio: RepositorioTdr, carpeta: Path, *, tamano: int = TAMANO_LOTE
 ) -> int:
     """Descarga hasta `tamano` pedidos a la vez. Devuelve cuántos atendió (con o sin éxito)."""
+    portal = estado_portal()
+    # Con el portal en pausa (mantenimiento) no se reserva nada: los pedidos siguen en la fila y
+    # se atienden en cuanto la pausa termina, sin gastar su reserva de diez minutos.
+    if portal.en_pausa():
+        return 0
     pedidos = await repositorio.tomar_pendientes(tamano)
     if not pedidos:
         return 0
-    pool = PoolSalidas.desde_urls(_urls())
+    pool = PoolSalidas.desde_urls(_urls(), portal=portal)
     try:
         resultados = await asyncio.gather(
             *(_atender(repositorio, carpeta, pool, pedido) for pedido in pedidos),
@@ -143,6 +150,10 @@ async def _atender(
     salida = pool.elegir()
     if salida is None:
         return False
+    # Cuenta para el tope por hora del portal. Si no hay hueco, el pedido queda reservado y vuelve
+    # a la fila cuando caduque la reserva (diez minutos).
+    if pool.portal is not None and not pool.portal.permitir("TDR"):
+        return False
     cliente = salida.limitador._obtener_cliente(120.0)
     try:
         ruta, sha, tamano = await descargar_a(
@@ -162,6 +173,14 @@ async def _atender(
             ruta=str(ruta),
             tamano=tamano,
             mime=_mime(str(pedido.get("nombre") or "")),
+        )
+    except PortalEnMantenimiento:
+        if pool.portal is not None:
+            pool.portal.pausar("ventana de mantenimiento (TDR)")
+        # El mensaje empieza por el nombre de la excepción: es lo que `_error_de_bajada` reconoce
+        # para explicarlo en pantalla. «Reintentar» lo vuelve a poner en la fila.
+        await repositorio.marcar_error(
+            pedido["id"], "PortalEnMantenimiento: el portal está en ventana de mantenimiento."
         )
     except TopeExcedido:
         await repositorio.marcar_error(pedido["id"], "El archivo supera 25 MB.")

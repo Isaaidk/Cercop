@@ -253,6 +253,31 @@ class RepositorioTdr:
             ).scalar_one_or_none()
         return bytes(contenido) if contenido is not None else None
 
+    async def descartar_avisos_de_mantenimiento(self) -> int:
+        """TDR «listos» que en realidad son la página de mantenimiento del portal: pasan a error.
+
+        Con el error, la pantalla explica qué pasó y ofrece «Reintentar». La copia del aviso se
+        borra para que nadie la vuelva a servir. Repetirlo no hace nada: ya no queda ninguna.
+        """
+        async with sin_contexto(self._motor) as conexion:
+            avisos = """
+                SELECT sha256 FROM archivo_tdr
+                 WHERE tamano_bytes < 200000
+                   AND position('Ventana de Mantenimiento'::bytea IN contenido) > 0
+            """
+            resultado = await conexion.execute(
+                text(
+                    f"""
+                    UPDATE documento_tdr
+                       SET estado = 'error',
+                           error = 'PortalEnMantenimiento: el portal estaba en mantenimiento.'
+                     WHERE estado = 'listo' AND sha256 IN ({avisos})
+                    """
+                )
+            )
+            await conexion.execute(text(f"DELETE FROM archivo_tdr WHERE sha256 IN ({avisos})"))
+            return int(resultado.rowcount or 0)
+
     async def marcar_error(self, documento_id: UUID, error: str) -> None:
         async with sin_contexto(self._motor) as conexion:
             await conexion.execute(

@@ -28,6 +28,7 @@ from contratacion.infraestructura.adaptadores.salida.fuentes.nco_detalle import 
     parsear_items,
     token_de_enlace,
 )
+from contratacion.infraestructura.adaptadores.salida.fuentes.portal import estado_portal
 from contratacion.infraestructura.adaptadores.salida.fuentes.salidas import PoolSalidas
 
 CODIGO = "NCO"
@@ -73,7 +74,7 @@ class FuenteNco:
             return
         crudas = os.getenv("NCO_PROXY_URLS") or os.getenv("NCO_PROXY_URL") or ""
         urls = [url.strip() for url in crudas.split(",") if url.strip()]
-        self._limitador = PoolSalidas.desde_urls(urls, cabeceras=CABECERAS)
+        self._limitador = PoolSalidas.desde_urls(urls, cabeceras=CABECERAS, portal=estado_portal())
 
     async def extraer(self, desde: datetime, presupuesto: Presupuesto) -> ResultadoExtraccion:
         """Trae el listado completo. `desde` no se usa: la fuente no filtra por fecha."""

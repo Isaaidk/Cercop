@@ -21,6 +21,12 @@ from typing import Any
 
 import httpx
 
+from contratacion.infraestructura.adaptadores.salida.fuentes.portal import (
+    EstadoPortal,
+    es_aviso_mantenimiento,
+    es_ruta_mantenimiento,
+)
+
 registro = logging.getLogger(__name__)
 
 CODIGOS_REINTENTABLES = frozenset({429, 500, 502, 503, 504})
@@ -47,7 +53,11 @@ class LimitadorTasa:
         # conexiones que llegan de centros de datos, y lo decide **quien crea el limitador**, no
         # este módulo: aquí no se sabe —ni se quiere saber— de qué fuente se trata.
         proxy_url: str | None = None,
+        # Estado del portal (pausa por mantenimiento + tope por hora). Solo lo llevan los clientes
+        # que hablan con www.compraspublicas.gob.ec; ver `fuentes/portal.py`.
+        portal: EstadoPortal | None = None,
     ) -> None:
+        self._portal = portal
         self._semaforo = asyncio.Semaphore(max_concurrencia)
         self._cerrojo = asyncio.Lock()
         self._ultima_llamada = 0.0
@@ -120,9 +130,16 @@ class LimitadorTasa:
         async with self._semaforo:
             for intento in range(1, self._reintentos + 1):
                 await self._esperar_turno()
+                # Cada intento es una petición al portal: la pausa y el tope se miran en cada uno,
+                # y un «no» se devuelve al instante, sin red ni espera.
+                if self._portal is not None and not self._portal.permitir(etiqueta):
+                    return None
                 try:
                     respuesta = await cliente.get(url, params=params)
                     self.codigos_recibidos.append(respuesta.status_code)
+                    if self._portal is not None and self._es_mantenimiento(respuesta):
+                        self._portal.pausar(f"ventana de mantenimiento ({etiqueta or url})")
+                        return None
                     respuesta.raise_for_status()
                     return respuesta
                 except httpx.HTTPStatusError as exc:
@@ -176,6 +193,21 @@ class LimitadorTasa:
                     )
                     await asyncio.sleep(espera)
         return None
+
+    @staticmethod
+    def _es_mantenimiento(respuesta: httpx.Response) -> bool:
+        """¿El portal contestó con su aviso de mantenimiento en vez de lo pedido?
+
+        Lo normal es la redirección a `index.php`; el texto se mira además por si algún día sirve el
+        aviso directamente, sin redirigir. Nunca es un éxito: ni JSON del listado ni una ficha.
+        """
+        if es_ruta_mantenimiento(respuesta.url) or any(
+            es_ruta_mantenimiento(previa.headers.get("location", ""))
+            for previa in respuesta.history
+        ):
+            return True
+        tipo = respuesta.headers.get("content-type", "")
+        return "html" in tipo and es_aviso_mantenimiento(respuesta.content[:20_000])
 
     async def solicitar_json(
         self,

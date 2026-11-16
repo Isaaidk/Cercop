@@ -473,6 +473,36 @@ class RepositorioIngesta:
             )
             return int(fila.scalar_one())
 
+    async def reabrir_fichas_vacias(self, fuentes: Sequence[str], leidas_antes_de: datetime) -> int:
+        """Vuelve a poner en la fila las fichas «leídas sin ítems ni documentos» antes de una fecha.
+
+        Reparación del mantenimiento del portal (`fuentes/portal.py`): mientras el portal servía su
+        página de aviso, cada ficha se guardaba como leída y vacía, y una ficha leída no se vuelve
+        a pedir. Solo las vigentes —las vencidas ya no le sirven a nadie— y solo las leídas antes
+        del arreglo, así que repetirlo no reabre lo que el código nuevo ya leyó bien.
+        """
+        if not fuentes:
+            return 0
+        async with self._motor.begin() as conexion:
+            resultado = await conexion.execute(
+                text(
+                    """
+                    UPDATE registro r
+                       SET items_recogidos_en = NULL
+                      FROM fuente f
+                     WHERE f.id = r.fuente_id
+                       AND f.codigo = ANY(:fuentes)
+                       AND r.items_recogidos_en IS NOT NULL
+                       AND r.items_recogidos_en < :antes
+                       AND r.items = '[]'::jsonb
+                       AND r.documentos = '[]'::jsonb
+                       AND (r.plazo_proformas_en IS NULL OR r.plazo_proformas_en > now())
+                    """
+                ),
+                {"fuentes": list(fuentes), "antes": leidas_antes_de},
+            )
+            return int(resultado.rowcount or 0)
+
     async def guardar_items(
         self,
         registro_id: UUID,

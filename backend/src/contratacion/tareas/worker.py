@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from contratacion.aplicacion.casos_uso.atender_tdr import atender_lote
@@ -292,10 +293,38 @@ async def _solicitud_de_ciclo() -> SolicitudCiclo | None:
         return None
 
 
+# Fichas «vacías» leídas antes de esta fecha se vuelven a pedir (ver `_reparar_mantenimiento`). Es
+# posterior al despliegue del arreglo; lo que el código nuevo lea a partir de ahí no se toca.
+_ARREGLO_MANTENIMIENTO = datetime(2026, 11, 18, 5, 0, tzinfo=UTC)  # 2026-11-18 00:00 en Ecuador
+
+
+async def _reparar_mantenimiento() -> None:
+    """Deshace lo que dejó el portal en mantenimiento antes de que el worker supiera reconocerlo.
+
+    Fichas guardadas como «sin ítems» que eran la página de aviso, y TDR «listos» que eran esa misma
+    página. Idempotente y barato (índices parciales); un fallo aquí no impide arrancar.
+    """
+    try:
+        fichas = await RepositorioIngesta(obtener_motor()).reabrir_fichas_vacias(
+            ["NCO"], _ARREGLO_MANTENIMIENTO
+        )
+        tdr = await RepositorioTdr(obtener_motor()).descartar_avisos_de_mantenimiento()
+        if fichas or tdr:
+            registro.warning(
+                "Reparación del mantenimiento del portal: %s fichas vuelven a la fila, %s TDR "
+                "eran la página de aviso.",
+                fichas,
+                tdr,
+            )
+    except Exception:  # noqa: BLE001 - una reparación no puede impedir que el worker arranque
+        registro.exception("No se pudo reparar lo que dejó el mantenimiento del portal.")
+
+
 async def servir() -> int:
     """El worker completo: la ingesta y, a su lado, la cola de TDR."""
     global _EN_BUCLE
     _EN_BUCLE = True
+    await _reparar_mantenimiento()
     cola = asyncio.create_task(_servir_cola_tdr(), name="cola-tdr")
     try:
         return await bucle()

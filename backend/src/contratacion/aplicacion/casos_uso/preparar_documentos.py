@@ -329,7 +329,16 @@ _MENSAJE_SIN_PORTAL = (
 )
 
 
+_MENSAJE_MANTENIMIENTO = (
+    "El portal de compras públicas (SERCOP) está en mantenimiento y no entrega archivos a nadie "
+    "en este momento. Pulsa «Reintentar» cuando termine; si ya tienes el archivo, súbelo aquí con "
+    "«¿Ya tienes el archivo? Súbelo»."
+)
+
+
 def _error_de_bajada(texto: str) -> str:
+    if texto.startswith("PortalEnMantenimiento"):
+        return _MENSAJE_MANTENIMIENTO
     if texto.startswith(_ERRORES_DE_RED):
         return _MENSAJE_SIN_PORTAL
     return texto or "No se pudo bajar el TDR."

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contratacion.infraestructura.adaptadores.salida.fuentes.limitador import LimitadorTasa
+from contratacion.infraestructura.adaptadores.salida.fuentes.portal import EstadoPortal
 
 ENFRIAMIENTO_SEG = 120.0
 FALLOS_PARA_ENFRIAR = 3
@@ -50,6 +51,9 @@ class PoolSalidas:
     # Sin proxies configurados se permite una salida directa. Es el desarrollo local. En producción
     # la lista trae los proxies y, si todos están fríos, no se inventa una salida directa.
     directo_si_vacio: bool = True
+    # Estado del portal compartido por todas las salidas: el mantenimiento es del portal, no de
+    # una salida, así que una pausa no enfría las salidas ni las da por malas.
+    portal: EstadoPortal | None = None
 
     @classmethod
     def desde_urls(
@@ -57,12 +61,22 @@ class PoolSalidas:
         urls: list[str],
         *,
         cabeceras: dict[str, str] | None = None,
+        portal: EstadoPortal | None = None,
     ) -> PoolSalidas:
         if not urls:
-            salida = Salida(None, LimitadorTasa(cabeceras=cabeceras))
-            return cls(salidas=[salida], directo_si_vacio=True)
-        salidas = [Salida(url, LimitadorTasa(cabeceras=cabeceras, proxy_url=url)) for url in urls]
-        return cls(salidas=salidas, directo_si_vacio=False)
+            salida = Salida(None, LimitadorTasa(cabeceras=cabeceras, portal=portal))
+            return cls(salidas=[salida], directo_si_vacio=True, portal=portal)
+        salidas = [
+            Salida(url, LimitadorTasa(cabeceras=cabeceras, proxy_url=url, portal=portal))
+            for url in urls
+        ]
+        return cls(salidas=salidas, directo_si_vacio=False, portal=portal)
+
+    def _anotar(self, salida: Salida, ok: bool) -> None:
+        # Un «no» por la pausa del portal o por su tope no es culpa de la salida.
+        if not ok and self.portal is not None and self.portal.en_pausa():
+            return
+        salida.anotar(ok)
 
     def elegir(self) -> Salida | None:
         momento = time.monotonic()
@@ -91,6 +105,8 @@ class PoolSalidas:
         etiqueta: str = "",
         tiempo_limite: float = 60.0,
     ) -> str | None:
+        if self.portal is not None and self.portal.en_pausa():
+            return None
         salida = self.elegir()
         if salida is None:
             return None
@@ -99,7 +115,7 @@ class PoolSalidas:
             texto = await salida.limitador.solicitar_texto(
                 url, params, etiqueta=etiqueta, tiempo_limite=tiempo_limite
             )
-            salida.anotar(texto is not None)
+            self._anotar(salida, texto is not None)
             return texto
         finally:
             salida.en_vuelo -= 1
@@ -112,6 +128,8 @@ class PoolSalidas:
         etiqueta: str = "",
         tiempo_limite: float = 60.0,
     ) -> dict[str, Any] | None:
+        if self.portal is not None and self.portal.en_pausa():
+            return None
         salida = self.elegir()
         if salida is None:
             return None
@@ -120,7 +138,7 @@ class PoolSalidas:
             datos = await salida.limitador.solicitar_json(
                 url, params, etiqueta=etiqueta, tiempo_limite=tiempo_limite
             )
-            salida.anotar(datos is not None)
+            self._anotar(salida, datos is not None)
             return datos
         finally:
             salida.en_vuelo -= 1

@@ -22,6 +22,11 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from contratacion.infraestructura.adaptadores.salida.fuentes.portal import (
+    es_aviso_mantenimiento,
+    es_ruta_mantenimiento,
+)
+
 TOPE_BYTES = 25 * 1024 * 1024
 TROZO = 64 * 1024
 TOPE_CARPETA = 2 * 1024 * 1024 * 1024
@@ -30,6 +35,13 @@ MAX_REDIRECCIONES = 5
 
 class TopeExcedido(Exception):
     """El archivo pesa más de lo que se acepta en memoria de disco para un TDR."""
+
+
+class PortalEnMantenimiento(Exception):
+    """El portal contestó con su aviso de «Ventana de Mantenimiento» en lugar del archivo.
+
+    Sin esto, la redirección a `index.php` se seguía y la página de aviso se guardaba como el TDR.
+    """
 
 
 class EnlaceNoPermitido(Exception):
@@ -97,10 +109,15 @@ async def descargar_a(
                     if not destino:
                         respuesta.raise_for_status()
                     actual = urljoin(actual, destino)
+                    if es_ruta_mantenimiento(actual):
+                        raise PortalEnMantenimiento(actual)
                     continue
                 respuesta.raise_for_status()
+                es_html = "html" in respuesta.headers.get("content-type", "").lower()
                 with temporal.open("wb") as archivo:
                     async for trozo in respuesta.aiter_bytes(TROZO):
+                        if es_html and total == 0 and es_aviso_mantenimiento(trozo):
+                            raise PortalEnMantenimiento(actual)
                         total += len(trozo)
                         if total > TOPE_BYTES:
                             raise TopeExcedido(str(total))
