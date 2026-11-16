@@ -228,7 +228,12 @@ class Ajustes(BaseSettings):
     #
     # No puede bajarse mucho más: cada vuelta es una petición de ~1,9 MB a un origen que responde
     # 429 con facilidad, y el listado entero se procesa y se compara contra la huella de cada fila.
-    intervalo_vigilancia_seg: int = Field(default=150, ge=10)
+    #
+    # 2026-11-16: el defecto pasa de 150 s a 900 s (la vuelta corta coincide con el ciclo, así que
+    # en la práctica se apaga). Medido sobre 5.763 necesidades: **ninguna** estuvo abierta menos de
+    # 3 horas (la más corta, ~19 h; la mediana, 37 h), así que mirar cada cuarto de hora no pierde
+    # ninguna y baja las lecturas del listado de 24 a 4 por hora: menos huella de la IP de salida.
+    intervalo_vigilancia_seg: int = Field(default=900, ge=10)
     ventana_solape_ciclos: int = Field(default=2, ge=1)
     # Peticiones por ciclo, para todas las fuentes.
     #
@@ -248,7 +253,10 @@ class Ajustes(BaseSettings):
     # ahí, solo hay que leer lo que cambia. El valor está acotado por el tiempo, no por el deseo:
     # a 0,6 s por petición son unos tres minutos, que caben entre dos ciclos sin retrasar el
     # siguiente. Bajarlo a cero desactiva la lectura de fichas.
-    fichas_items_por_ciclo: int = Field(default=300, ge=0)
+    #
+    # 2026-11-16: de 300 a 150. El relleno tarda el doble, pero el pico baja a ~600 peticiones por
+    # hora, la mitad del tope de seguridad del portal (`PORTAL_MAX_PETICIONES_HORA`).
+    fichas_items_por_ciclo: int = Field(default=150, ge=0)
     # Fichas que la vuelta corta lee **cuando trae necesidades nuevas**, para que la ínfima llegue
     # al panel con sus CPC y no quince minutos después. A dos en vuelo y 0,6 s entre peticiones,
     # 60 fichas son menos de un minuto, que cabe de sobra en los 150 s de la vuelta. Cero lo apaga.
