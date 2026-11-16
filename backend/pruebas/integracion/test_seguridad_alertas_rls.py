@@ -16,7 +16,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 from pruebas.integracion.test_aislamiento_negocios import (
@@ -63,7 +63,7 @@ async def escenario() -> AsyncIterator[Escenario]:
                 {"id": identificador},
             )
         await _con_contexto(conexion, negocio)
-        usuario = (
+        usuario: Any = (
             await conexion.execute(
                 text(
                     "INSERT INTO usuario (negocio_id, email, hash_password, estado, rol) "
@@ -96,7 +96,7 @@ async def escenario() -> AsyncIterator[Escenario]:
 async def _revisada(escenario: Escenario) -> datetime | None:
     async with escenario.admin.begin() as conexion:
         await _con_contexto(conexion, escenario.negocio)
-        valor = (
+        valor: Any = (
             await conexion.execute(
                 text("SELECT revisada_en FROM alerta WHERE id = :id"), {"id": escenario.alerta}
             )

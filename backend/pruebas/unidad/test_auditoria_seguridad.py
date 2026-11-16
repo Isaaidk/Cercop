@@ -224,7 +224,7 @@ def test_toda_ruta_no_publica_exige_sesion() -> None:
     sin_sesion = sorted(
         (metodo, ruta.path)
         for ruta in _rutas()
-        for metodo in ruta.methods
+        for metodo in ruta.methods or ()
         if "obtener_actor" not in _llamadas(ruta.dependant, set())
         and (metodo, ruta.path) not in RUTAS_PUBLICAS
     )
@@ -465,7 +465,7 @@ async def test_la_alerta_se_marca_revisada_en_el_contexto_de_su_empresa() -> Non
             return nada
 
     radar = Radar()
-    await revisar_alertas(radar)  # type: ignore[arg-type]
+    await revisar_alertas(radar)
     assert radar.marcadas == [(alerta_id, negocio)]
 
 

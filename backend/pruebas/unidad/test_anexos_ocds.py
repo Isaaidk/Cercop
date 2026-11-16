@@ -280,7 +280,7 @@ def test_sin_documentos_se_explica_y_se_manda_al_portal() -> None:
 
 
 def test_sin_monto_en_la_ficha_se_usa_el_dato_ingestado() -> None:
-    ficha = {"documentos": [], "presupuesto": None, "aclaraciones": []}
+    ficha: dict[str, Any] = {"documentos": [], "presupuesto": None, "aclaraciones": []}
     respuesta = _ejecutar(_registro(presupuesto="12500.000000"), ficha)
     assert respuesta["presupuesto"]["monto"] == 12500.0
     assert respuesta["presupuesto"]["fuente"] == "registro.presupuesto"

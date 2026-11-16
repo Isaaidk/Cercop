@@ -52,8 +52,8 @@ def test_orden_y_principal() -> None:
         {"nombre": "TDR.pdf"},
     ]
     assert [d["tipo"] for d in elegir_anexos(documentos)] == ["tdr", "pliego", "acta", "otro"]
-    assert principal(documentos)["nombre"] == "TDR.pdf"
-    assert principal([{"nombre": "Pliego.pdf"}])["nombre"] == "Pliego.pdf"
+    assert (principal(documentos) or {})["nombre"] == "TDR.pdf"
+    assert (principal([{"nombre": "Pliego.pdf"}]) or {})["nombre"] == "Pliego.pdf"
     assert principal([{"nombre": "Acta.pdf"}]) is None
 
 

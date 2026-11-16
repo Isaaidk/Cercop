@@ -54,8 +54,8 @@ class ConversacionesFalsas:
             "usuario_id": usuario_id,
             "actualizada_en": datetime.now(UTC),
         }
-        self.convs[fila["id"]] = fila
-        self.msgs[fila["id"]] = []
+        self.convs[fila["id"]] = fila  # type: ignore[index]
+        self.msgs[fila["id"]] = []  # type: ignore[index]
         return fila
 
     async def agregar_mensaje(self, **campos: Any) -> dict[str, Any]:
@@ -164,7 +164,9 @@ class RadarFalso:
     async def listar_alertas(self, *, negocio_id: UUID | None = None) -> list[dict[str, Any]]:
         return self.alertas
 
-    async def crear_alerta(self, *, negocio_id: UUID, usuario_id: UUID, campos: dict[str, Any]):
+    async def crear_alerta(
+        self, *, negocio_id: UUID, usuario_id: UUID, campos: dict[str, Any]
+    ) -> Any:
         self.creadas.append(campos)
         return {"id": uuid4(), **campos}
 

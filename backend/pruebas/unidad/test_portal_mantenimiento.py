@@ -7,6 +7,7 @@ pidiendo fichas a una por segundo desde la IP de Ecuador y guardaba el aviso com
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -40,7 +41,9 @@ def _portal_en_mantenimiento(peticion: httpx.Request) -> httpx.Response:
 
 
 class LimitadorDePrueba(LimitadorTasa):
-    def __init__(self, manejador, portal: EstadoPortal) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self, manejador: Callable[[httpx.Request], httpx.Response], portal: EstadoPortal
+    ) -> None:
         super().__init__(
             max_concurrencia=1, intervalo_minimo=0.0, espera_base=0.001, reintentos=3, portal=portal
         )

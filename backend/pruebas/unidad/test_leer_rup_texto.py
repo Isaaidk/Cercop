@@ -67,7 +67,7 @@ def test_el_texto_ruidoso_se_lee_igual_que_el_limpio() -> None:
     esperado = {clave: valor for clave, valor in limpio.items() if clave != "avisos"}
     # Las comillas tipográficas quedan rectas; el resto, idéntico al texto limpio.
     direccion = sin_avisos["identidad"].pop("direccion")  # type: ignore[attr-defined]
-    assert direccion == esperado["identidad"].pop("direccion").replace(  # type: ignore[attr-defined]
+    assert direccion == esperado["identidad"].pop("direccion").replace(
         "(frente al parque)", '("frente al parque")'
     )
     assert sin_avisos == esperado
@@ -91,14 +91,14 @@ def test_el_ocr_real_de_un_pdf_escaneado() -> None:
         "obligado_contabilidad": False,
     }
     cpc = resultado["cpc"]
-    assert [fila["codigo"] for fila in cpc] == [
+    assert [fila["codigo"] for fila in cpc] == [  # type: ignore[attr-defined]
         "73210",
         "85970",
         "85990",
         "96111",
         "96220",
         "96320",
-    ]  # type: ignore[index]
+    ]
     assert cpc[0]["descripcion"].endswith("EQUIPOS DE AMPLIFICACION Y DE ESCENARIOS")  # type: ignore[index]
     # La página escaneada del SRI se cortó en la novena actividad; las nueve llegan, con su «G».
     ciiu = [fila["ciiu"] for fila in resultado["actividades"]]  # type: ignore[attr-defined]

@@ -144,9 +144,9 @@ def _correr(documentos: _Documentos, tdr: _Tdr) -> dict[str, Any]:
         caso.preparar_desde_codigo(
             ACTOR,
             VISTAS,
-            documentos=documentos,
-            tdr=tdr,
-            codigo="NIC-1",  # type: ignore[arg-type]
+            documentos=documentos,  # type: ignore[arg-type]
+            tdr=tdr,  # type: ignore[arg-type]
+            codigo="NIC-1",
         )
     )
 
@@ -214,9 +214,9 @@ def test_espera_al_acta_reciente_que_sigue_en_la_cola(tmp_path: Path) -> None:
         caso.estado_desde_codigo(
             ACTOR,
             VISTAS,
-            documentos=documentos,
-            tdr=tdr,
-            codigo="NIC-1",  # type: ignore[arg-type]
+            documentos=documentos,  # type: ignore[arg-type]
+            tdr=tdr,  # type: ignore[arg-type]
+            codigo="NIC-1",
         )
     )
     assert estado["estado"] == "preparando"
