@@ -23,7 +23,7 @@ import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from contratacion.aplicacion.casos_uso.gestionar_cpc import sembrar_cpc
 from contratacion.aplicacion.casos_uso.gestionar_perfil import (
@@ -47,35 +47,57 @@ registro = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/registro", tags=["Registro"])
 
 
+def _recorte(maximo: int) -> BeforeValidator:
+    """Recorta el texto (o la lista) a `maximo` en vez de rechazar el registro entero.
+
+    Todo lo de `PerfilDelSri` lo rellena el formulario **solo**, con lo que publican el SRI y los
+    datos abiertos, no la persona. Un objeto de contrato de 400 caracteres o una actividad económica
+    larga hacían fallar el alta con «String should have at most 300 characters» y la persona no
+    podía hacer nada para arreglarlo (caso real, 2026-11-17). Se guarda la parte que cabe.
+    """
+
+    def recortar(valor: Any) -> Any:
+        if isinstance(valor, str | list):
+            return valor[:maximo]
+        return valor
+
+    return BeforeValidator(recortar)
+
+
+Texto = Annotated[str | None, _recorte(300)]
+
+
 class IdentidadDelSri(BaseModel):
-    razon_social: str | None = Field(default=None, max_length=300)
-    nombre_comercial: str | None = Field(default=None, max_length=300)
-    tipo_persona: str | None = Field(default=None, max_length=20)
-    regimen_tributario: str | None = Field(default=None, max_length=120)
+    razon_social: Texto = Field(default=None, max_length=300)
+    nombre_comercial: Texto = Field(default=None, max_length=300)
+    tipo_persona: Annotated[str | None, _recorte(20)] = Field(default=None, max_length=20)
+    regimen_tributario: Annotated[str | None, _recorte(120)] = Field(default=None, max_length=120)
     obligado_contabilidad: bool | None = None
-    fecha_inicio_actividades: str | None = Field(default=None, max_length=10)
-    direccion: str | None = Field(default=None, max_length=300)
-    ciudad: str | None = Field(default=None, max_length=120)
+    fecha_inicio_actividades: Annotated[str | None, _recorte(10)] = Field(
+        default=None, max_length=10
+    )
+    direccion: Texto = Field(default=None, max_length=300)
+    ciudad: Annotated[str | None, _recorte(120)] = Field(default=None, max_length=120)
 
 
 class RepresentanteDelSri(BaseModel):
-    nombre: str | None = Field(default=None, max_length=160)
-    cedula: str | None = Field(default=None, max_length=20)
-    cargo: str | None = Field(default=None, max_length=120)
+    nombre: Annotated[str | None, _recorte(160)] = Field(default=None, max_length=160)
+    cedula: Annotated[str | None, _recorte(20)] = Field(default=None, max_length=20)
+    cargo: Annotated[str | None, _recorte(120)] = Field(default=None, max_length=120)
 
 
 class CoberturaDelSri(BaseModel):
-    provincia: str = Field(max_length=80)
-    canton: str = Field(default="", max_length=80)
+    provincia: Annotated[str, _recorte(80)] = Field(max_length=80)
+    canton: Annotated[str, _recorte(80)] = Field(default="", max_length=80)
 
 
 class ExperienciaAbierta(BaseModel):
-    entidad: str = Field(max_length=300)
-    objeto: str | None = Field(default=None, max_length=300)
+    entidad: Annotated[str, _recorte(300)] = Field(max_length=300)
+    objeto: Texto = Field(default=None, max_length=300)
     monto: float | None = Field(default=None, ge=0)
     anio: int | None = Field(default=None, ge=1990, le=2100)
-    cpc: str | None = Field(default=None, max_length=20)
-    tipo_contratacion: str | None = Field(default=None, max_length=20)
+    cpc: Annotated[str | None, _recorte(20)] = Field(default=None, max_length=20)
+    tipo_contratacion: Annotated[str | None, _recorte(20)] = Field(default=None, max_length=20)
 
 
 class PerfilDelSri(BaseModel):
@@ -87,10 +109,14 @@ class PerfilDelSri(BaseModel):
 
     identidad: IdentidadDelSri | None = None
     representante: RepresentanteDelSri | None = None
-    cobertura: list[CoberturaDelSri] = Field(default_factory=list, max_length=24)
-    actividad: str | None = Field(default=None, max_length=300)
-    cpc: list[str] = Field(default_factory=list, max_length=30)
-    experiencia: list[ExperienciaAbierta] = Field(default_factory=list, max_length=12)
+    cobertura: Annotated[list[CoberturaDelSri], _recorte(24)] = Field(
+        default_factory=list, max_length=24
+    )
+    actividad: Texto = Field(default=None, max_length=300)
+    cpc: Annotated[list[str], _recorte(30)] = Field(default_factory=list, max_length=30)
+    experiencia: Annotated[list[ExperienciaAbierta], _recorte(12)] = Field(
+        default_factory=list, max_length=12
+    )
 
 
 class ConsultaDeRuc(BaseModel):

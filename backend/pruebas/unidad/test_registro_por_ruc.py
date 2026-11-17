@@ -184,3 +184,33 @@ async def test_una_ip_exenta_no_pasa_por_el_freno() -> None:
 
     assert set(exenta) == {200}
     assert 429 in otra
+
+
+def test_los_textos_largos_del_sri_y_del_sercop_se_recortan_sin_rechazar_el_alta() -> None:
+    """Caso real (2026-11-17): un objeto de contrato largo tumbaba el registro con un 422."""
+    from contratacion.infraestructura.adaptadores.entrada.http.routers.registro import (
+        AltaDeEmpresa,
+    )
+
+    largo = "ADQUISICIÓN DE INSUMOS " * 40
+    alta = AltaDeEmpresa.model_validate(
+        {
+            "nombre": "Empresa de prueba",
+            "admin_email": "a@b.ec",
+            "contrasena": "x",
+            "perfil": {
+                "identidad": {"razon_social": largo, "direccion": largo},
+                "actividad": largo,
+                "cpc": [str(1000 + i) for i in range(50)],
+                "experiencia": [{"entidad": largo, "objeto": largo} for _ in range(20)],
+            },
+        }
+    )
+
+    perfil = alta.perfil
+    assert perfil is not None and perfil.identidad is not None
+    assert perfil.identidad.razon_social == largo[:300]
+    assert perfil.actividad == largo[:300]
+    assert len(perfil.cpc) == 30
+    assert len(perfil.experiencia) == 12
+    assert perfil.experiencia[0].objeto == largo[:300]
