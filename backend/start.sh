@@ -52,11 +52,16 @@ _un_nodo() {
     puerto=$((BASE_PROXY + indice))
     proxy="localhost:${puerto}"
 
+    # Escucha en todas las interfaces (`[::]`), no solo en localhost: el `api` no levanta túnel y
+    # sale a los datos abiertos del SERCOP por este proxy, por la red privada de Railway
+    # (`DATOS_ABIERTOS_PROXY_URL=http://worker.railway.internal:1055`). Railway no publica este
+    # puerto a internet: solo lo ven los servicios del mismo proyecto. El worker lo sigue usando
+    # por `localhost`.
     tailscaled \
         --tun=userspace-networking \
         --state="$estado" \
         --socket="$socket" \
-        --outbound-http-proxy-listen="$proxy" >/dev/stderr 2>&1 &
+        --outbound-http-proxy-listen="[::]:${puerto}" >/dev/stderr 2>&1 &
 
     intentos=0
     while [ ! -S "$socket" ]; do
@@ -136,7 +141,7 @@ _tunel() {
         --tun=userspace-networking \
         --state="$ESTADO" \
         --socket="$SOCKET" \
-        --outbound-http-proxy-listen="$PROXY" &
+        --outbound-http-proxy-listen="[::]:${BASE_PROXY}" &
 
     # Se espera al socket, no a un `sleep` fijo: en una máquina fría el demonio tarda más y el
     # `tailscale up` de después fallaría con «no se puede conectar con tailscaled», que es un error

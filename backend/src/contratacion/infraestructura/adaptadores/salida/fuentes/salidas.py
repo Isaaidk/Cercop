@@ -9,6 +9,7 @@ datacenter el portal descarta la conexión.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,25 @@ from contratacion.infraestructura.adaptadores.salida.fuentes.limitador import Li
 from contratacion.infraestructura.adaptadores.salida.fuentes.portal import EstadoPortal
 
 ENFRIAMIENTO_SEG = 120.0
+
+
+def proxy_datos_abiertos() -> str | None:
+    """Por dónde sale la consulta a los datos abiertos del SERCOP (OCDS), o `None` para ir directo.
+
+    Desde noviembre de 2026 los datos abiertos tampoco responden a las IP de Railway
+    (`ConnectTimeout`), igual que el portal de NCO. En el worker se usa la primera salida de NCO
+    (el túnel de Tailscale de `start.sh`). El API no levanta túnel: sale por el del worker a través
+    de la red privada de Railway, con `DATOS_ABIERTOS_PROXY_URL=http://worker.railway.internal:1055`.
+    Sin ninguna de las dos (desarrollo local), directo.
+    """
+    propia = os.getenv("DATOS_ABIERTOS_PROXY_URL", "").strip()
+    if propia:
+        return propia
+    crudas = os.getenv("NCO_PROXY_URLS") or os.getenv("NCO_PROXY_URL") or ""
+    urls = [url.strip() for url in crudas.split(",") if url.strip()]
+    return urls[0] if urls else None
+
+
 FALLOS_PARA_ENFRIAR = 3
 
 

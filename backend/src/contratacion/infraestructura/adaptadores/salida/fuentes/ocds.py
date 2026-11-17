@@ -39,6 +39,7 @@ from typing import Any
 from contratacion.aplicacion.puertos.fuente import ResultadoExtraccion
 from contratacion.dominio.ingesta import Presupuesto, clave_natural
 from contratacion.infraestructura.adaptadores.salida.fuentes.limitador import LimitadorTasa
+from contratacion.infraestructura.adaptadores.salida.fuentes.salidas import proxy_datos_abiertos
 
 CODIGO = "OCDS"
 API_URL = "https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api"
@@ -87,7 +88,7 @@ class FuenteOcds:
         anios: Sequence[int] | None = None,
     ) -> None:
         self._terminos = [termino.strip() for termino in terminos if termino.strip()]
-        self._limitador = limitador or LimitadorTasa()
+        self._limitador = limitador or LimitadorTasa(proxy_url=proxy_datos_abiertos())
         self._paginas_del_final = max(1, paginas_del_final)
         # `None` significa «decide tú a partir del punto de partida». Una lista explícita manda.
         self._anios = list(anios) if anios is not None else None

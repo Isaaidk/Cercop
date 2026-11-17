@@ -58,6 +58,7 @@ import httpx
 
 from contratacion.aplicacion.hilos import MemoLru
 from contratacion.dominio.errores import EstadoInvalido, NoEncontrado
+from contratacion.infraestructura.adaptadores.salida.fuentes.salidas import proxy_datos_abiertos
 from contratacion.infraestructura.adaptadores.salida.resiliencia import Cortacircuitos, circuito
 
 _BASE = "https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api"
@@ -308,7 +309,10 @@ class FichasOcds:
         async with (
             circuito_procesos().proteger(),
             httpx.AsyncClient(
-                timeout=_TIMEOUT, headers=_ENCABEZADOS, transport=self._transporte
+                proxy=proxy_datos_abiertos(),
+                timeout=_TIMEOUT,
+                headers=_ENCABEZADOS,
+                transport=self._transporte,
             ) as cliente,
         ):
             try:
