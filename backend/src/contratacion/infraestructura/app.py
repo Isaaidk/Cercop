@@ -44,6 +44,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.routers import (
     ingestas,
     mercado,
     negocios,
+    notificaciones,
     perfil,
     plantilla,
     plataforma,
@@ -291,6 +292,7 @@ def crear_app(ajustes: Ajustes | None = None) -> FastAPI:
     aplicacion.include_router(ia_router.router)
     aplicacion.include_router(perfil.router)
     aplicacion.include_router(radar.router)
+    aplicacion.include_router(notificaciones.router)
     aplicacion.include_router(seguimiento.router)
     aplicacion.include_router(asistente.router)
     aplicacion.include_router(mercado.router)

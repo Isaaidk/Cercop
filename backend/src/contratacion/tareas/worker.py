@@ -27,13 +27,16 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from contratacion.aplicacion.casos_uso.atender_tdr import atender_lote
 from contratacion.aplicacion.casos_uso.buscar_registros import obtener_catalogos
+from contratacion.aplicacion.casos_uso.gestionar_acceso import vistas_vigentes
 from contratacion.aplicacion.casos_uso.mantener_registros import (
     ResultadoMantenimiento,
     mantener_registros,
 )
+from contratacion.aplicacion.casos_uso.notificar import avisos_de_perfil, notificar_pendientes
 from contratacion.aplicacion.casos_uso.operar_ingesta import (
     PASO_COMPROBACION_SEG,
     SolicitudCiclo,
@@ -41,12 +44,20 @@ from contratacion.aplicacion.casos_uso.operar_ingesta import (
 )
 from contratacion.aplicacion.casos_uso.revisar_alertas import revisar_alertas
 from contratacion.aplicacion.casos_uso.seguimiento_ofertas import recordar_cierres
+from contratacion.dominio.acceso import fuentes_para_vistas
+from contratacion.dominio.errores import EmpresaSuspendida
+from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
 from contratacion.infraestructura.adaptadores.salida.bd.bloqueo import bloqueo_de_ingesta
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
+from contratacion.infraestructura.adaptadores.salida.bd.cpc import RepositorioCpcBd
 from contratacion.infraestructura.adaptadores.salida.bd.ingesta import RepositorioIngesta
 from contratacion.infraestructura.adaptadores.salida.bd.mantenimiento import (
     RepositorioMantenimientoBd,
 )
+from contratacion.infraestructura.adaptadores.salida.bd.notificaciones import (
+    RepositorioNotificaciones,
+)
+from contratacion.infraestructura.adaptadores.salida.bd.perfil import RepositorioPerfil
 from contratacion.infraestructura.adaptadores.salida.bd.radar import RepositorioRadar
 from contratacion.infraestructura.adaptadores.salida.bd.seguimiento import (
     RepositorioSeguimiento,
@@ -57,6 +68,7 @@ from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
     cerrar_cache,
     obtener_cache,
 )
+from contratacion.infraestructura.adaptadores.salida.push import EnviadorPush
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
 from contratacion.tareas.planificador import (
     ejecutar_todos,
@@ -160,6 +172,44 @@ async def _revisar_alertas_y_cierres() -> None:
         await recordar_cierres(RepositorioSeguimiento(obtener_motor()))
     except Exception:  # noqa: BLE001 - los recordatorios no pueden tumbar el bucle
         registro.exception("No se pudieron revisar los recordatorios de cierre.")
+    await _notificar()
+
+
+async def _puede_ver_infimas(negocio_id: UUID, usuario_id: UUID) -> bool:
+    """¿La persona tiene hoy la vista de ínfimas? La misma regla (y caché) que usa el API."""
+    try:
+        vistas = await vistas_vigentes(
+            negocio_id=negocio_id,
+            usuario_id=usuario_id,
+            repositorio=RepositorioAccesosBd(obtener_motor()),
+            cache=obtener_cache(),
+        )
+    except EmpresaSuspendida:
+        return False
+    return "NCO" in fuentes_para_vistas(vistas)
+
+
+async def _notificar() -> None:
+    """Avisos por perfil y notificaciones web. Sin claves VAPID no hace nada."""
+    ajustes = obtener_ajustes()
+    enviador = EnviadorPush(clave_privada=ajustes.vapid_privada, contacto=ajustes.vapid_contacto)
+    if not enviador.activo:
+        return
+    repo = RepositorioNotificaciones(obtener_motor())
+    try:
+        await avisos_de_perfil(
+            repo,
+            perfil=RepositorioPerfil(obtener_motor()),
+            cpc=RepositorioCpcBd(obtener_motor()),
+            infimas=RepositorioRadar(obtener_motor()),
+            puede_ver_infimas=_puede_ver_infimas,
+        )
+    except Exception:  # noqa: BLE001 - los avisos por perfil no pueden tumbar el bucle
+        registro.exception("No se pudieron revisar los avisos por perfil.")
+    try:
+        await notificar_pendientes(repo, enviador)
+    except Exception:  # noqa: BLE001 - las notificaciones no pueden tumbar el bucle
+        registro.exception("No se pudieron enviar las notificaciones.")
 
 
 async def _precalentar_catalogos() -> None:

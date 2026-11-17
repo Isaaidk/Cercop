@@ -120,6 +120,11 @@ export const api = {
   quitarAlerta: (id) => http.del(`/v1/alertas/${id}`),
   listarAvisos: () => http.get('/v1/avisos'),
   leerAviso: (id) => http.post(`/v1/avisos/${id}/leido`),
+  // Notificaciones web: solo se llaman al activarlas o apagarlas (no hay sondeo).
+  clavePush: () => http.get('/v1/notificaciones/clave'),
+  estadoPush: (endpoint) => http.post('/v1/notificaciones/estado', { endpoint }),
+  suscribirPush: (suscripcion) => http.post('/v1/notificaciones/suscripcion', suscripcion),
+  bajaPush: (endpoint) => http.post('/v1/notificaciones/baja', { endpoint }),
 
   adjudicaciones: (parametros) => http.get('/v1/mercado/adjudicaciones', parametros),
   preciosMercado: (parametros) => http.get('/v1/mercado/precios', parametros),

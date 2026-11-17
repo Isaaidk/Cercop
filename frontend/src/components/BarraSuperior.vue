@@ -13,6 +13,7 @@
  */
 import { computed, ref } from 'vue'
 
+import BotonNotificaciones from '@/components/BotonNotificaciones.vue'
 import IconoPanel from '@/components/IconoPanel.vue'
 import IndicadorPresencia from '@/components/IndicadorPresencia.vue'
 
@@ -152,6 +153,8 @@ const iniciales = computed(() => {
         :alcance="alcance"
         :en-vivo="enVivo"
       />
+
+      <BotonNotificaciones />
 
       <button
         type="button"

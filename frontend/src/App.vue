@@ -32,6 +32,7 @@ import PantallaRegistro from '@/components/PantallaRegistro.vue'
 import VistaPanel from '@/components/VistaPanel.vue'
 import { sesion } from '@/stores/sesion'
 import { ir, PAGINAS_LEGALES, paginaActual } from '@/utils/enrutado'
+import { desactivar as desactivarNotificaciones } from '@/utils/notificaciones'
 import { aplicarSeo } from '@/utils/seo'
 
 const arrancando = ref(true)
@@ -136,6 +137,8 @@ watch(fase, (nueva) => aplicarSeo(nueva), { immediate: true })
  * vez, o a dejar el equipo, y mandarlo a la portada añade un clic a la acción más probable.
  */
 async function cerrarSesion() {
+  // Antes de salir: si no, a quien entre después en esta computadora le llegarían estos avisos.
+  await desactivarNotificaciones()
   await sesion.salir()
   ir('login')
 }

@@ -82,6 +82,11 @@ RUN cat > /etc/caddy/Caddyfile <<'CONF'
 	@html path / /index.html
 	header @html Cache-Control "no-cache"
 
+	# El service worker de las notificaciones: sin caché, para que un cambio llegue en la visita
+	# siguiente y no días después.
+	@sw path /sw.js
+	header @sw Cache-Control "no-cache"
+
 	# Cabeceras de seguridad del panel (docs/38, S-22).
 	# - La CSP que se APLICA solo lleva lo que no puede romper la aplicación: nadie la enmarca
 	#   (clickjacking), no hay plugins, no se cambia la base de las URL ni se envían formularios fuera.

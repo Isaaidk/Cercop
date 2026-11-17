@@ -40,6 +40,8 @@ dependencies = [
     # `import` explícito se declara: depender de una dependencia de otra dependencia funciona hasta
     # que alguien cambia el extra y el guion deja de arrancar.
     "pyyaml>=6.0",
+    # Notificaciones web (Web Push con VAPID). Solo la usa el worker para enviar.
+    "pywebpush>=2.0",
 ]
 
 [project.optional-dependencies]

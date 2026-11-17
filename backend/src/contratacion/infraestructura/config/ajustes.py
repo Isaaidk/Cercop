@@ -188,6 +188,13 @@ class Ajustes(BaseSettings):
     smtp_clave: str = ""
     smtp_desde: str = ""
 
+    # Notificaciones web (Web Push). Par de claves VAPID: la pública la lee el panel para
+    # suscribirse; la privada solo la usa el worker para firmar. Vacías: no hay notificaciones y
+    # todo lo demás funciona igual. Generar con `python scripts/claves_vapid.py`.
+    vapid_publica: str = ""
+    vapid_privada: str = ""
+    vapid_contacto: str = ""
+
     # --- Exportación ---------------------------------------------------------
     # Directorio donde viven las plantillas de Excel que sube cada empresa.
     #
