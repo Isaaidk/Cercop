@@ -503,6 +503,40 @@ class RepositorioIngesta:
             )
             return int(resultado.rowcount or 0)
 
+    async def reabrir_fichas_con_anexos_sin_nombre(self, fuentes: Sequence[str]) -> int:
+        """Vuelve a la fila las fichas vigentes cuyos anexos se guardaron con el enlace por nombre.
+
+        Antes el lector no veía la columna «Descripción del Archivo» y el anexo quedaba como
+        «Documento 1». Releer la ficha trae su nombre. Solo las vigentes; repetirlo no reabre las
+        que ya tienen nombre.
+        """
+        if not fuentes:
+            return 0
+        async with self._motor.begin() as conexion:
+            resultado = await conexion.execute(
+                text(
+                    """
+                    UPDATE registro r
+                       SET items_recogidos_en = NULL
+                      FROM fuente f
+                     WHERE f.id = r.fuente_id
+                       AND f.codigo = ANY(:fuentes)
+                       AND r.items_recogidos_en IS NOT NULL
+                       AND (r.plazo_proformas_en IS NULL OR r.plazo_proformas_en > now())
+                       AND EXISTS (
+                           SELECT 1
+                             FROM jsonb_array_elements(
+                                 CASE WHEN jsonb_typeof(r.documentos) = 'array'
+                                      THEN r.documentos ELSE '[]'::jsonb END
+                             ) d
+                            WHERE d->>'nombre' ILIKE '%bajararchivo%'
+                       )
+                    """
+                ),
+                {"fuentes": list(fuentes)},
+            )
+            return int(resultado.rowcount or 0)
+
     async def guardar_items(
         self,
         registro_id: UUID,

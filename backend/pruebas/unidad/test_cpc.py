@@ -250,3 +250,18 @@ def test_descarta_lo_guardado_que_no_tiene_codigo() -> None:
     """Un ítem ilegible no puede impedir devolver la fila entera."""
     items = items_desde_crudos([{"codigo": "   "}, {"sin": "codigo"}, "no soy un objeto"])
     assert items == ()
+
+
+def test_el_anexo_toma_el_nombre_de_su_fila_cuando_el_enlace_es_un_icono() -> None:
+    """Tabla real del portal: «Descripción del Archivo» | icono de descarga."""
+    html = """
+    <table><tr><td><b>Descripci&oacute;n del Archivo</b></td><td>Descargar Archivo</td></tr>
+    <tr><td> Especificaciones TÃ©cnicas </td><td><div align="center">
+      <a href="../GE/ExeGENBajarArchivoGeneral.cpe?Archivo=abc,&idPath=def,">
+        <img src="../img/bajar.gif"></a></div></td></tr>
+    <tr><td> Formato de proforma </td><td>
+      <a href="../GE/ExeGENBajarArchivoGeneral.cpe?Archivo=ghi,&idPath=jkl,"><img src="x.gif"></a>
+    </td></tr></table>
+    """
+    nombres = [d["nombre"] for d in parsear_documentos(html)]
+    assert nombres == ["Especificaciones Técnicas", "Formato de proforma"]

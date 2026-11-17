@@ -359,6 +359,13 @@ async def _reparar_mantenimiento() -> None:
             ["NCO"], _ARREGLO_MANTENIMIENTO
         )
         tdr = await RepositorioTdr(obtener_motor()).descartar_avisos_de_mantenimiento()
+        anexos = await RepositorioIngesta(obtener_motor()).reabrir_fichas_con_anexos_sin_nombre(
+            ["NCO"]
+        )
+        if anexos:
+            registro.warning(
+                "%s fichas vuelven a la fila para leer el nombre de sus anexos.", anexos
+            )
         if fichas or tdr:
             registro.warning(
                 "Reparación del mantenimiento del portal: %s fichas vuelven a la fila, %s TDR "

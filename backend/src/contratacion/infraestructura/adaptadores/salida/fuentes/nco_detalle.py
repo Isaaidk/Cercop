@@ -21,7 +21,7 @@ import re
 from html.parser import HTMLParser
 
 from contratacion.dominio.cpc import ItemCpc
-from contratacion.dominio.documentos import es_descarga
+from contratacion.dominio.documentos import es_descarga, parece_enlace
 from contratacion.dominio.texto import reparar_codificacion
 
 # Celdas mínimas de una fila de ítem: número, código, nombre del CPC, descripción, unidad y
@@ -167,7 +167,13 @@ def _parece_archivo(nombre: str) -> bool:
 
 
 class _Anclas(HTMLParser):
-    """Enlaces de la ficha. El TDR, cuando está, es un `<a>`, no una celda suelta."""
+    """Enlaces de la ficha. El TDR, cuando está, es un `<a>`, no una celda suelta.
+
+    En la tabla de archivos del portal el enlace es solo un icono (`<img src="bajar.gif">`) y el
+    nombre que ve la persona —«Especificaciones Técnicas», «Formato de proforma»— está en la celda
+    de al lado («Descripción del Archivo»). Por eso se recuerda el texto de las celdas de la fila:
+    un enlace sin texto toma el nombre de su fila.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -175,8 +181,15 @@ class _Anclas(HTMLParser):
         self._href: str | None = None
         self._texto: list[str] = []
         self._en_ancla = False
+        self._celdas: list[str] = []  # texto de las celdas ya cerradas de la fila actual
+        self._celda: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "tr":
+            self._celdas = []
+            self._celda = None
+        elif tag in ("td", "th"):
+            self._celda = []
         if tag != "a":
             return
         self._en_ancla = True
@@ -186,18 +199,34 @@ class _Anclas(HTMLParser):
             if clave == "href" and valor:
                 self._href = valor.strip()
 
+    def _nombre_de_la_fila(self) -> str:
+        for texto in self._celdas:
+            if texto and not parece_enlace(texto):
+                return texto
+        return ""
+
     def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._celda is not None:
+            self._celdas.append(ESPACIOS.sub(" ", "".join(self._celda)).strip())
+            self._celda = None
+            return
         if tag != "a" or not self._en_ancla:
             return
         nombre = ESPACIOS.sub(" ", "".join(self._texto)).strip()
         enlace = self._href or ""
         if es_descarga(nombre, enlace):
-            self.documentos.append({"nombre": nombre or enlace, "enlace": enlace})
+            if not nombre or parece_enlace(nombre):
+                nombre = self._nombre_de_la_fila() or nombre
+            self.documentos.append(
+                {"nombre": reparar_codificacion(nombre) or enlace, "enlace": enlace}
+            )
         self._en_ancla = False
 
     def handle_data(self, data: str) -> None:
         if self._en_ancla:
             self._texto.append(data)
+        elif self._celda is not None:
+            self._celda.append(data)
 
 
 def parsear_documentos(html: str) -> tuple[dict[str, str], ...]:
