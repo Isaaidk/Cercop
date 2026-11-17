@@ -269,6 +269,10 @@ const filasCpc = computed(() => {
   }
   return filas.sort((a, b) => (a.codigo || '~').localeCompare(b.codigo || '~'))
 })
+/** Códigos que solo están en la búsqueda por CPC (sin producto): se quitan desde «Editar». */
+const cpcSoloBusqueda = computed(() =>
+  filasCpc.value.filter((fila) => fila.clave.startsWith('v-')).map((fila) => fila.codigo),
+)
 const CPC_A_LA_VISTA = 25
 const verTodosCpc = ref(false)
 const filasCpcVisibles = computed(() =>
@@ -393,6 +397,18 @@ async function quitar(seccion, coleccion, id) {
     await props.acciones.quitar(coleccion, id)
   } catch (fallo) {
     errores[seccion] = `No se pudo quitar. ${fallo.message || 'Intenta de nuevo en un momento.'}`
+  }
+}
+
+async function quitarDeBusqueda(codigo) {
+  errores.cpc = ''
+  ocupado.value = true
+  try {
+    await props.acciones.quitarCpc(codigo)
+  } catch (fallo) {
+    errores.cpc = `No se pudo quitar el código ${codigo}. ${fallo.message || 'Intenta de nuevo en un momento.'}`
+  } finally {
+    ocupado.value = false
   }
 }
 
@@ -696,7 +712,7 @@ defineExpose({ abrir })
                 <td class="cert__codigo numeros">{{ fila.codigo || 'Sin código' }}</td>
                 <td>
                   <span v-if="fila.producto" class="cert__mayusculas">{{ fila.producto }}</span>
-                  <span v-else class="cert__detalle">Sin descripción. Este código está en tu lista de búsqueda por CPC.</span>
+                  <span v-else class="cert__detalle">Código de tu búsqueda por CPC. Para quitarlo, pulsa «Editar».</span>
                 </td>
               </tr>
             </tbody>
@@ -727,6 +743,27 @@ defineExpose({ abrir })
             @agregar="(c) => agregar('cpc', 'ofertas', c)"
             @quitar="(id) => quitar('cpc', 'ofertas', id)"
           />
+          <div v-if="cpcSoloBusqueda.length" class="cert__busqueda">
+            <h4>Códigos de tu búsqueda por CPC</h4>
+            <p class="cert__detalle">
+              No son productos de tu proforma: son los códigos con los que buscamos procesos para ti.
+              Si ya no te interesan, quítalos.
+            </p>
+            <ul class="cert__busqueda-lista">
+              <li v-for="codigo in cpcSoloBusqueda" :key="codigo">
+                <span class="cert__codigo numeros">{{ codigo }}</span>
+                <button
+                  type="button"
+                  class="boton boton--secundario"
+                  :disabled="ocupado"
+                  :aria-label="`Quitar el código ${codigo} de tu búsqueda`"
+                  @click="quitarDeBusqueda(codigo)"
+                >
+                  Quitar
+                </button>
+              </li>
+            </ul>
+          </div>
         </template>
       </SeccionCertificado>
     </article>
@@ -950,6 +987,14 @@ defineExpose({ abrir })
 .cert__insignia { margin-left: var(--e-2); padding: 0 0.55rem; border-radius: var(--r-redondo); background: var(--acento-suave); color: var(--acento-fuerte); font-size: 1rem; font-weight: 650; }
 .cert__vacio { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-3); color: var(--texto-suave); font-style: italic; }
 .cert__sin { color: var(--texto-suave); font-style: italic; }
+.cert__busqueda { margin-top: 1.5rem; display: grid; gap: 0.5rem; }
+.cert__busqueda h4 { margin: 0; }
+.cert__busqueda-lista { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.cert__busqueda-lista li {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.5rem 0.75rem; border: 1px solid var(--borde); border-radius: var(--r-2);
+}
+.cert__busqueda-lista .boton { min-height: 44px; }
 .cert__completar { min-height: 44px; padding: 0.5rem 1rem; font-size: 1rem; font-style: normal; align-self: flex-start; }
 .cert__bloque { display: flex; flex-direction: column; gap: var(--e-2); padding: var(--e-3) 0; }
 .cert__bloque dd { margin: 0; }

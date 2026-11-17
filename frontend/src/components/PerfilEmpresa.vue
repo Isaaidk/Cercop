@@ -22,6 +22,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/endpoints'
 import FichaEmpresaCertificado from '@/components/FichaEmpresaCertificado.vue'
 import IconoPanel from '@/components/IconoPanel.vue'
+import { filtros } from '@/stores/filtros'
 import { consultarContratosEnNavegador, consultarRucEnNavegador } from '@/utils/consultasPublicas'
 import { esImagen, textoDeArchivo } from '@/utils/ocr'
 
@@ -99,6 +100,11 @@ const acciones = {
   async quitar(coleccion, id) {
     await api.quitarPerfil(coleccion, id)
     perfil.value = await api.verPerfil()
+  },
+  /** Saca un código de la búsqueda por CPC (la misma lista que el gestor de CPC). */
+  async quitarCpc(codigo) {
+    await filtros.quitarCpc(codigo)
+    cpcVigilados.value = cpcVigilados.value.filter((termino) => String(termino).trim() !== codigo)
   },
 }
 
