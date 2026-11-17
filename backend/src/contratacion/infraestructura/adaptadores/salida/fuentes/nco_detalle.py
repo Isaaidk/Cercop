@@ -22,6 +22,7 @@ from html.parser import HTMLParser
 
 from contratacion.dominio.cpc import ItemCpc
 from contratacion.dominio.documentos import es_descarga
+from contratacion.dominio.texto import reparar_codificacion
 
 # Celdas mínimas de una fila de ítem: número, código, nombre del CPC, descripción, unidad y
 # cantidad.
@@ -132,8 +133,8 @@ def _item_de_fila(fila: list[str]) -> ItemCpc | None:
     return ItemCpc(
         numero=int(numero),
         codigo=codigo,
-        descripcion_cpc=descripcion_cpc,
-        descripcion=" ".join(parte for parte in fila[3:-2] if parte).strip(),
+        descripcion_cpc=reparar_codificacion(descripcion_cpc),
+        descripcion=reparar_codificacion(" ".join(parte for parte in fila[3:-2] if parte).strip()),
         unidad=fila[-2].strip(),
         cantidad=fila[-1].strip(),
     )

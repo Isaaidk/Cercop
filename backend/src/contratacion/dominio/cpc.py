@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from contratacion.dominio.palabras import normalizar
+from contratacion.dominio.texto import reparar_codificacion
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +78,11 @@ def items_desde_crudos(valores: Iterable[Any]) -> tuple[ItemCpc, ...]:
         items.append(
             ItemCpc(
                 codigo=codigo,
-                descripcion_cpc=str(valor.get("descripcion_cpc") or "").strip(),
-                descripcion=str(valor.get("descripcion") or "").strip(),
+                # Lo guardado antes de reparar al leer la ficha también sale bien.
+                descripcion_cpc=reparar_codificacion(
+                    str(valor.get("descripcion_cpc") or "").strip()
+                ),
+                descripcion=reparar_codificacion(str(valor.get("descripcion") or "").strip()),
                 unidad=str(valor.get("unidad") or "").strip(),
                 cantidad=str(valor.get("cantidad") or "").strip(),
                 numero=numero if isinstance(numero, int) else None,
