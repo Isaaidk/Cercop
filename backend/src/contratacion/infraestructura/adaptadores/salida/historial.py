@@ -20,7 +20,14 @@ import httpx
 
 from contratacion.aplicacion.hilos import MemoLru
 from contratacion.dominio.errores import EstadoInvalido
-from contratacion.dominio.historial import contrato_de, resumir_historial, termino_de_busqueda
+from contratacion.dominio.historial import (
+    contrato_de,
+    resumen_importado,
+    resumir_historial,
+    termino_de_busqueda,
+)
+from contratacion.infraestructura.adaptadores.salida.bd.contratos import RepositorioContratos
+from contratacion.infraestructura.adaptadores.salida.bd.sesion import obtener_motor
 from contratacion.infraestructura.adaptadores.salida.resiliencia import Cortacircuitos, circuito
 
 _BASE = "https://datosabiertos.compraspublicas.gob.ec/PLATAFORMA/api"
@@ -129,5 +136,36 @@ class HistorialOcds:
         return resumen
 
 
-def obtener_historial() -> HistorialOcds:
-    return HistorialOcds()
+class HistorialImportado:
+    """«Buscar mis contratos» desde la importación mensual (migración 0047): una lectura por RUC.
+
+    Si todavía no hay ninguna importación (base nueva, primer arranque), se usa la API en vivo como
+    antes. Con importación, un RUC que no está es un RUC sin contratos en esos años: se responde
+    vacío, sin salir a internet.
+    """
+
+    def __init__(self, repositorio: Any | None = None, respaldo: Any | None = None) -> None:
+        self._repositorio = repositorio
+        self._respaldo = respaldo
+
+    def _repo(self) -> Any:
+        if self._repositorio is None:
+            self._repositorio = RepositorioContratos(obtener_motor())
+        return self._repositorio
+
+    async def consultar(self, ruc: str, razon_social: str) -> dict[str, Any]:
+        guardado = _RECORDADOS.get(f"bd:{ruc}")
+        if guardado and time.monotonic() - guardado[0] < _TTL_SEG:
+            return guardado[1]
+        repositorio = self._repo()
+        encontrado = await repositorio.resumen(ruc)
+        if encontrado is None and await repositorio.ultima_importacion() is None:
+            return await (self._respaldo or HistorialOcds()).consultar(ruc, razon_social)
+        datos, cpc, entidades = encontrado or (None, {}, {})
+        resumen = resumen_importado(ruc, datos, cpc, entidades)
+        _RECORDADOS[f"bd:{ruc}"] = (time.monotonic(), resumen)
+        return resumen
+
+
+def obtener_historial() -> HistorialImportado:
+    return HistorialImportado()

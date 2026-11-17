@@ -166,3 +166,69 @@ def resumir_historial(
             "No es tu habilitación en el RUP: ese registro no tiene consulta pública."
         ),
     }
+
+
+AVISO_IMPORTADO = (
+    "Es lo que figura como adjudicado a tu RUC en los datos públicos del SERCOP de los últimos "
+    "años. No es tu habilitación en el RUP: ese registro no tiene consulta pública."
+)
+
+
+def resumen_importado(
+    ruc: str,
+    datos: dict[str, Any] | None,
+    nombres_cpc: dict[str, str],
+    nombres_entidad: dict[int, str],
+) -> dict[str, Any]:
+    """El resumen guardado por la importación (ver `fuentes/contratos_ocp`), con la misma forma
+    que `resumir_historial`: el perfil, el registro y el asistente no notan el cambio de fuente.
+
+    `datos=None` es un RUC sin contratos en los años importados.
+    """
+    datos = datos or {}
+    experiencia = []
+    procesos = []
+    for entidad_id, anio, monto, codigo, tipo, objeto in datos.get("experiencia") or []:
+        entidad = nombres_entidad.get(int(entidad_id), "")
+        experiencia.append(
+            {
+                "entidad": entidad,
+                "objeto": str(objeto)[:240],
+                "monto": monto,
+                "anio": int(anio) or None,
+                "cpc": str(codigo or ""),
+                "tipo_contratacion": tipo or clasificar_objeto(str(objeto)),
+            }
+        )
+        procesos.append(
+            {
+                "ocid": "",
+                "objeto": str(objeto)[:240],
+                "titulo": str(objeto),
+                "entidad": entidad,
+                "fecha": str(anio),
+                "monto": monto,
+            }
+        )
+    contratos = int(datos.get("contratos") or 0)
+    return {
+        "ruc": ruc,
+        "termino": "",
+        "contratos_total": contratos,
+        "revisados": contratos,
+        "verificados": contratos,
+        "monto_revisado": float(datos.get("monto") or 0),
+        "desde": datos.get("desde"),
+        "hasta": datos.get("hasta"),
+        "cpc": [
+            {"codigo": str(codigo), "descripcion": nombres_cpc.get(str(codigo), ""), "veces": veces}
+            for codigo, veces in datos.get("cpc") or []
+        ],
+        "entidades": [
+            {"nombre": nombres_entidad.get(int(entidad_id), ""), "veces": veces}
+            for entidad_id, veces in datos.get("entidades") or []
+        ],
+        "experiencia": experiencia,
+        "procesos": procesos,
+        "aviso": AVISO_IMPORTADO,
+    }

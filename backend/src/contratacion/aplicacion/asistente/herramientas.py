@@ -772,7 +772,13 @@ async def historial_ruc(servicios: Servicios, argumentos: dict[str, Any]) -> Res
     total = int(datos.get("contratos_total") or 0)
     monto = float(datos.get("monto_revisado") or 0)
     entidades = Counter(str(p.get("entidad") or "") for p in procesos if p.get("entidad"))
-    principales = ", ".join(nombre for nombre, _ in entidades.most_common(3)) or "—"
+    # La importación trae las entidades contadas sobre todos los contratos, no solo los recientes.
+    nombres = [str(e.get("nombre") or "") for e in datos.get("entidades") or []]
+    principales = (
+        ", ".join([n for n in nombres if n][:3])
+        or ", ".join(nombre for nombre, _ in entidades.most_common(3))
+        or "—"
+    )
     revisados = int(datos.get("revisados") or 0)
     elementos: list[dict[str, Any]] = [
         {
