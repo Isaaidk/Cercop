@@ -19,16 +19,16 @@ Fecha: 17 de noviembre de 2026. Ordenadas por lo que más conviene hacer primero
 - **Panel de OCDS.** El SERCOP retiró `datosabiertos.compraspublicas.gob.ec`, que ahora redirige a su portal institucional.
   - Si lo publica en otra dirección, hay que apuntar CercoApp a la nueva.
   - Mientras tanto, el panel de procesos OCDS puede llenarse con los archivos del registro de Open Contracting, la misma fuente que ya usa "Buscar mis contratos". Tienen datos hasta el 10 de noviembre de 2026; sirven como histórico, no para procesos abiertos.
-- **"Buscar mis contratos"** ya no depende del SERCOP. El worker importa los contratos una vez al mes desde el [registro de Open Contracting](https://data.open-contracting.org/en/publication/110):
-  - Son los últimos 3 años y ocupan unos 14 MB.
-  - Cuando el SERCOP vuelva, el registro se actualiza solo y la importación siguiente lo recoge, sin cambiar nada.
-  - Más años cuestan unos 5 MB por año extra. La constante es `ANIOS` en `backend/src/contratacion/tareas/importar_contratos.py`.
-- **Recomendaciones con los contratos.** Con los mismos archivos se puede calcular, por cada CPC:
+- **"Buscar mis contratos"** sigue consultando al SERCOP en vivo y volverá a funcionar cuando el SERCOP habilite otra vez sus datos abiertos.
+  - Decisión del 17-11-2026: no importar los archivos anuales del registro de Open Contracting.
+  - Se probó: 27 164 RUC en 14 MB, unos 2 minutos por año en Railway. Se revirtió (commit 21de7d6, revertido) para no cargar la base.
+  - Si el SERCOP no vuelve, esa es la alternativa ya probada. Se puede recuperar con `git show 21de7d6`.
+- **Recomendaciones con contratos.** Cuando haya datos, se puede calcular, por cada CPC:
   - qué entidades lo compran más;
   - cuántos proveedores compiten;
   - el monto típico.
 
-  Serviría para recomendar "a quién venderle" y para estimar precios. Costaría unos 3 a 5 MB más. Conviene hacerlo como tabla aparte por CPC, no por RUC.
+  Serviría para recomendar "a quién venderle" y para estimar precios.
 
 ## 3. Pendientes técnicos pequeños
 

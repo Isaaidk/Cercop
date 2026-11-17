@@ -52,7 +52,7 @@ from contratacion.infraestructura.adaptadores.salida.bd.asistente import (
 from contratacion.infraestructura.adaptadores.salida.bd.seguimiento import RepositorioSeguimiento
 from contratacion.infraestructura.adaptadores.salida.bd.sesion import obtener_motor
 from contratacion.infraestructura.adaptadores.salida.historial import (
-    HistorialImportado,
+    HistorialOcds,
     obtener_historial,
 )
 from contratacion.infraestructura.adaptadores.salida.sri import ConsultaSri, obtener_sri
@@ -78,7 +78,7 @@ async def servicios_del_asistente(
     consultas: ConsultasDep,
     mercado: MercadoDep,
     sri: Annotated[ConsultaSri, Depends(obtener_sri)],
-    historial: Annotated[HistorialImportado, Depends(obtener_historial)],
+    historial: Annotated[HistorialOcds, Depends(obtener_historial)],
 ) -> Servicios:
     return _servicios(
         actor,

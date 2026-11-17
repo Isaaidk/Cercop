@@ -49,7 +49,6 @@ from contratacion.dominio.errores import EmpresaSuspendida
 from contratacion.infraestructura.adaptadores.salida.bd.accesos import RepositorioAccesosBd
 from contratacion.infraestructura.adaptadores.salida.bd.bloqueo import bloqueo_de_ingesta
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import RepositorioConsultasBd
-from contratacion.infraestructura.adaptadores.salida.bd.contratos import RepositorioContratos
 from contratacion.infraestructura.adaptadores.salida.bd.cpc import RepositorioCpcBd
 from contratacion.infraestructura.adaptadores.salida.bd.ingesta import RepositorioIngesta
 from contratacion.infraestructura.adaptadores.salida.bd.mantenimiento import (
@@ -71,7 +70,6 @@ from contratacion.infraestructura.adaptadores.salida.cache.cliente import (
 )
 from contratacion.infraestructura.adaptadores.salida.push import EnviadorPush
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
-from contratacion.tareas.importar_contratos import toca as toca_importar_contratos
 from contratacion.tareas.planificador import (
     ejecutar_todos,
     ejecutar_vigilancia,
@@ -372,30 +370,6 @@ async def _reparar_mantenimiento() -> None:
         registro.exception("No se pudo reparar lo que dejó el mantenimiento del portal.")
 
 
-# La importación mensual de contratos por RUC (ver `tareas/importar_contratos.py`) corre en un
-# proceso hijo: la memoria que usa al agrupar vuelve al sistema al terminar. Se mira cada 6 h si
-# toca (una lectura de una fila) y nunca hay dos a la vez.
-_REVISAR_CONTRATOS_SEG = 6 * 3600
-_importacion: asyncio.subprocess.Process | None = None
-
-
-async def _importar_contratos_si_toca() -> None:
-    global _importacion
-    if _importacion is not None and _importacion.returncode is None:
-        return
-    try:
-        if not toca_importar_contratos(
-            await RepositorioContratos(obtener_motor()).ultima_importacion()
-        ):
-            return
-        _importacion = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "contratacion.tareas.importar_contratos", "--si-toca"
-        )
-        registro.info("Importación mensual de contratos lanzada (pid %s).", _importacion.pid)
-    except Exception:  # noqa: BLE001 - la importación no puede tumbar la ingesta
-        registro.exception("No se pudo lanzar la importación de contratos.")
-
-
 async def servir() -> int:
     """El worker completo: la ingesta y, a su lado, la cola de TDR."""
     global _EN_BUCLE
@@ -458,8 +432,6 @@ async def bucle() -> int:
     # El mantenimiento se retrasa una vuelta: en el arranque toca un ciclo completo, que es lo que
     # trae los datos, y el mantenimiento solo mira vencimientos de lo que ya está guardado.
     proximo_mantenimiento = time.monotonic() + intervalo_mantenimiento
-    # Diez minutos tras arrancar: primero la ingesta, que es lo urgente.
-    proxima_importacion = time.monotonic() + 600
 
     while True:
         momento = time.monotonic()
@@ -512,10 +484,6 @@ async def bucle() -> int:
                 registro.info("Mantenimiento: %s", resultado.resumen())
             except Exception:  # noqa: BLE001 - el mantenimiento no puede tumbar la ingesta
                 registro.exception("El mantenimiento falló; se continuará con el siguiente.")
-
-        if momento >= proxima_importacion:
-            proxima_importacion = momento + _REVISAR_CONTRATOS_SEG
-            await _importar_contratos_si_toca()
 
         momento = time.monotonic()
         # El sueño llega hasta la hora que toque, pero nunca más allá del siguiente vistazo a las

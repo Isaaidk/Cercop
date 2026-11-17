@@ -829,7 +829,7 @@ onMounted(cargar)
             {{ hist.cargando ? 'Buscando tus contratos…' : 'Buscar mis contratos' }}
           </button>
         </div>
-        <p v-if="hist.cargando" class="perfil__nota" role="status">Buscando… tarda unos segundos.</p>
+        <p v-if="hist.cargando" class="perfil__nota" role="status">Tarda unos 15 segundos. No cierres esta página.</p>
         <p v-else-if="!puedeBuscarHistorial" class="perfil__mensaje perfil__mensaje--aviso">
           Primero necesitamos tu RUC y tu razón social. Usa «Buscar por mi RUC» o complétalos abajo
           en «Datos del contribuyente».
@@ -842,15 +842,7 @@ onMounted(cargar)
             nombre o por catálogo, agrega tu experiencia a mano más abajo.
           </p>
           <template v-else>
-            <p v-if="hist.datos.desde" class="perfil__nota">
-              Entre {{ hist.datos.desde }} y {{ hist.datos.hasta }} ganaste
-              {{ hist.datos.contratos_total }} contratos por {{ usd(hist.datos.monto_revisado) }}.
-              <template v-if="hist.datos.entidades?.length">
-                Quienes más te compran:
-                {{ hist.datos.entidades.slice(0, 3).map((e) => e.nombre).join(' · ') }}.
-              </template>
-            </p>
-            <p v-else class="perfil__nota">
+            <p class="perfil__nota">
               Encontramos {{ hist.datos.contratos_total }} contratos. Revisamos los
               {{ hist.datos.revisados }} más recientes y {{ hist.datos.verificados }} son de tu RUC
               ({{ usd(hist.datos.monto_revisado) }}).

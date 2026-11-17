@@ -30,7 +30,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
 )
 from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.historial import (
-    HistorialImportado,
+    HistorialOcds,
     obtener_historial,
 )
 from contratacion.infraestructura.adaptadores.salida.pdf import texto_de_pdf
@@ -184,7 +184,7 @@ async def consulta_contratos(
     cuerpo: ConsultaContratos,
     actor: ActorDep,
     _: ConsentimientoDep,
-    historial: Annotated[HistorialImportado, Depends(obtener_historial)],
+    historial: Annotated[HistorialOcds, Depends(obtener_historial)],
 ) -> dict[str, Any]:
     """No guarda nada. Tarda varios segundos: consulta un servicio ajeno y lo recuerda un rato."""
     return cuerpo_json(
