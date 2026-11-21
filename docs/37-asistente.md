@@ -10,14 +10,18 @@ proformas, un RUC), con botones para ir a la pantalla que corresponde o preparar
 1. **Camino rápido, sin modelo y sin cobrar** (`dominio/intencion.py`). Reglas fijas, sin tildes ni
    mayúsculas, reconocen lo que se pide casi siempre: saludo, ayuda, recomendaciones («propuestas
    para ti»), estado de un proceso por su código, mis alertas, mis ofertas, datos de mi empresa,
-   consulta de un RUC en el SRI, historial de contratos de un RUC y «proforma para <código>». Se
+   consulta de un RUC en el SRI, historial de contratos de un RUC, «proforma para <código>» y lo
+   que aún no está adjudicado («ínfimas no adjudicadas», «procesos sin adjudicar», «las que siguen
+   abiertas», con una provincia como mucho; con más filtros decide el modelo). Se
    llama directamente a la herramienta: responde en lo que tarda la consulta (medido en local: 0,05
    a 0,5 s), no gasta créditos y funciona aunque la IA esté caída.
    Ante la duda, el detector manda al modelo: una lista solo se reconoce si el mensaje no trae
    filtros («propuestas» sí; «propuestas de limpieza en Guayas» no).
 2. **Modelo con herramientas** (`aplicacion/casos_uso/asistente.py`). Lo demás va al modelo
    configurado en `IA_URL` (API de chat de OpenAI con `tools`). Recibe un prompt de sistema con la
-   empresa (nombre, RUC, CPC, provincias) y la fecha de Ecuador, los últimos 12 mensajes **solo como
+   empresa **según su perfil** (nombre, RUC, CPC del RUP/lo ofrecido/la experiencia más los de la
+   lista del buscador, palabras clave comerciales y productos, dedicación, rango de presupuesto y
+   cobertura; `dominio/perfil_comercial.py`) y la fecha de Ecuador, los últimos 12 mensajes **solo como
    texto**, y como mucho `ASISTENTE_MAX_RONDAS` vueltas de herramientas (por defecto 4); la última
    vuelta va sin herramientas para obligarlo a contestar. Temperatura 0,1 y 700 tokens.
 
@@ -50,6 +54,48 @@ salen de los datos, no del texto generado.
 | `precio_referencia(texto_o_cpc)` | `ver_precios` | `datos` |
 | `competidores(texto_o_cpc)` | `ver_proveedores` | `datos` |
 | `preparar_proforma(codigo \| registro_id)` | `buscar` por código | `accion` (`preparar_oferta`) |
+| `sin_adjudicar(tipo, texto, provincia, para_mi)` | `ver_propuestas` / `buscar` (NCO u OCDS) | `infimas` (con `nota`; `proforma: false` en procesos) |
+
+### El perfil, no los filtros
+
+Lo que la empresa vende sale de su **perfil**. Antes el asistente leía solo la lista de CPC del
+buscador, que se vacía con «Vaciar la lista» al limpiar los filtros, y decía que la empresa «no
+tenía nada cargado» aunque el perfil estuviera completo. La lista del buscador ahora solo **suma**
+al perfil (prompt del modelo y `datos_empresa`); «Propuestas para ti» ya usaba el perfil.
+
+### «Sin adjudicar»: qué se puede saber
+
+- **Ínfimas (NCO)**: la fuente publica un único estado («En Curso») y **no publica la
+  adjudicación**. Lo único seguro es que las que todavía reciben proformas no están adjudicadas:
+  eso se muestra (las del perfil, o todas si el perfil no coincide con ninguna) y se avisa de que
+  de las ya cerradas no se puede saber.
+- **Procesos con oferta (OCDS)**: se revisan los 100 más recientes (con el texto, la provincia o
+  las palabras del perfil) y quedan los que no publican proveedor adjudicado ni están cancelados,
+  desiertos o retirados. Puede que la adjudicación exista y aún no esté publicada.
+
+## Que nada se quede colgado
+
+- El turno del encolador `ia` (`Turno("ia")`) solo lo toma lo que va al modelo. Antes lo tomaba
+  toda la ruta, y un «mis alertas» esperaba hasta 40 s detrás de dos preguntas lentas de la misma
+  empresa (o de «Preparar oferta») y terminaba en 503.
+- Tope de tiempo de punta a punta: `ASISTENTE_TIEMPO_MAX_SEG` (75 s). Antes un proveedor lento
+  podía sumar 3 intentos x 45 s por ronda en 5 rondas. Al pasarlo se contesta con las tarjetas que
+  ya se encontraron (o una frase con sugerencias) y se devuelve el crédito.
+- Si el modelo repite exactamente la misma llamada, no se vuelve a ejecutar y la siguiente vuelta va
+  sin herramientas.
+- Un fallo inesperado del modelo o del bucle responde una frase y devuelve el crédito, en vez de un
+  500 que dejaba el mensaje de la persona guardado sin respuesta. Si la petición se cancela (se
+  cierra la pestaña), el crédito también se devuelve.
+- Panel: el «Pensando…» dice en qué va, ofrece «Dejar de esperar» a los 15 s y deja de esperar solo
+  a los 100 s. Ante 503/429 respeta `Retry-After` («Reintentar en N s»). El texto queda en su
+  burbuja con «Reintentar» y «Editar», y si la respuesta llega después de dejar de esperar, se pinta.
+
+## Identidad visual
+
+El Asistente usa el violeta de la IA (`--ia`, `--ia-fuerte`, `--ia-suave`, `--ia-tenue`,
+`--ia-borde`, `--ia-degradado`, `--ia-sobre` en `main.css`, tema claro y oscuro): entrada del menú
+con insignia «IA», insignia con chispas en la cabecera, burbujas del asistente con «Asistente IA» y
+tarjetas con filete superior en degradado. El azul `--acento` sigue siendo el de las acciones.
 
 Una alerta vigila una sola provincia: si se piden varias, se usa la primera y el asistente lo dice.
 

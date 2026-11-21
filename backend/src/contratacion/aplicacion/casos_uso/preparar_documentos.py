@@ -25,9 +25,12 @@ from contratacion.dominio.anexos import (
     CONTEXTO,
     OTRO,
     PRIORIDAD,
+    TDR,
     combinar_secciones,
     contexto_de_anexos,
     elegir_anexos,
+    formato_de_proforma,
+    garantias_mencionadas,
     recorte_de_contexto,
 )
 from contratacion.dominio.creditos import COSTO_PREGUNTA
@@ -64,6 +67,7 @@ from contratacion.dominio.presupuesto import (
     normalizar_presupuesto,
     presupuesto_de_ficha,
 )
+from contratacion.dominio.requisitos import condiciones_de_tdr
 from contratacion.dominio.titulos import titulo_libre, titulo_repetido
 from contratacion.infraestructura.adaptadores.salida.bd.creditos import RepositorioCreditos
 from contratacion.infraestructura.adaptadores.salida.bd.documentos import RepositorioDocumentos
@@ -159,7 +163,7 @@ def texto_subido(nombre: str, contenido: bytes) -> str:
 
 def _secciones_de_subida(
     nombre: str, contenido: bytes
-) -> tuple[dict[str, str], list[str], dict[str, Any] | None, dict[str, str]]:
+) -> tuple[dict[str, str], list[str], dict[str, Any] | None, dict[str, str], dict[str, Any] | None]:
     """Apartados, requisitos y presupuesto de un archivo subido. Es CPU pura: va en un hilo.
 
     El presupuesto se busca en el texto entero, no en los apartados: estos se recortan y la cifra
@@ -180,6 +184,7 @@ def _secciones_de_subida(
         requisitos,
         extraer_presupuesto(texto),
         datos_entidad_de_texto(texto),
+        formato_de_proforma({"nombre": nombre, "tipo": OTRO}, recorte_de_contexto(texto)),
     )
 
 
@@ -200,7 +205,9 @@ async def leer_documento(
     contenido: bytes,
     registro_id: UUID | None = None,
 ) -> dict[str, Any]:
-    secciones, textos, presupuesto, entidad = await en_hilo(_secciones_de_subida, nombre, contenido)
+    secciones, textos, presupuesto, entidad, formato = await en_hilo(
+        _secciones_de_subida, nombre, contenido
+    )
     resultado = await guardar_lectura_de(
         actor,
         documentos=documentos,
@@ -211,6 +218,8 @@ async def leer_documento(
     )
     _con_presupuesto(resultado, presupuesto)
     resultado["entidad_datos"] = entidad
+    if formato:
+        resultado["formato_entidad"] = formato
     return resultado
 
 
@@ -246,6 +255,9 @@ async def guardar_lectura_de(
         "secciones": secciones,
         "resumen": resumir_secciones(secciones),
         "requisitos": textos,
+        # Plazo, lugar y forma de pago en una frase, el alcance medible y el texto largo aparte
+        # (para el documento de respaldo): el panel llena «Condiciones de la oferta» con esto.
+        "condiciones_sugeridas": condiciones_de_tdr(secciones),
     }
 
 
@@ -632,6 +644,9 @@ async def _guardar_lo_leido(
         {_nombre_fila(anexo) for anexo, _, _ in leidos},
         sin_leer,
     )
+    formato = _formato_de_la_entidad(ordenados, resultado["anexos"], anexos)
+    if formato:
+        resultado["formato_entidad"] = formato
     resultado["cambios_acta"] = cambios
     resultado["items_pedidos"] = ficha_resumen["items_pedidos"]
     resultado["items_leidos"] = items_leidos
@@ -646,6 +661,37 @@ async def _guardar_lo_leido(
     )
     resultado["registro_id"] = ficha["id"]
     return resultado
+
+
+def _formato_de_la_entidad(
+    ordenados: list[tuple[dict[str, Any], Leido, int]],
+    presentables: list[dict[str, Any]],
+    anexos: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """El formato de proforma que adjuntó la entidad, con su `documento_id` para descargarlo.
+
+    Se miran primero los anexos que no son TDR (un formulario suelto es lo habitual) y después el
+    TDR, que solo cuenta si dice «formato de proforma». Las garantías se buscan en el formato y,
+    si no las nombra, en el texto de todos los anexos.
+    """
+    posiciones = {_nombre_fila(anexo): n for n, anexo in enumerate(anexos)}
+    candidatos = sorted(ordenados, key=lambda par: par[0]["tipo"] == TDR)
+    for anexo, leido, _ in candidatos:
+        texto = leido[5] if len(leido) > 5 else ""
+        posicion = posiciones.get(_nombre_fila(anexo))
+        visible = presentables[posicion] if posicion is not None else {}
+        formato = formato_de_proforma(
+            {**anexo, "nombre_visible": visible.get("nombre") or anexo.get("nombre")}, texto
+        )
+        if formato is None:
+            continue
+        if not formato["garantias"]:
+            formato["garantias"] = garantias_mencionadas(
+                "\n".join(par[1][5] for par in ordenados if len(par[1]) > 5)
+            )
+        formato["documento_id"] = visible.get("documento_id")
+        return formato
+    return None
 
 
 async def estado_desde_codigo(
@@ -869,7 +915,11 @@ async def _presupuesto_de(
     return elegir_presupuesto([de_la_ficha, del_navegador])
 
 
-_CAMPOS_ENTIDAD = ("ruc", "direccion", "telefono", "correo")
+_CAMPOS_ENTIDAD = ("ruc", "direccion", "telefono", "correo", "web")
+# Textos libres de la proforma que se guardan en `extras` con su tope: el alcance (una frase que se
+# imprime tras las condiciones) y el detalle largo de las condiciones (cronograma, forma de pago
+# completa), que va al documento de respaldo.
+_TEXTOS_EXTRAS = {"alcance": 1000, "detalle_condiciones": 6000}
 
 _CLAVES_EXTRAS = (
     "empresa",
@@ -905,6 +955,12 @@ def _extras(valor: Any) -> dict[str, Any]:
         extras["entidad"] = {campo: texto for campo, texto in entidad.items() if texto}
     for clave in ("numero", "necesidad"):
         texto = " ".join(str(valor.get(clave) or "").split())[:120]
+        if texto:
+            extras[clave] = texto
+    for clave, tope in _TEXTOS_EXTRAS.items():
+        # Se conservan los saltos de línea (el detalle va por renglones), no los espacios de más.
+        renglones = (" ".join(r.split()) for r in str(valor.get(clave) or "").splitlines())
+        texto = "\n".join(r for r in renglones if r)[:tope]
         if texto:
             extras[clave] = texto
     if valor.get("integridad") is False:
@@ -1040,6 +1096,9 @@ _TEMAS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("condiciones", "Condiciones", ("condicion", "pago", "garantia", "multa", "forma de")),
     ("actividades", "Actividades", ("actividad", "tarea", "que hay que hacer")),
     ("alcance", "Alcance", ("alcance",)),
+    ("metodologia", "Metodología", ("metodolog", "como se trabaja")),
+    ("protocolo", "Protocolo", ("protocolo",)),
+    ("objetivos", "Objetivos", ("objetivo",)),
     ("objeto", "Objeto", ("objeto", "necesita", "solicita", "piden", "trata", "de que", "que es")),
 )
 _ETIQUETAS = {clave: etiqueta for clave, etiqueta, _ in _TEMAS}
@@ -1214,7 +1273,12 @@ async def preguntar(
             ahora,
             aviso,
         )
-    secciones = dict(lectura["secciones"] or {})
+    # Las claves con «_» (los numerales del TDR) son datos internos, no apartados que se citen.
+    secciones = {
+        clave: valor
+        for clave, valor in dict(lectura["secciones"] or {}).items()
+        if not str(clave).startswith("_")
+    }
     origen = f"TDR {lectura['nombre']}"
     temas = [clave for clave in _sobre_tdr(plana) if secciones.get(clave)]
     if temas:

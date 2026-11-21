@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from contratacion.dominio.propuestas import condiciones_cpc
-from contratacion.dominio.radar import plegar
+from contratacion.dominio.radar import plegar, variantes_de_palabra
 from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     NORMALIZADO,
     clave_provincia,
@@ -28,7 +28,7 @@ from contratacion.infraestructura.adaptadores.salida.bd.contexto import (
 _CANDIDATOS = """
 SELECT r.id, f.codigo AS fuente, r.clave_natural, r.datos, r.cpc_codigos, r.documentos,
        r.fecha_publicacion, r.primera_vez_visto, r.ultima_vez_visto, r.plazo_proformas_en,
-       r.provincia, r.texto_busqueda
+       r.provincia, r.texto_busqueda, r.cpc_busqueda
 FROM registro r
 JOIN fuente f ON f.id = r.fuente_id
 WHERE r.es_vigente
@@ -85,7 +85,8 @@ def a_oportunidad(fila: Any) -> dict[str, Any]:
         "presupuesto": _monto_publicado(datos),
         "documentos": list(fila["documentos"] or []),
         "plazo": fila["plazo_proformas_en"],
-        "texto": fila["texto_busqueda"] or "",
+        # Con los nombres estándar del CPC de los ítems: a veces dicen lo que el objeto no dice.
+        "texto": _texto_con_cpc(fila),
         "fecha_publicacion": fila["fecha_publicacion"],
         "primera_vez_visto": fila["primera_vez_visto"],
         "ultima_vez_visto": fila["ultima_vez_visto"],
@@ -106,14 +107,15 @@ def a_oportunidad(fila: Any) -> dict[str, Any]:
 #   búsqueda, igual que `coincide_texto`. Python vuelve a comprobarlo todo: esto solo es la criba.
 _TEXTO_PLEGADO = NORMALIZADO.format(
     columna=(
-        "r.texto_busqueda || ' ' || COALESCE(r.datos ->> 'objeto_compra', '')"
+        "r.texto_busqueda || ' ' || COALESCE(r.cpc_busqueda, '')"
+        " || ' ' || COALESCE(r.datos ->> 'objeto_compra', '')"
         " || ' ' || COALESCE(r.datos ->> 'objeto', '')"
         " || ' ' || COALESCE(r.datos ->> 'entidad', '')"
     )
 )
 _INFIMAS_ABIERTAS = f"""
 SELECT r.id, r.clave_natural, r.cpc_codigos, r.plazo_proformas_en, r.fecha_publicacion,
-       r.ultima_vez_visto, r.provincia AS provincia_clave, r.texto_busqueda,
+       r.ultima_vez_visto, r.provincia AS provincia_clave, r.texto_busqueda, r.cpc_busqueda,
        jsonb_array_length(r.documentos) AS documentos,
        r.datos ->> 'codigo' AS codigo,
        COALESCE(r.datos ->> 'objeto_compra', r.datos ->> 'objeto', r.datos ->> 'descripcion', '')
@@ -150,10 +152,36 @@ LIMIT :limite
 """
 
 
+def _escapar_like(texto: str) -> str:
+    return texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _patron_like(texto: str) -> str:
     """`%texto%` con los comodines de LIKE escapados: «100%» no debe encontrar «1000»."""
-    escapado = texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escapado}%"
+    return f"%{_escapar_like(texto)}%"
+
+
+def patrones_de_palabras(palabras: tuple[str, ...]) -> list[str]:
+    """Los `LIKE` de la criba: la frase tal cual y sus raíces en orden (`%servicio%limpieza%`).
+
+    Es la misma regla que `dominio.radar.coincide_texto`, que vuelve a comprobarlo en Python: la
+    criba nunca puede ser más estrecha que esa comprobación, o «Propuestas para ti» perdería las
+    ínfimas que el plural escondía.
+    """
+    patrones: list[str] = []
+    for palabra in palabras:
+        plana = plegar(palabra)
+        if not plana:
+            continue
+        patrones.append(_patron_like(plana))
+        for variante in variantes_de_palabra(plana):
+            patrones.append("%" + "%".join(_escapar_like(parte) for parte in variante) + "%")
+    return list(dict.fromkeys(patrones))
+
+
+def _texto_con_cpc(fila: Any) -> str:
+    """El índice de búsqueda y los nombres estándar del CPC de los ítems, juntos."""
+    return f"{fila.get('texto_busqueda') or ''} {fila.get('cpc_busqueda') or ''}".strip()
 
 
 def _a_infima(fila: Any) -> dict[str, Any]:
@@ -179,7 +207,7 @@ def _a_infima(fila: Any) -> dict[str, Any]:
         # La nota del radar solo mira si hay documentos, no cuáles: basta con saber cuántos.
         "documentos": [None] * int(fila["documentos"] or 0),
         "plazo": fila["plazo_proformas_en"],
-        "texto": fila["texto_busqueda"] or "",
+        "texto": _texto_con_cpc(fila),
         "fecha_publicacion": fila["fecha_publicacion"],
         "ultima_vez_visto": fila["ultima_vez_visto"],
     }
@@ -228,8 +256,7 @@ class RepositorioRadar:
         limite: int,
     ) -> list[dict[str, Any]]:
         exactos, inicios = condiciones_cpc(cpc)
-        planas = dict.fromkeys(plegar(palabra) for palabra in palabras)
-        patrones = [_patron_like(plana) for plana in planas if plana]
+        patrones = patrones_de_palabras(palabras)
         if not exactos and not patrones:
             return []
         async with sin_contexto(self._motor) as conexion:

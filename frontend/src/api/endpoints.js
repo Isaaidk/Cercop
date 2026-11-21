@@ -91,9 +91,14 @@ export const api = {
    */
   quitarCpc: (texto) => http.post('/v1/cpc/quitar', { texto }),
 
+  /** Códigos hijos de un código padre que aparecen en lo descargado, con nombre y cuántos hay. */
+  ramasCpc: (prefijo) => http.get('/v1/cpc/ramas', { prefijo }),
+
   vaciarCpc: () => http.del('/v1/cpc'),
 
   verPerfil: () => http.get('/v1/empresa/perfil'),
+  /** CPC, palabras, provincias y tipos de procedimiento del perfil, para rellenar los filtros. */
+  filtrosDelPerfil: () => http.get('/v1/empresa/perfil/filtros-sugeridos'),
   guardarPerfil: (campos) => http.put('/v1/empresa/perfil', campos),
   consultarRuc: (ruc) => http.post('/v1/empresa/perfil/consulta-ruc', { ruc }),
   consultarContratos: (ruc, razon_social) =>

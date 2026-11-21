@@ -37,16 +37,9 @@ import { api } from '@/api/endpoints'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
 import { guardarArchivo } from '@/utils/descargas'
-import {
-  MESES_EXPORTABLES,
-  descargaEnVentana,
-  inicioExportable,
-  limiteLegible,
-} from '@/utils/exportacion'
-import { diaDeHoy } from '@/utils/fecha'
 import { decimal, fechaCorta, numero, recortar, sinEtiquetas } from '@/utils/formato'
 import { copiarAlPortapapeles } from '@/utils/portapapeles'
-import { nombreParaApi, separarProvincia } from '@/utils/provincias'
+import { codigoDeProvincia, nombreParaApi, separarProvincia } from '@/utils/provincias'
 import { LONGITUD_MINIMA_TERMINO } from '@/utils/terminos'
 
 const FILAS_POR_PAGINA = 25
@@ -119,7 +112,24 @@ const abierto = ref(null)
  * ínfimas; `onPreparar` es el oyente del padre declarado como propiedad, para que el cajón no
  * pinte el botón si nadie lo escucha (hoy `VistaPanel.vue` monta `<OfertasTab />` sin oyente).
  */
-const props = defineProps({ onPreparar: { type: Function, default: null } })
+const props = defineProps({
+  onPreparar: { type: Function, default: null },
+  /**
+   * Tipos de procedimiento con los que abre la pantalla y a los que vuelve «Limpiar». La entrada
+   * «Subastas inversas» del menú usa esta misma pantalla con la subasta ya elegida: mismos filtros,
+   * misma tabla y misma descarga, solo cambia el punto de partida (que sigue siendo editable).
+   */
+  tiposIniciales: { type: Array, default: () => [] },
+  titulo: { type: String, default: 'Ofertas y procesos publicados' },
+  pista: {
+    type: String,
+    default:
+      'Todos los procesos publicados por las entidades, con los mismos criterios del buscador del portal.',
+  },
+})
+
+/** Prefijo de los `id` del formulario: la pantalla puede estar dos veces en el panel. */
+const idBase = computed(() => (props.tiposIniciales.length ? 'sub' : 'of'))
 
 function prepararDesdeElCajon(fila) {
   abierto.value = null
@@ -234,6 +244,43 @@ function aplicar() {
   return consultar()
 }
 
+/*
+ * «Usar los datos de mi empresa» (QA ciclo 3): CPC, lo que ofrece, provincias de cobertura y los
+ * tipos de procedimiento a los que se dedica, puestos en los campos **sin buscar**: la persona los
+ * revisa y pulsa «Buscar procesos». Se puede volver a traer tras editar o limpiar.
+ */
+const trayendoPerfil = ref(false)
+const usadoPerfil = ref(false)
+const avisoPerfil = ref('')
+
+async function traerDelPerfil() {
+  if (trayendoPerfil.value) return
+  trayendoPerfil.value = true
+  avisoPerfil.value = ''
+  try {
+    const sugeridos = await api.filtrosDelPerfil()
+    if (sugeridos.vacio) {
+      avisoPerfil.value =
+        'Tu perfil todavía no tiene CPC, productos ni provincias. Complétalo en «Perfil y RUP».'
+      return
+    }
+    const terminos = [...(sugeridos.cpc || []), ...(sugeridos.palabras || [])]
+    criterios.cpc = [...new Set([...criterios.cpc, ...terminos])]
+    const provincias = (sugeridos.provincias || []).map(codigoDeProvincia).filter(Boolean)
+    if (provincias.length) criterios.provincias = [...new Set(provincias)]
+    if ((sugeridos.tipos_proceso || []).length) {
+      criterios.tipos_proceso = [...new Set([...criterios.tipos_proceso, ...sugeridos.tipos_proceso])]
+    }
+    criterios.modo = 'cualquiera'
+    usadoPerfil.value = true
+    avisoPerfil.value = `Se pusieron ${terminos.length} términos de CPC, ${provincias.length} provincias y ${(sugeridos.tipos_proceso || []).length} tipos de procedimiento. Revísalos y pulsa «Buscar procesos».`
+  } catch (fallo) {
+    avisoPerfil.value = fallo.message
+  } finally {
+    trayendoPerfil.value = false
+  }
+}
+
 function limpiar() {
   criterios.palabras = ''
   criterios.descripcion = []
@@ -241,7 +288,7 @@ function limpiar() {
   criterios.modo = MODO_PALABRAS
   criterios.provincias = []
   criterios.entidad = ''
-  criterios.tipos_proceso = []
+  criterios.tipos_proceso = [...props.tiposIniciales]
   criterios.codigo = ''
   criterios.desde = ''
   criterios.hasta = ''
@@ -289,8 +336,8 @@ function cambiarTiposProceso(tipos) {
  * ven. Se usa el mismo `parametros()` que la consulta para que tabla y archivo no puedan discrepar.
  * Lo que se está tecleando sin pulsar «Buscar procesos» no viaja, igual que no cambia la tabla.
  *
- * El servidor vuelve a comprobar el permiso de exportación y la ventana de tres meses; aquí solo se
- * evita ofrecer un botón condenado a un rechazo.
+ * La fecha de publicación es opcional y **nunca se pone sola** (QA ciclo 3): antes un botón
+ * aplicaba los últimos tres meses y el archivo dejaba de coincidir con el total de la pantalla.
  */
 const exportando = ref(false)
 const errorExportacion = ref('')
@@ -298,8 +345,6 @@ const avisoExportacion = ref('')
 
 const puedeExportar = computed(() => sesion.puedeExportar.value)
 const hayResultados = computed(() => total.value > 0)
-const descargaFueraDeVentana = computed(() => !descargaEnVentana(aplicados.value.desde))
-const limiteDeLaVentana = computed(() => limiteLegible(inicioExportable()))
 
 async function exportar() {
   if (exportando.value) return
@@ -321,19 +366,6 @@ async function exportar() {
   } finally {
     exportando.value = false
   }
-}
-
-/**
- * Pone el periodo descargable —del límite de la ventana a hoy— y descarga, en un solo gesto.
- *
- * Igual que en las ínfimas: se fijan las dos fechas para que un `hasta` anterior no quede por debajo
- * del nuevo `desde`, y se aplica antes de descargar para que la tabla muestre lo mismo que el archivo.
- */
-async function descargarElPeriodoExportable() {
-  criterios.desde = inicioExportable()
-  criterios.hasta = diaDeHoy()
-  await aplicar()
-  await exportar()
 }
 
 function irAPagina(destino) {
@@ -381,6 +413,10 @@ function lugar(fila) {
 }
 
 onMounted(() => {
+  if (props.tiposIniciales.length) {
+    criterios.tipos_proceso = [...props.tiposIniciales]
+    aplicados.value = copiarCriterios(criterios)
+  }
   // Los catálogos alimentan los desplegables. Si aún no han llegado, no se espera: el listado se
   // puede consultar igual y los desplegables se rellenan cuando lleguen.
   consultar()
@@ -391,22 +427,32 @@ onMounted(() => {
   <section class="ofertas">
     <header class="ofertas__cabecera">
       <div>
-        <p class="ofertas__titulo">Ofertas y procesos publicados</p>
-        <p class="ofertas__pista">
-          Todos los procesos publicados por las entidades, con los mismos criterios del buscador del
-          portal.
-        </p>
+        <p class="ofertas__titulo">{{ props.titulo }}</p>
+        <p class="ofertas__pista">{{ props.pista }}</p>
       </div>
       <span v-if="total" class="ofertas__cuenta numeros">{{ total }}</span>
     </header>
+
+    <div class="ofertas__perfil">
+      <button
+        type="button"
+        class="boton boton--secundario boton--pequeno"
+        :disabled="trayendoPerfil"
+        @click="traerDelPerfil"
+      >
+        <span v-if="trayendoPerfil" class="girador" aria-hidden="true" />
+        {{ usadoPerfil ? 'Volver a traer de mis datos' : 'Usar los datos de mi empresa' }}
+      </button>
+      <p v-if="avisoPerfil" class="ofertas__pista" role="status">{{ avisoPerfil }}</p>
+    </div>
 
     <form class="ofertas__filtros" @submit.prevent="aplicar">
       <p class="ofertas__grupo">Búsqueda por texto</p>
 
       <div class="campo campo--ancho">
-        <label class="campo__etiqueta" for="of-palabras">Palabras clave</label>
+        <label class="campo__etiqueta" :for="`${idBase}-palabras`">Palabras clave</label>
         <input
-          id="of-palabras"
+          :id="`${idBase}-palabras`"
           v-model="criterios.palabras"
           class="entrada"
           type="text"
@@ -493,9 +539,9 @@ onMounted(() => {
       </div>
 
       <div class="campo campo--ancho">
-        <label class="campo__etiqueta" for="of-entidad">Entidad contratante</label>
+        <label class="campo__etiqueta" :for="`${idBase}-entidad`">Entidad contratante</label>
         <input
-          id="of-entidad"
+          :id="`${idBase}-entidad`"
           v-model="criterios.entidad"
           class="entrada"
           type="text"
@@ -518,9 +564,9 @@ onMounted(() => {
       </div>
 
       <div class="campo">
-        <label class="campo__etiqueta" for="of-codigo">Código del proceso</label>
+        <label class="campo__etiqueta" :for="`${idBase}-codigo`">Código del proceso</label>
         <input
-          id="of-codigo"
+          :id="`${idBase}-codigo`"
           v-model="criterios.codigo"
           class="entrada"
           type="text"
@@ -531,18 +577,18 @@ onMounted(() => {
       <p class="ofertas__grupo">Fechas y fuente</p>
 
       <div class="campo">
-        <label class="campo__etiqueta" for="of-desde">Publicados desde</label>
-        <input id="of-desde" v-model="criterios.desde" class="entrada" type="date" />
+        <label class="campo__etiqueta" :for="`${idBase}-desde`">Publicados desde</label>
+        <input :id="`${idBase}-desde`" v-model="criterios.desde" class="entrada" type="date" />
       </div>
 
       <div class="campo">
-        <label class="campo__etiqueta" for="of-hasta">Publicados hasta</label>
-        <input id="of-hasta" v-model="criterios.hasta" class="entrada" type="date" />
+        <label class="campo__etiqueta" :for="`${idBase}-hasta`">Publicados hasta</label>
+        <input :id="`${idBase}-hasta`" v-model="criterios.hasta" class="entrada" type="date" />
       </div>
 
       <div class="campo">
-        <label class="campo__etiqueta" for="of-fuente">Fuente</label>
-        <select id="of-fuente" v-model="criterios.fuente" class="entrada">
+        <label class="campo__etiqueta" :for="`${idBase}-fuente`">Fuente</label>
+        <select :id="`${idBase}-fuente`" v-model="criterios.fuente" class="entrada">
           <option value="">Todas las fuentes</option>
           <option v-for="valor in fuentes" :key="valor" :value="valor">{{ valor }}</option>
         </select>
@@ -584,21 +630,9 @@ onMounted(() => {
         desordenar el ancho de la tabla.
       </p>
 
-      <!-- Misma regla que en las ínfimas: si el periodo se sale de la ventana descargable, el botón
-           pone ese periodo y descarga; si cabe, descarga lo que hay en pantalla. -->
+      <!-- La descarga lleva exactamente los filtros de la pantalla: nunca añade fechas. -->
       <button
-        v-if="puedeExportar && descargaFueraDeVentana"
-        type="button"
-        class="boton boton--principal boton--pequeno ofertas__descargar"
-        :disabled="exportando || cargando || !hayResultados"
-        :title="`Pone el periodo del ${limiteDeLaVentana} a hoy y descarga lo que cumpla los demás filtros`"
-        @click="descargarElPeriodoExportable"
-      >
-        <span v-if="exportando" class="girador" aria-hidden="true" />
-        {{ exportando ? 'Generando…' : `Descargar los últimos ${MESES_EXPORTABLES} meses` }}
-      </button>
-      <button
-        v-else-if="puedeExportar"
+        v-if="puedeExportar"
         type="button"
         class="boton boton--principal boton--pequeno ofertas__descargar"
         :disabled="exportando || cargando || !hayResultados"
@@ -610,10 +644,6 @@ onMounted(() => {
       </button>
     </div>
 
-    <p v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="ofertas__pista-descarga">
-      La descarga a Excel cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar
-      el servidor con el histórico entero. El botón pone ese periodo en los filtros y lo descarga.
-    </p>
     <p v-if="errorExportacion" class="ofertas__error" role="alert">{{ errorExportacion }}</p>
     <p v-else-if="avisoExportacion" class="ofertas__exportacion" role="status">
       {{ avisoExportacion }}
@@ -737,6 +767,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.ofertas__perfil {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--e-2, 0.5rem);
+  margin-bottom: var(--e-2, 0.5rem);
+}
+
 .ofertas {
   display: flex;
   flex-direction: column;

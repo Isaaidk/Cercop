@@ -159,10 +159,10 @@ def test_precio_cero_e_iva_raro() -> None:
     assert any(f["codigo"] == "iva" for f in revision["avisos"])
 
 
-def test_el_pdf_deja_un_recuadro_por_requisito_mas_el_final_y_el_anexo() -> None:
+def test_el_pdf_deja_solo_el_recuadro_final_y_el_del_anexo() -> None:
     contenido, cajas = armar_proforma(_proforma())
-    # 3 requisitos + firma final + formulario de integridad.
-    assert len(cajas) == 5
+    # El PDF se firma una vez: firma final + formulario de integridad, no una por requisito.
+    assert len(cajas) == 2
     texto = "".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(contenido)).pages)
     assert "PERFIL DE INTEGRIDAD" in texto
     assert "NCO-0001-2026" in texto
@@ -202,11 +202,11 @@ def test_cada_recuadro_queda_firmado() -> None:
     firmado, datos = asyncio.run(
         firmar_pdf(contenido, _certificado(), "clave", motivo="Oferta", cajas=cajas)
     )
-    assert datos["firmas"] == len(cajas) == 5
+    assert datos["firmas"] == len(cajas) == 2
     lector = PdfReader(io.BytesIO(firmado))
     campos = lector.get_fields() or {}
     firmas = [n for n in campos if n.startswith("FirmaElectronica")]
-    assert len(firmas) == 5
+    assert len(firmas) == 2
     # Cada firma está en la página de su recuadro.
     paginas = {
         anot.get_object().get("/T"): indice

@@ -500,7 +500,9 @@ async def test_con_el_circuito_abierto_ni_cobra_ni_llama() -> None:
 
 
 async def test_las_rondas_tienen_tope_y_la_ultima_va_sin_herramientas() -> None:
-    llamadas = [_llamada("listar_alertas", {}) for _ in range(asistente.MAX_RONDAS)]
+    # Argumentos distintos en cada vuelta: si fueran idénticos, el freno de repeticiones cortaría
+    # antes (ver `test_asistente_robustez.py`).
+    llamadas = [_llamada("listar_alertas", {"vuelta": i}) for i in range(asistente.MAX_RONDAS)]
     modelo = ModeloFalso([*llamadas, {"content": "Tienes una alerta.", "tool_calls": []}])
     respuesta = await _enviar("¿Qué tal van mis cosas en general?", modelo=modelo)
     assert len(modelo.llamadas) == asistente.MAX_RONDAS + 1

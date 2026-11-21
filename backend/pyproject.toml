@@ -21,6 +21,10 @@ dependencies = [
     "pyjwt>=2.10",
     "pandas>=2.2",
     "openpyxl>=3.1",
+    # openpyxl solo conserva las imágenes de una plantilla (el logo de la empresa) si Pillow está
+    # instalado; sin él las quita en silencio al exportar. Hoy llega con `fpdf2`, pero se declara:
+    # depender de la dependencia de otra dependencia funciona hasta que esa otra cambia.
+    "pillow>=10.0",
     # Lector de `multipart/form-data`, que es como llega un archivo subido. FastAPI no lo trae en sus
     # dependencias y falla al arrancar si falta: el error —«Form data requires python-multipart»—
     # aparece al declarar la ruta, no al usarla, así que sin él no arrancaría la aplicación entera.

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, status
+from fastapi import APIRouter, Body, Depends, Query, status
 from pydantic import BaseModel, Field
 
 from contratacion.aplicacion.casos_uso.gestionar_cpc import (
@@ -33,6 +33,7 @@ from contratacion.aplicacion.casos_uso.gestionar_cpc import (
     limpiar,
     listar,
     quitar,
+    ramas,
 )
 from contratacion.dominio.palabras import LONGITUD_MINIMA_TERMINO
 from contratacion.dominio.serializacion import cuerpo_json
@@ -40,7 +41,9 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
     ConsentimientoDep,
     CpcDep,
+    RamasCpcDep,
 )
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
 
 router = APIRouter(prefix="/v1/cpc", tags=["CPC"])
 
@@ -69,6 +72,27 @@ class TerminosCpc(BaseModel):
         ),
         examples=[["lavado", "engrasado", "871410032"]],
     )
+
+
+@router.get(
+    "/ramas",
+    summary="Códigos de CPC que cuelgan de un código padre",
+    dependencies=[Depends(LimitePorUsuario("cpc.ramas", 60, 60))],
+)
+async def ver_ramas(
+    actor: ActorDep,
+    repositorio: RamasCpcDep,
+    _: ConsentimientoDep,
+    prefijo: Annotated[str, Query(min_length=2, max_length=20, examples=["8714"])],
+) -> dict[str, Any]:
+    """Los códigos hijos de `prefijo` que aparecen en las contrataciones descargadas.
+
+    El filtro por CPC compara por el inicio: «8714» ya trae todo esto. La lista es para ver qué
+    incluye una rama antes de elegirla, con el nombre estándar y en cuántas contrataciones aparece.
+    """
+    del actor  # basta con tener sesión: el histórico es compartido
+    codigos = await ramas(prefijo, repositorio=repositorio)
+    return cuerpo_json({"prefijo": prefijo, "codigos": list(codigos)})
 
 
 @router.get("", summary="Términos de CPC que vigila el negocio")

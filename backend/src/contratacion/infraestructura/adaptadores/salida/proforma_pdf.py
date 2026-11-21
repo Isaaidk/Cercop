@@ -25,6 +25,7 @@ _GRIS = (71, 85, 105)
 _LINEA = (203, 213, 225)
 _FILA = (241, 245, 249)
 _AMBAR = (180, 83, 9)
+_FONDO_FIRMA = (239, 246, 255)
 
 _ANCHO = 190.0
 _ALTO_RENGLON = 4.4
@@ -420,14 +421,18 @@ def _firma(pdf: _Documento, nombre: str, empresa: dict[str, Any]) -> None:
     pdf.set_auto_page_break(auto=True, margin=22)
 
     # Mismo rectángulo que CAJA_FIRMA de la firma: al firmar, el sello lo cubre por completo.
-    pdf.set_draw_color(*_AZUL_OSCURO)
-    pdf.set_line_width(0.3)
-    pdf.rect(120, 249, 80, 30)
+    # El área de la firma resalta (marco y fondo azul tenue, rótulo en azul): es el único recuadro
+    # de firma de la proforma.
+    pdf.set_draw_color(*_AZUL)
+    pdf.set_fill_color(*_FONDO_FIRMA)
+    pdf.set_line_width(0.5)
+    pdf.rect(120, 249, 80, 30, "DF")
     pdf.cajas.append(_caja(pdf.page_no(), 120, 249, 80, 30))
     pdf.set_xy(120, 244)
-    pdf.set_font("Helvetica", "", 7)
-    pdf.set_text_color(*_GRIS)
+    pdf.set_font("Helvetica", "B", 7.5)
+    pdf.set_text_color(*_AZUL)
     pdf.cell(80, 4, "Firma electrónica")
+    pdf.set_text_color(*_TINTA)
 
 
 _INTEGRIDAD = (
@@ -577,11 +582,36 @@ def _dato_linea(pdf: _Documento, etiqueta: str, valor: Any) -> None:
 
 
 def _datos_del_proceso(pdf: _Documento, documento: dict[str, Any], extras: dict[str, Any]) -> None:
+    entidad = dict(extras.get("entidad") or {})
     _titulo_seccion(pdf, "Datos del proceso")
     _dato_linea(pdf, "Entidad contratante:", documento.get("entidad"))
+    # Los datos de la entidad solo salen si se conocen (ficha, TDR o el formulario).
+    _dato_linea(pdf, "RUC de la entidad:", entidad.get("ruc"))
+    _dato_linea(pdf, "Dirección de la entidad:", entidad.get("direccion"))
+    _dato_linea(pdf, "Teléfono de la entidad:", entidad.get("telefono"))
+    _dato_linea(pdf, "Correo de la entidad:", entidad.get("correo"))
+    _dato_linea(pdf, "Sitio web de la entidad:", entidad.get("web"))
     _dato_linea(pdf, "Código del proceso:", extras.get("codigo"))
     _dato_linea(pdf, "Objeto de contratación:", documento.get("objeto"))
     _dato_linea(pdf, "Fecha de emisión:", extras.get("fecha"))
+
+
+def titulo_sin_objeto(titulo: str, objeto: str) -> str:
+    """El título sin el objeto, si lo repite: el objeto ya se imprime en su propio bloque.
+
+    El título sugerido es «Proforma — <objeto> · <código>». Arriba queda «PROFORMA · <código>» y
+    el objeto, una sola vez, en «Objeto de contratación». Un título propio que no repite el
+    objeto se deja como está.
+    """
+    partes = [p.strip() for p in re.split("\\s+[\u2014\u2013-]\\s+", titulo, maxsplit=1)]
+    if len(partes) < 2 or not objeto.strip():
+        return titulo
+    medio, _, resto = partes[1].partition(" · ")
+    plano_medio = re.sub(r"\W+", " ", medio.rstrip("….")).strip().lower()
+    plano_objeto = re.sub(r"\W+", " ", objeto).strip().lower()
+    if len(plano_medio) < 10 or not plano_objeto.startswith(plano_medio):
+        return titulo
+    return " · ".join(p for p in (partes[0], resto.strip()) if p)
 
 
 def _datos_del_proveedor(pdf: _Documento, empresa: dict[str, Any]) -> None:
@@ -786,6 +816,7 @@ def armar_proforma(documento: dict[str, Any]) -> tuple[bytes, list[Caja]]:
     generico, subtitulo, este = _TIPOS.get(str(documento.get("tipo")), _TIPOS["proforma"])
     # Arriba va el título que escribió la persona (referente a la ínfima); sin él, el genérico.
     propio = " ".join(str(documento.get("titulo") or "").split())
+    propio = titulo_sin_objeto(propio, " ".join(str(documento.get("objeto") or "").split()))
     titulo = propio.upper() if propio else generico
     extras = documento.get("extras") or {}
     condiciones = extras.get("condiciones") or {}
@@ -824,9 +855,22 @@ def armar_proforma(documento: dict[str, Any]) -> tuple[bytes, list[Caja]]:
             ("Garantía:", str(condiciones.get("garantia") or "")),
         ],
     ]
+    alcance = str(extras.get("alcance") or "").strip()
+    if alcance:
+        condiciones_filas.append([("Alcance:", alcance)])
     if any(valor for fila in condiciones_filas for _, valor in fila):
         _titulo_seccion(pdf, "CONDICIONES DE LA OFERTA")
         _bloque(pdf, condiciones_filas)
+    # El texto largo del TDR (cronograma, forma de pago completa) que no cabe en cada condición:
+    # este documento es el respaldo, así que va entero.
+    detalle = [r.strip() for r in str(extras.get("detalle_condiciones") or "").splitlines()]
+    if any(detalle):
+        _titulo_seccion(pdf, "DETALLE DE LAS CONDICIONES SEGÚN EL TDR")
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(*_TINTA)
+        for renglon in detalle:
+            if renglon:
+                _parrafo(pdf, renglon, alto=4.2, despues=1)
 
     for seccion, clave in (
         ("EXPERIENCIA DEL OFERENTE", "experiencia"),
@@ -844,23 +888,23 @@ def armar_proforma(documento: dict[str, Any]) -> tuple[bytes, list[Caja]]:
         if isinstance(fila, dict) and str(fila.get("requisito") or "").strip()
     ]
     if cumplimiento:
+        # Sin columna de firma por fila: el PDF se firma una sola vez, en el recuadro final. El
+        # ancho que ocupaba va a «Cómo cumple el oferente», que es lo que la entidad lee.
         _titulo_seccion(pdf, "CUMPLIMIENTO DE LOS TÉRMINOS DE REFERENCIA")
         _tabla(
             pdf,
-            (10, 56, 70, 54),
-            ("N.º", "Requisito del TDR", "Cómo cumple el oferente", "Firma electrónica"),
+            (10, 70, 110),
+            ("N.º", "Requisito del TDR", "Cómo cumple el oferente"),
             [
                 (
                     f"R{numero}",
                     str(fila["requisito"]).strip(),
                     str(fila.get("como_cumple") or "").strip() or "Sin respuesta",
-                    "",
                 )
                 for numero, fila in enumerate(cumplimiento, start=1)
             ],
-            alinear=("C", "L", "L", "C"),
+            alinear=("C", "L", "L"),
             negrita=(0, 1),
-            firma=str(empresa.get("representante") or nombre),
         )
 
     _declaracion(

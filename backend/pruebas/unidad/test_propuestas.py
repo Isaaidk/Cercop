@@ -71,14 +71,20 @@ def test_un_cpc_en_medio_de_otro_codigo_no_cuenta() -> None:
     assert cpc_que_coinciden(("73210",), ["1732105"]) == []
 
 
-def test_codigos_demasiado_cortos_no_coinciden() -> None:
-    assert cpc_que_coinciden(("73",), ["732100011"]) == []
+def test_un_cpc_padre_del_perfil_trae_su_rama() -> None:
+    """QA ciclo 3: el CPC es jerárquico; elegir «73» (la división) trae todo lo que empieza así."""
+    assert cpc_que_coinciden(("73",), ["732100011"]) == ["73"]
+    assert cpc_que_coinciden(("7",), ["732100011"]) == []
+
+
+def test_una_infima_con_un_codigo_demasiado_corto_no_coincide_al_reves() -> None:
+    # Una ínfima catalogada solo como «73» no dice qué compra: no se propone a «73210».
     assert cpc_que_coinciden(("73210",), ["73"]) == []
 
 
 def test_las_condiciones_de_sql_dicen_lo_mismo_que_la_regla() -> None:
-    codigos, inicios = condiciones_cpc(("73210", "12"))
-    assert codigos == ["73210"]
+    codigos, inicios = condiciones_cpc(("73210", "12", "1"))
+    assert codigos == ["73210", "12"]
     assert inicios == ["7321", "73210"]
 
 

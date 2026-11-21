@@ -28,7 +28,9 @@ from contratacion.aplicacion.casos_uso.asistente import (
     renombrar_conversacion,
     ver_conversacion,
 )
+from contratacion.aplicacion.encolador import ENCOLADORES
 from contratacion.dominio.acceso import Vista
+from contratacion.dominio.intencion import detectar
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
@@ -45,7 +47,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     UsuariosDep,
     VistasDep,
 )
-from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
+from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
 from contratacion.infraestructura.adaptadores.salida.bd.asistente import (
     RepositorioConversacionesBd,
 )
@@ -203,7 +205,7 @@ async def borrar(
 @router.post(
     "/mensajes",
     summary="Enviar un mensaje al asistente y recibir su respuesta",
-    dependencies=[Depends(LimitePorUsuario("asistente.mensajes", 20, 60)), Depends(Turno("ia"))],
+    dependencies=[Depends(LimitePorUsuario("asistente.mensajes", 20, 60))],
 )
 async def mensaje(
     cuerpo: MensajeNuevo,
@@ -215,8 +217,16 @@ async def mensaje(
     creditos: CreditosDep,
     _: ConsentimientoDep,
 ) -> dict[str, Any]:
-    return cuerpo_json(
-        await enviar(
+    """Solo lo que va al modelo hace fila en el encolador de IA.
+
+    Antes la ruta entera tomaba un turno de `ia` (dos por empresa, compartidos con «Preparar
+    oferta»): un «mis alertas», que se contesta en milisegundos sin modelo, esperaba hasta 40 s
+    detrás de dos preguntas lentas y acababa en «Hay mucha demanda» (503). El camino rápido no
+    toca la IA, así que no necesita turno.
+    """
+
+    async def _contestar() -> dict[str, Any]:
+        return await enviar(
             actor,
             texto=cuerpo.texto,
             conversacion_id=cuerpo.conversacion_id,
@@ -225,5 +235,10 @@ async def mensaje(
             modelo=modelo,
             creditos=creditos,
             max_rondas=ajustes.asistente_max_rondas,
+            tiempo_max_seg=ajustes.asistente_tiempo_max_seg,
         )
-    )
+
+    if detectar(cuerpo.texto).rapida:
+        return cuerpo_json(await _contestar())
+    async with ENCOLADORES["ia"].turno(str(actor.negocio_id or actor.usuario_id)):
+        return cuerpo_json(await _contestar())

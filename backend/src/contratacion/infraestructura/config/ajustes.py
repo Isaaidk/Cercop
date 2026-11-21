@@ -222,6 +222,9 @@ class Ajustes(BaseSettings):
     # Vueltas de herramientas que el asistente (chat) puede dar antes de contestar. Cada vuelta es
     # una llamada al modelo: más vueltas responden preguntas más enrevesadas, pero tardan más.
     asistente_max_rondas: int = Field(default=4, ge=1, le=6)
+    # Tope de tiempo de una respuesta del asistente con IA, de punta a punta. Pasado, contesta con
+    # lo que haya encontrado y devuelve el crédito: el chat nunca se queda «Pensando…» minutos.
+    asistente_tiempo_max_seg: float = Field(default=75.0, ge=10.0, le=110.0)
 
     # --- Ingesta ------------------------------------------------------------
     intervalo_ingesta_min: int = Field(default=15, ge=1)

@@ -226,6 +226,12 @@ const PANTALLAS = {
     etiqueta: 'Procesos con oferta',
     pista: 'Subastas, licitaciones y demás procesos publicados en el portal.',
   },
+  // La misma pantalla de procesos con la Subasta Inversa Electrónica ya elegida (QA ciclo 3). Solo
+  // cambia el punto de partida: los filtros, la tabla y la descarga son los de «Procesos».
+  subastas: {
+    etiqueta: 'Subastas inversas',
+    pista: 'Subastas inversas electrónicas publicadas, con su presupuesto referencial.',
+  },
   // El mapa sí deja elegir familia, porque su pregunta es otra: «dónde».
   mapa: { etiqueta: 'Mapa', pista: 'Dónde se está comprando. Pulsa una provincia para filtrar.' },
   resumen: { etiqueta: 'Estadísticas', pista: 'Gráficas de lo publicado con los filtros puestos.' },
@@ -260,6 +266,7 @@ const PESTANAS_BASE = [
   'inicio',
   'infimas',
   'ofertas',
+  'subastas',
   'mapa',
   'resumen',
   'propuestas',
@@ -312,7 +319,7 @@ const AREAS = [
     id: 'buscar',
     etiqueta: 'Buscar oportunidades',
     pista: 'Qué compras públicas han salido',
-    pestanas: ['infimas', 'ofertas', 'mapa', 'resumen'],
+    pestanas: ['infimas', 'ofertas', 'subastas', 'mapa', 'resumen'],
   },
   {
     id: 'parati',
@@ -370,6 +377,7 @@ const VISTA_DE_PESTANA = {
   // Las propuestas son ínfimas: sin la vista de necesidades, el servidor las negaría.
   propuestas: 'necesidades',
   ofertas: 'ofertas',
+  subastas: 'ofertas',
   mapa: 'graficas',
   resumen: 'graficas',
 }
@@ -1026,6 +1034,17 @@ const ultimaActualizacion = computed(() =>
 
             <section v-if="visitada('ofertas')" v-show="pestana === 'ofertas' && !pestanaCerrada('ofertas')">
               <OfertasTab @preparar="prepararOferta" />
+            </section>
+            <section
+              v-if="visitada('subastas')"
+              v-show="pestana === 'subastas' && !pestanaCerrada('subastas')"
+            >
+              <OfertasTab
+                :tipos-iniciales="['Subasta Inversa Electrónica']"
+                titulo="Subastas inversas electrónicas"
+                pista="Las subastas publicadas por las entidades, las más recientes primero, con su presupuesto referencial. Puedes cambiar el tipo o añadir más filtros."
+                @preparar="prepararOferta"
+              />
             </section>
 
             <section v-if="visitada('plantilla')" v-show="pestana === 'plantilla'">

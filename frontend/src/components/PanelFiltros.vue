@@ -23,9 +23,43 @@ import GestorDescripcionProducto from '@/components/GestorDescripcionProducto.vu
 import SelectorProvincias from '@/components/SelectorProvincias.vue'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
+import { api } from '@/api/endpoints'
 import { numero } from '@/utils/formato'
 
 const estado = filtros.estado
+
+/*
+ * «Usar los datos de mi empresa» (QA ciclo 3): rellena el borrador con lo que la empresa registró
+ * en su perfil —CPC, lo que ofrece y su cobertura— y **no aplica nada**: el botón de arriba cuenta
+ * los cambios y la persona decide. Se puede volver a traer después de editar o de limpiar.
+ */
+const trayendoPerfil = ref(false)
+const usadoPerfil = ref(false)
+const avisoPerfil = ref('')
+const errorPerfil = ref('')
+
+async function traerDelPerfil() {
+  if (trayendoPerfil.value) return
+  trayendoPerfil.value = true
+  avisoPerfil.value = ''
+  errorPerfil.value = ''
+  try {
+    const sugeridos = await api.filtrosDelPerfil()
+    if (sugeridos.vacio) {
+      errorPerfil.value =
+        'Tu perfil todavía no tiene CPC, productos ni provincias. Complétalo en «Perfil y RUP».'
+      return
+    }
+    const hecho = filtros.cargarDesdePerfil(sugeridos)
+    usadoPerfil.value = true
+    masAbierto.value = true
+    avisoPerfil.value = `Se pusieron ${hecho.terminos} términos de CPC y ${hecho.provincias} provincias de tu empresa. Revísalos y pulsa «Aplicar» para buscar.`
+  } catch (fallo) {
+    errorPerfil.value = fallo.message
+  } finally {
+    trayendoPerfil.value = false
+  }
+}
 
 /** Los estados que existen de verdad en los datos, no una lista inventada. */
 const estados = computed(() => datos.estado.catalogos.estado || [])
@@ -110,6 +144,22 @@ const pistaAplicar = computed(() =>
       </button>
       <p class="filtros__aplicar-pista" role="status">{{ pistaAplicar }}</p>
     </div>
+
+    <div class="filtros__perfil">
+      <button
+        type="button"
+        class="boton boton--secundario boton--pequeno"
+        :disabled="trayendoPerfil"
+        @click="traerDelPerfil"
+      >
+        <span v-if="trayendoPerfil" class="girador" aria-hidden="true" />
+        {{ usadoPerfil ? 'Volver a traer de mis datos' : 'Usar los datos de mi empresa' }}
+      </button>
+      <p v-if="errorPerfil" class="filtros__perfil-nota filtros__perfil-nota--error" role="alert">
+        {{ errorPerfil }}
+      </p>
+      <p v-else-if="avisoPerfil" class="filtros__perfil-nota" role="status">{{ avisoPerfil }}</p>
+    </div>
     <!-- 1. Qué busco: las palabras clave. Es el filtro de todos los días. -->
     <details class="grupo" open>
       <summary>Buscar</summary>
@@ -167,7 +217,9 @@ const pistaAplicar = computed(() =>
             class="interruptor__control"
             @change="filtros.actualizar({ soloConPlazo: $event.target.checked })"
           />
-          <span class="interruptor__pista">Solo las que aún admiten proformas</span>
+          <span class="interruptor__pista">
+            Solo las que aún admiten proformas (según la fecha límite de proforma)
+          </span>
         </label>
       </div>
     </details>
@@ -309,6 +361,22 @@ const pistaAplicar = computed(() =>
 </template>
 
 <style scoped>
+.filtros__perfil {
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-1);
+}
+
+.filtros__perfil-nota {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--texto-suave);
+}
+
+.filtros__perfil-nota--error {
+  color: var(--peligro, #b42318);
+}
+
 .filtros {
   display: flex;
   flex-direction: column;

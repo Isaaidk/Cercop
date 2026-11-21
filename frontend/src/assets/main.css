@@ -96,6 +96,17 @@ textarea {
   --info: #0e7490;
   --info-suave: #e0f4f9;
 
+  /* Inteligencia artificial: el violeta marca lo que hace o escribe la IA (el Asistente, sus
+     respuestas y tarjetas), para distinguirlo del azul de acción. Solo se usa ahí. `--ia` sobre
+     blanco da 5,7:1 y el texto blanco sobre el degradado, más de 5:1 (AA). */
+  --ia: #7c3aed;
+  --ia-fuerte: #6d28d9;
+  --ia-suave: #ede9fe;
+  --ia-tenue: #f7f5ff;
+  --ia-borde: #d8ccfb;
+  --ia-degradado: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+  --ia-sobre: #ffffff;
+
   /* Series de las gráficas. Es una paleta ordenada de más a menos contraste, no una lista de
      colores bonitos: la primera serie tiene que destacar sobre las demás y la última casi no
      competir, porque es la que menos importa. */
@@ -187,6 +198,14 @@ html[data-tema='oscuro'] {
   --error-suave: #3a1618;
   --info: #38bdf8;
   --info-suave: #0d2b36;
+
+  --ia: #b69cff;
+  --ia-fuerte: #cbb8ff;
+  --ia-suave: #2c2457;
+  --ia-tenue: #1d1938;
+  --ia-borde: #44397a;
+  --ia-degradado: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+  --ia-sobre: #ffffff;
 
   --serie-1: #5c8dff;
   --serie-2: #2dd4bf;

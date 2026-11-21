@@ -7,12 +7,14 @@ rellena: una proforma sin importe confirmado no sale.
 from __future__ import annotations
 
 import itertools
+import json
 import re
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from contratacion.dominio.errores import DatoInvalido
 from contratacion.dominio.palabras import normalizar
+from contratacion.dominio.requisitos import condiciones_de_tdr, es_requisito_operativo
 
 AVISO_LECTURA = (
     "Resumen armado solo con los apartados que el documento titula. "
@@ -31,6 +33,38 @@ _TITULOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("requisitos_tecnicos", ("especificaciones tecnicas", "requisitos tecnicos")),
     ("condiciones", ("condiciones de participacion", "condiciones")),
 )
+# Apartados de la estructura numerada del TDR («4. OBJETIVOS», «5. ALCANCE», «6. METODOLOGÍA DE
+# TRABAJO», «6.1 Protocolo para el desarrollo de campañas», «7. PRODUCTOS O SERVICIOS
+# ESPERADOS»). Solo cuentan como título si la línea va numerada o en mayúsculas: «Protocolos de
+# bioseguridad en cada jornada» dentro de un párrafo es contenido, no un apartado. El título puede
+# ser más largo que los de arriba («Protocolo para el desarrollo de campañas»).
+_TITULOS_ESTRUCTURA: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("justificacion", ("justificacion",)),
+    (
+        "objetivos",
+        ("objetivos especificos", "objetivo especifico", "objetivo general", "objetivos"),
+    ),
+    ("metodologia", ("metodologia de trabajo", "metodologia")),
+    ("protocolo", ("protocolo",)),
+    (
+        "entregables",
+        ("productos o servicios esperados", "productos esperados", "servicios esperados"),
+    ),
+    (
+        "personal",
+        ("personal tecnico", "personal minimo", "personal requerido", "perfil del personal"),
+    ),
+    ("equipos", ("equipo minimo", "equipos minimos", "equipos", "equipamiento")),
+    ("obligaciones", ("obligaciones del contratista", "obligaciones de las partes")),
+    ("requisitos_tecnicos", ("requisitos minimos", "requisitos")),
+    ("forma_pago", ("forma de pago", "condiciones de pago")),
+    ("lugar_entrega", ("lugar de entrega", "lugar de ejecucion")),
+    ("garantia", ("garantias", "garantia tecnica")),
+)
+# Clave de la lectura con el numeral y el título de cada apartado tal como los trae el TDR
+# («alcance» → «5. Alcance»). Va en JSON; las claves con «_» no son apartados que se enseñen.
+NUMERALES = "_numerales"
+_NUMERAL = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,3})(?:\.|\)|-)?\s+(?=\S)")
 
 _ESTADOS = {"pendiente", "cumplido", "no_aplica"}
 _TOPE = 2500
@@ -175,17 +209,83 @@ def limpiar_texto(texto: Any, tope: int | None = None) -> str:
 
 
 def _titulo(linea: str) -> str | None:
+    encabezado = _encabezado(linea)
+    return encabezado[0] if encabezado else None
+
+
+def _encabezado(linea: str) -> tuple[str, str, str] | None:
+    """(clave, numeral, título legible) si la línea es el título de un apartado del TDR.
+
+    «5. ALCANCE» → («alcance», «5», «5. Alcance»). El numeral se conserva: la lista de requisitos
+    lo cita («… (TDR 5. Alcance)») y la lectura enseña los apartados en el orden del TDR.
+    """
+    numeral = _NUMERAL.match(linea)
     plana = normalizar(linea)
     plana = re.sub(r"^[\d.\)\-\s]+", "", plana).strip(" :.-")
     if not plana or len(plana) > 80:
         return None
-    for clave, variantes in _TITULOS:
+    clave = _clave_de_titulo(plana, _TITULOS, 24)
+    if clave is None:
+        texto = linea[numeral.end() :] if numeral else linea
+        letras = [c for c in texto if c.isalpha()]
+        estricto = bool(numeral) or (bool(letras) and all(c.isupper() for c in letras))
+        if estricto and not plana.endswith((",", ";")):
+            clave = _clave_de_titulo(plana, _TITULOS_ESTRUCTURA, 60)
+    if clave is None:
+        return None
+    return clave, numeral.group(1) if numeral else "", _rotulo(linea, numeral)
+
+
+def _clave_de_titulo(
+    plana: str, titulos: tuple[tuple[str, tuple[str, ...]], ...], holgura: int
+) -> str | None:
+    for clave, variantes in titulos:
         for variante in variantes:
             if plana == variante or plana.startswith(variante + " "):
                 resto = plana[len(variante) :].strip()
-                if len(resto) <= 24:
+                if len(resto) <= holgura:
                     return clave
     return None
+
+
+def _rotulo(linea: str, numeral: re.Match[str] | None) -> str:
+    """«4.1. OBJETIVO GENERAL:» → «4.1. Objetivo general». Corto, para citarlo."""
+    texto = " ".join((linea[numeral.end() :] if numeral else linea).split()).strip(" :.-")
+    if texto.isupper():
+        texto = texto.lower()
+    texto = texto[:1].upper() + texto[1:]
+    texto = cortar(texto, 70)
+    return f"{numeral.group(1)}. {texto}" if numeral else texto
+
+
+_PIE = re.compile(
+    r"^(?:direcci[oó]n|tel[eé]fonos?|telf|e-?mail|correo(?: electr[oó]nico)?|web|sitio web|"
+    r"p[aá]gina web)\s*[:.]|^www\.",
+    re.IGNORECASE,
+)
+# Un subtítulo numerado dentro de un apartado («6.1.1 Fase preparatoria y difusión»): se guarda
+# como una frase aparte para que la lista de requisitos sepa a qué numeral pertenece lo que sigue.
+_SUBTITULO = re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){1,3})\.?\s+([A-ZÁÉÍÓÚÑ][^.;:]{2,79})\.?$")
+# Un apartado numerado que no está en la lista de títulos conocidos («8. OBLIGACIONES DE LA
+# ENTIDAD»): corta el apartado anterior, así su texto no se mezcla con otro.
+_DESCONOCIDO = re.compile(r"^\s*(\d{1,2})[.)]?\s+([^\d].{2,78})$")
+
+
+def _apartado_desconocido(linea: str, ultimo: int) -> tuple[str, str, str] | None:
+    """«9. OBLIGACIONES DE LA ENTIDAD» tras el apartado 8: un apartado propio del TDR.
+
+    Solo si va en mayúsculas y su numeral sigue al último visto: un «7. RUC ACTIVO» de una lista
+    dentro del apartado 3 no corta nada.
+    """
+    hallado = _DESCONOCIDO.match(linea)
+    if not hallado or ultimo < 1 or int(hallado.group(1)) != ultimo + 1:
+        return None
+    texto = hallado.group(2).strip()
+    letras = [c for c in texto if c.isalpha()]
+    if len(letras) < 4 or not all(c.isupper() for c in letras) or texto.endswith((".", ",")):
+        return None
+    numero = hallado.group(1)
+    return f"apartado_{numero}", numero, _rotulo(linea, _NUMERAL.match(linea))
 
 
 # Campos del formulario de necesidad de la entidad. Se reconocen por su etiqueta («FORMA DE PAGO:»)
@@ -302,19 +402,52 @@ def extraer_secciones(texto: str) -> dict[str, str]:
 
 
 def _secciones_tituladas(texto: str) -> dict[str, str]:
-    """Apartados reconocidos por su título, uno por línea."""
+    """Apartados reconocidos por su título, uno por línea, con el numeral que les da el TDR."""
     secciones: dict[str, list[str]] = {}
+    rotulos: dict[str, str] = {}
     actual: str | None = None
+    ultimo = 0
     for linea in str(texto or "").splitlines():
-        titulo = _titulo(linea)
-        if titulo:
-            actual = titulo
+        encabezado = _encabezado(linea) or _apartado_desconocido(linea, ultimo)
+        if encabezado:
+            actual, numeral, rotulo = encabezado
             secciones.setdefault(actual, [])
+            rotulos.setdefault(actual, rotulo)
+            if numeral:
+                ultimo = int(numeral.split(".")[0])
             continue
         if actual and linea.strip():
-            secciones[actual].append(linea.strip())
+            renglon = linea.strip()
+            # El membrete y el pie de página («Dirección: …», «Email: …», «Web: …») se repiten en
+            # cada hoja y caían dentro del apartado que tocara. Solo el lugar de entrega los usa.
+            if actual != "lugar_entrega" and _PIE.match(renglon):
+                continue
+            # Un subtítulo («6.1.1. Fase preparatoria») queda como una frase aparte, sin el punto
+            # tras el numeral: al unir, se volvería parte de la frase siguiente o se partiría.
+            subtitulo = _SUBTITULO.match(renglon)
+            if subtitulo:
+                renglon = f"{subtitulo.group(1)} {subtitulo.group(2).strip()}."
+            secciones[actual].append(renglon)
     limpias = {clave: limpiar_texto(" ".join(partes), _TOPE) for clave, partes in secciones.items()}
-    return {clave: texto for clave, texto in limpias.items() if texto}
+    salida = {clave: texto for clave, texto in limpias.items() if texto}
+    numerales = {clave: rotulos[clave] for clave in salida if _NUMERAL.match(rotulos[clave])}
+    if numerales:
+        salida[NUMERALES] = json.dumps(numerales, ensure_ascii=False)
+    return salida
+
+
+def numerales_de(secciones: dict[str, Any]) -> dict[str, str]:
+    """El numeral y título de cada apartado («alcance» → «5. Alcance»), si la lectura los trae."""
+    try:
+        valor = json.loads(str((secciones or {}).get(NUMERALES) or "{}"))
+    except ValueError:
+        return {}
+    return {str(k): str(v) for k, v in valor.items()} if isinstance(valor, dict) else {}
+
+
+def _orden_numeral(rotulo: str) -> tuple[int, ...]:
+    hallado = _NUMERAL.match(rotulo or "")
+    return tuple(int(n) for n in hallado.group(1).split(".")) if hallado else (999,)
 
 
 _EXTENSIONES = (".pdf", ".doc", ".docx", ".zip", ".rar", ".xls", ".xlsx")
@@ -330,6 +463,8 @@ _UTILES = (
     "condiciones",
     "plazos",
     "presupuesto",
+    "metodologia",
+    "protocolo",
 )
 
 
@@ -575,22 +710,97 @@ def _campos_y_frases(cuerpo: str) -> list[str]:
     return salida
 
 
+# Apartados de donde salen los requisitos, en el orden por defecto (sin numerales). Con numerales,
+# manda el orden del TDR. No entran el objeto, los objetivos, la justificación ni los antecedentes:
+# explican la contratación, no dicen qué se verifica. Plazo, pago, lugar y garantía van al final,
+# en una frase, como campos.
+_FUENTES_REQUISITOS = (
+    "alcance",
+    "metodologia",
+    "protocolo",
+    "actividades",
+    "requisitos_tecnicos",
+    "personal",
+    "equipos",
+    "obligaciones",
+    "entregables",
+    "condiciones",
+)
+# Un apartado sin título conocido entra salvo que su título diga que es contexto o lo comercial.
+_APARTADO_SIN_REQUISITOS = (
+    "justific",
+    "antecedente",
+    "objetivo",
+    "base legal",
+    "marco legal",
+    "introduccion",
+    "glosario",
+    "definicion",
+    "presupuesto",
+    "forma de pago",
+    "precio",
+    "valor",
+    "administrador",
+)
+_TOPE_REQUISITOS = 40
+_REFERENCIA = re.compile(r"\s*\(TDR [^()]{1,90}\)$")
+
+
+def sin_referencia(requisito: str) -> str:
+    """El requisito sin la cita del numeral del TDR que se le agrega al final."""
+    return _REFERENCIA.sub("", str(requisito or ""))
+
+
+def _fuentes_en_orden(secciones: dict[str, str], numerales: dict[str, str]) -> list[str]:
+    claves = [clave for clave in _FUENTES_REQUISITOS if secciones.get(clave)]
+    for clave in secciones:
+        if clave.startswith("apartado_") and secciones.get(clave):
+            titulo = normalizar(numerales.get(clave, ""))
+            if not any(marca in titulo for marca in _APARTADO_SIN_REQUISITOS):
+                claves.append(clave)
+    if not numerales:
+        return claves
+    return sorted(claves, key=lambda c: (_orden_numeral(numerales.get(c, "")), claves.index(c)))
+
+
+def _con_cita(texto: str, cita: str) -> str:
+    return f"{cortar(texto, 360)} (TDR {cita})" if cita else cortar(texto, 400)
+
+
 def checklist(secciones: dict[str, str]) -> list[str]:
-    """Requisitos verificables: un campo del formulario o una línea del documento, sin metadatos."""
+    """Requisitos verificables, en el orden del TDR y con su numeral, sin frases de contexto.
+
+    Cada uno es un campo del formulario o una frase con obligación, cifra o dato operativo
+    (`requisitos.es_requisito_operativo`). Si el TDR numera sus apartados, el requisito cita el
+    numeral del que sale: «Un mínimo de 193 procedimientos… (TDR 5. Alcance)». Al final van plazo,
+    forma de pago, lugar y garantía, cada uno en una frase.
+    """
+    numerales = numerales_de(secciones)
     vistos: list[str] = []
-    for clave in ("requisitos_tecnicos", "condiciones", "entregables", "actividades", "objeto"):
-        cuerpo = secciones.get(clave) or ""
-        for trozo in _campos_y_frases(limpiar_texto(cuerpo)):
+    planos: set[str] = set()
+    for clave in _fuentes_en_orden(secciones, numerales):
+        cita = numerales.get(clave, "")
+        subcita = ""
+        for trozo in _campos_y_frases(limpiar_texto(secciones.get(clave) or "")):
             texto = _NUMERO_SUELTO.sub("", " ".join(trozo.split())).strip().lstrip("-•· ")
+            subtitulo = _SUBTITULO.match(texto)
+            if subtitulo and not es_requisito_breve(subtitulo.group(2)):
+                subcita = f"{subtitulo.group(1)}. {subtitulo.group(2).strip(' .')}"
+                continue
             # «(de ser el caso)» suelto completa al requisito anterior; no es uno nuevo.
             if vistos and re.fullmatch(r"\([^()]{1,60}\)\.?", texto):
-                vistos[-1] = cortar(f"{vistos[-1]} {texto}", 400)
+                previo = sin_referencia(vistos[-1])
+                vistos[-1] = vistos[-1].replace(previo, cortar(f"{previo} {texto}", 360), 1)
                 continue
-            if len(texto) < 8 or texto in vistos or texto.strip(" .") == POR_COMPLETAR:
+            if len(texto) < 8 or texto.strip(" .") == POR_COMPLETAR or _TABLA_DE_ITEMS in texto:
                 continue
-            vistos.append(cortar(texto, 400))
-            if len(vistos) >= 40:
+            if not es_requisito_operativo(texto) or normalizar(texto) in planos:
+                continue
+            planos.add(normalizar(texto))
+            vistos.append(_con_cita(texto, subcita or cita))
+            if len(vistos) >= _TOPE_REQUISITOS:
                 return vistos
+    breves = condiciones_de_tdr(secciones)
     for clave in (
         "especificaciones",
         "cpc",
@@ -600,11 +810,35 @@ def checklist(secciones: dict[str, str]) -> list[str]:
         "lugar_entrega",
         "garantia",
     ):
-        valor = limpiar_texto(secciones.get(clave))
-        texto = f"{ETIQUETAS_CAMPO[clave]}: {valor}".strip()
-        if valor and not any(v.lower().startswith(texto[:30].lower()) for v in vistos):
-            vistos.append(cortar(" ".join(texto.split()), 400))
-    return vistos[:40]
+        valor = breves.get(clave) or limpiar_texto(secciones.get(clave))
+        if not valor:
+            continue
+        texto = " ".join(f"{ETIQUETAS_CAMPO[clave]}: {valor}".split())
+        cita = numerales.get("plazos" if clave == "plazo_entrega" else clave, "")
+        if cita and not secciones.get(clave if clave != "plazo_entrega" else "plazos"):
+            cita = ""
+        if not any(sin_referencia(v).lower().startswith(texto[:30].lower()) for v in vistos):
+            vistos.append(_con_cita(texto, cita))
+    return vistos[:_TOPE_REQUISITOS]
+
+
+def es_requisito_breve(texto: str) -> bool:
+    """Un «subtítulo» que en realidad es un requisito corto con obligación o cifra."""
+    plano = normalizar(texto)
+    return bool(re.search(r"\d", plano)) or any(
+        verbo in plano for verbo in ("debe", "debera", "minimo", "contar con")
+    )
+
+
+def nombre_de_descarga(codigo: str, extension: str, sufijo: str = "") -> str:
+    """«ProformaCercoapp_NIC-0360019760001-2026-00028.pdf»; sin código, «ProformaCercoapp.pdf».
+
+    Solo letras, cifras, guion, punto y guion bajo: el nombre va en una cabecera HTTP y en el disco
+    de quien lo baja (Windows no admite «/», «:» ni «?»).
+    """
+    limpio = re.sub(r"[^A-Za-z0-9._-]+", "-", str(codigo or "").strip()).strip("-._")[:80]
+    base = f"ProformaCercoapp_{limpio}" if limpio else "ProformaCercoapp"
+    return f"{base}{sufijo}.{extension.lstrip('.')}"
 
 
 def exigir_estado(estado: str) -> str:

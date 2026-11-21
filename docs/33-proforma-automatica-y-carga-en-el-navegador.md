@@ -29,7 +29,7 @@ Los ítems se leen **a demanda**: pedir un proceso marca su ficha (`registro.ite
 
 ## El PDF
 
-Sigue el formulario de proformas de ínfima cuantía del SOCE: datos del proveedor, detalle del objeto de compra (No., CPC con su nombre completo, descripción, unidad, cantidad, valor unitario ofertado con cinco decimales, valor total, USD.), TOTAL, vigencia de la proforma y documentos anexos. Después, las secciones propias de la oferta: condiciones, cumplimiento del TDR con un recuadro de firma por requisito, declaración, firma y el Formulario de Perfil de Integridad.
+Sigue el formulario de proformas de ínfima cuantía del SOCE: datos del proveedor, detalle del objeto de compra (No., CPC con su nombre completo, descripción, unidad, cantidad, valor unitario ofertado con cinco decimales, valor total, USD.), TOTAL, vigencia de la proforma y documentos anexos. Después, las secciones propias de la oferta: condiciones y alcance, cumplimiento del TDR (sin columna de firma: el PDF se firma una vez, en el recuadro del oferente, marcado en azul), declaración, firma y el Formulario de Perfil de Integridad.
 
 ## Pruebas
 

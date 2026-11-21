@@ -26,13 +26,6 @@ import IconoPanel from '@/components/IconoPanel.vue'
 import { separarProvincia, codigoDeProvincia } from '@/utils/provincias'
 import { guardarArchivo } from '@/utils/descargas'
 import { descargarTdr } from '@/utils/tdr'
-import { diaDeHoy } from '@/utils/fecha'
-import {
-  MESES_EXPORTABLES,
-  descargaEnVentana,
-  inicioExportable,
-  limiteLegible,
-} from '@/utils/exportacion'
 import { filtros } from '@/stores/filtros'
 import { datos } from '@/stores/datos'
 import { sesion } from '@/stores/sesion'
@@ -168,40 +161,13 @@ async function exportar(opcion) {
   }
 }
 
-/**
- * La fecha inicial **en vigor**, que es la que viaja en la descarga.
- *
- * Se lee de los parámetros y no del borrador a propósito: la descarga usa los criterios aplicados,
- * así que mirar el borrador diría que la descarga cabe cuando todavía no se ha pulsado «Aplicar».
+/*
+ * Aquí hubo un botón «Excel de los últimos 3 meses» que ponía solo un rango de fechas de
+ * publicación antes de descargar. El cliente lo reportó (QA ciclo 3): la pantalla decía 281 ínfimas
+ * y el archivo traía 275, porque el rango dejaba fuera ínfimas publicadas antes y todavía abiertas.
+ * La fecha de publicación es ahora un filtro opcional que nunca se pone solo, y la descarga lleva
+ * exactamente los filtros de la pantalla.
  */
-const desdeAplicado = computed(() => filtros.parametros.value.desde || '')
-
-/**
- * ¿La descarga se sale de la ventana de tres meses?
- *
- * El servidor lo comprueba igual y rechaza la petición con el motivo; aquí se evita ofrecer un botón
- * condenado a un rechazo, que es lo que se lee como que el panel está roto.
- */
-const descargaFueraDeVentana = computed(() => !descargaEnVentana(desdeAplicado.value))
-
-const limiteDeLaVentana = computed(() => limiteLegible(inicioExportable()))
-
-/**
- * Pone el periodo descargable y descarga, en un solo gesto.
- *
- * Es la excepción deliberada a la regla de que la descarga lleva **exactamente** los filtros de la
- * pantalla: aquí el botón no se limita a descargar, también fija el rango. Y se fija en los dos
- * sentidos —desde el límite hasta hoy— porque dejar el `hasta` anterior podría dejarlo por debajo
- * del nuevo `desde`, y entonces la petición se rechazaría por dos fechas que se contradicen.
- *
- * Después de aplicar, la tabla muestra el mismo periodo que el archivo: la descarga sigue siendo
- * fiel a la vista, que es la propiedad que no se puede perder.
- */
-async function descargarElPeriodoExportable() {
-  filtros.actualizar({ desde: inicioExportable(), hasta: diaDeHoy() })
-  filtros.aplicar()
-  await exportar(OPCIONES_EXPORTACION.value[0])
-}
 
 /**
  * Las columnas, con las claves **canónicas** que publica la API.
@@ -224,8 +190,8 @@ const COLUMNAS = [
   { clave: 'codigo', etiqueta: 'Código', tipo: 'codigo' },
   { clave: 'objeto_compra', etiqueta: 'Objeto', tipo: 'objeto' },
   { clave: 'entidad', etiqueta: 'Entidad', tipo: 'largo' },
-  { clave: 'provincia', etiqueta: 'Ubicación', tipo: 'ubicacion' },
-  { clave: 'fecha_limite_proformas', etiqueta: 'Cierre', tipo: 'cierre' },
+  { clave: 'provincia', etiqueta: 'Provincia', tipo: 'ubicacion' },
+  { clave: 'fecha_limite_proformas', etiqueta: 'Fecha límite de proforma', tipo: 'cierre' },
   { clave: 'cpc', etiqueta: 'CPC', tipo: 'cpc' },
 ]
 
@@ -353,21 +319,7 @@ const resumenPagina = computed(() => {
              directos de la barra de acciones, que es la que reparte el espacio. Con `v-for` y `v-if`
              en el mismo botón, Vue evalúa antes el `v-if` y avisa de que la variable del recorrido
              todavía no existe. -->
-        <template v-if="puedeExportar && descargaFueraDeVentana">
-          <button
-            type="button"
-            class="boton boton--secundario boton--pequeno"
-            :disabled="Boolean(exportando) || !hayResultados"
-            :title="`Pone el periodo del ${limiteDeLaVentana} a hoy y descarga lo que cumpla los demás filtros`"
-            @click="descargarElPeriodoExportable"
-          >
-            <span v-if="exportando" class="girador" aria-hidden="true" />
-            <IconoPanel v-else nombre="descargar" :tamano="14" />
-            {{ exportando ? 'Generando…' : `Excel de los últimos ${MESES_EXPORTABLES} meses` }}
-          </button>
-        </template>
-
-        <template v-else-if="puedeExportar">
+        <template v-if="puedeExportar">
           <button
             v-for="opcion in OPCIONES_EXPORTACION"
             :key="opcion.clave"
@@ -388,18 +340,11 @@ const resumenPagina = computed(() => {
       </div>
     </header>
 
-    <!--
-      Por qué la descarga no lleva el histórico entero, dicho donde se pulsa y no solo cuando
-      falla: es una limitación del sistema y el usuario merece saberla antes de intentarlo. La
-      consulta en pantalla no tiene ese tope —se pagina— así que se dice también eso.
-    -->
-    <details v-if="puedeExportar && descargaFueraDeVentana && hayResultados" class="ayuda tabla__pista-descarga">
-      <summary>¿Qué cubre la descarga a Excel?</summary>
+    <details v-if="puedeExportar && hayResultados" class="ayuda tabla__pista-descarga">
+      <summary>¿Qué trae la descarga a Excel?</summary>
       <p>
-        Cubre como mucho los últimos {{ MESES_EXPORTABLES }} meses, para no cargar el servidor con el
-        histórico entero. El botón pone ese periodo en los filtros y lo descarga; para el histórico
-        anterior, acota por palabra clave, CPC o provincia, o consúltalo aquí, que la tabla sí llega
-        a todo.
+        Trae las mismas contrataciones que ves aquí, con los mismos filtros, de todas las páginas. Si
+        son más de 20.000, te pedirá acotar con palabras clave, CPC, provincia o fechas.
       </p>
     </details>
 
@@ -598,11 +543,16 @@ const resumenPagina = computed(() => {
           <p v-if="resumenCpc(fila)" class="ficha-registro__cpc">CPC {{ recortar(resumenCpc(fila), 60) }}</p>
           <p v-else-if="leyendoCpc(fila)" class="ficha-registro__cpc tabla__leyendo">Leyendo CPC…</p>
           <div class="ficha-registro__pie">
-            <button type="button" class="tabla__ubicacion" @click="filtrarPorProvincia(valor(fila, 'provincia'))">
+            <button
+              type="button"
+              class="tabla__ubicacion"
+              :aria-label="`Provincia: ${sinEtiquetas(valor(fila, 'provincia')) || 'sin provincia'}. Filtrar por esta provincia`"
+              @click="filtrarPorProvincia(valor(fila, 'provincia'))"
+            >
               {{ recortar(sinEtiquetas(valor(fila, 'provincia')), 28) || 'Sin provincia' }}
             </button>
             <span v-if="valor(fila, 'fecha_limite_proformas')" class="numeros">
-              Cierra {{ fechaCorta(valor(fila, 'fecha_limite_proformas')) }}
+              Fecha límite de proforma: {{ fechaCorta(valor(fila, 'fecha_limite_proformas')) }}
             </span>
           </div>
           <div class="ficha-registro__acciones">
@@ -852,7 +802,12 @@ const resumenPagina = computed(() => {
   white-space: nowrap;
 }
 
-.tabla__th--cierre,
+/* El título «Fecha límite de proforma» puede partirse en dos líneas; la fecha de la celda no. */
+.tabla th.tabla__th--cierre {
+  white-space: normal;
+  min-width: 9rem;
+}
+
 .tabla__td--cierre {
   white-space: nowrap;
 }

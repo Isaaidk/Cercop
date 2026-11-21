@@ -235,6 +235,87 @@ def contexto_de_anexos(partes: Iterable[tuple[Mapping[str, Any], str]]) -> str:
     return "\n\n".join(bloques)
 
 
+# --- Formato de proforma de la propia entidad --------------------------------------------------
+# Algunas entidades adjuntan su propio formato para llenar («ÍNFIMA CUANTÍA … PROFORMA», con la
+# tabla No. / CPC / Descripción / Cantidad / V. Unitario / V. Total, «PLAZO DE EJECUCIÓN», «FORMA
+# DE PAGO», «GARANTÍA»). Si se ignora, la proforma de CercoApp sale en otro formato del que la
+# entidad pidió. Se detecta con el texto ya leído de cada anexo; no se baja nada más.
+
+_COLUMNAS_PROFORMA = (
+    re.compile(r"(?<![a-z])(?:no\.|nro\.?|n°|n\.°|item)(?![a-z])"),
+    re.compile(r"\bcpc\b"),
+    re.compile(r"\bdescripcion\b|\bdetalle\b"),
+    re.compile(r"\bcantidad\b"),
+    re.compile(r"\bv\.?\s*unit|valor unitario|precio unitario|p\.?\s*unitario|\bunitario\b"),
+    re.compile(r"\bv\.?\s*total|valor total|precio total|p\.?\s*total"),
+)
+_CAMPOS_PROFORMA = (
+    ("Plazo de ejecución", re.compile(r"plazo de (?:ejecucion|entrega)")),
+    ("Forma de pago", re.compile(r"forma de pago")),
+    ("Garantía", re.compile(r"\bgarantia")),
+    ("Vigencia de la proforma", re.compile(r"\bvigencia\b|\bvalidez\b")),
+)
+_EXPLICITO = re.compile(r"(?:formato|modelo|formulario|plantilla) (?:de |para )?(?:la )?proforma")
+_HUECOS = re.compile(r"_{4,}|\.{6,}|…{2,}|\[por completar\]|\$\s*$|firma y sello|firma del", re.M)
+_DEL_OFERENTE = re.compile(r"(?:nombre|ruc|razon social|firma) del (?:oferente|proveedor)")
+_GARANTIAS = (
+    ("Garantía de fiel cumplimiento", re.compile(r"garantia (?:de )?(?:fiel )?cumplimiento")),
+    ("Garantía de buen uso del anticipo", re.compile(r"buen uso del anticipo")),
+    ("Garantía técnica", re.compile(r"garantia tecnica")),
+    ("Póliza de seguro", re.compile(r"\bpoliza")),
+)
+
+
+def garantias_mencionadas(texto: str) -> list[str]:
+    """Las garantías que el texto nombra («garantía de cumplimiento», «garantía técnica»…)."""
+    plano = _plano_lineas(texto)
+    return [etiqueta for etiqueta, patron in _GARANTIAS if patron.search(plano)]
+
+
+def _plano_lineas(texto: str) -> str:
+    """Como `_plano`, pero conservando los saltos de línea (los títulos van en su línea)."""
+    base = unicodedata.normalize("NFKD", str(texto or ""))
+    sin_tilde = "".join(c for c in base if not unicodedata.combining(c)).lower()
+    return "\n".join(" ".join(linea.split()) for linea in sin_tilde.splitlines())
+
+
+def formato_de_proforma(anexo: Mapping[str, Any], texto: str) -> dict[str, Any] | None:
+    """El anexo es el formato de proforma de la entidad, o `None`.
+
+    Hace falta que se presente como proforma —el nombre del archivo, una línea corta de título con
+    «proforma», o «formato/modelo de proforma» en el texto— y que traiga la tabla de precios (al
+    menos cuatro de sus columnas) más espacios para llenar o los campos de la oferta (plazo, forma
+    de pago, garantía, vigencia). En un TDR o un pliego solo cuenta el «formato de proforma»
+    explícito: todo TDR habla de «presentación de proformas» y muchos traen la tabla del
+    presupuesto referencial.
+    """
+    plano = _plano_lineas(texto)
+    if not plano.strip():
+        return None
+    nombre = _plano(str(anexo.get("nombre") or ""))
+    explicito = bool(_EXPLICITO.search(plano))
+    titulo = "proforma" in nombre or any(
+        "proforma" in linea and len(linea) <= 70 for linea in plano.splitlines()[:25]
+    )
+    if anexo.get("tipo") in (TDR, PLIEGO, ACTA):
+        titulo = explicito
+    if not (titulo or explicito):
+        return None
+    columnas = sum(1 for patron in _COLUMNAS_PROFORMA if patron.search(plano))
+    campos = [etiqueta for etiqueta, patron in _CAMPOS_PROFORMA if patron.search(plano)]
+    para_llenar = bool(_HUECOS.search(str(texto or ""))) or bool(_DEL_OFERENTE.search(plano))
+    if columnas < 4 or not (para_llenar or len(campos) >= 2):
+        return None
+    senales = ["Tabla No. / CPC / Descripción / Cantidad / V. Unitario / V. Total", *campos]
+    return {
+        "nombre": str(anexo.get("nombre_visible") or anexo.get("nombre") or "Anexo"),
+        "tipo": str(anexo.get("tipo") or OTRO),
+        "etiqueta_tipo": str(anexo.get("etiqueta_tipo") or ETIQUETAS.get(OTRO)),
+        "senales": senales,
+        "garantias": garantias_mencionadas(texto),
+    }
+
+
 def principal(documentos: Iterable[Mapping[str, Any]]) -> dict[str, Any] | None:
     """El anexo que se lee primero para la proforma: TDR, si no pliego, si no especificaciones."""
     for documento in elegir_anexos(documentos):

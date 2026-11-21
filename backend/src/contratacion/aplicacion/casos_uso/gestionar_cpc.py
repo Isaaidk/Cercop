@@ -20,13 +20,15 @@ pulsar, y un contador que no cuadre con lo guardado es peor que no tenerlo.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from contratacion.aplicacion.actor import Actor
-from contratacion.aplicacion.puertos.cpc import RepositorioCpc
+from contratacion.aplicacion.puertos.cpc import RamasCpc, RepositorioCpc
+from contratacion.dominio.errores import DatoInvalido
 from contratacion.dominio.palabras import (
     LONGITUD_MINIMA_TERMINO,
     SEPARADOR_TERMINOS,
@@ -34,6 +36,8 @@ from contratacion.dominio.palabras import (
 )
 
 registro = logging.getLogger(__name__)
+
+_CODIGO_CORTO = re.compile(r"^\d{2,}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +71,12 @@ def _partir(textos: Sequence[str]) -> tuple[list[str], int]:
             if limpio:
                 partes.append(limpio)
 
-    validas = [parte for parte in partes if len(parte) >= LONGITUD_MINIMA_TERMINO]
+    # Un código padre de dos dígitos («87») vale: el CPC se busca por su inicio (QA ciclo 3).
+    validas = [
+        parte
+        for parte in partes
+        if len(parte) >= LONGITUD_MINIMA_TERMINO or _CODIGO_CORTO.match(parte)
+    ]
     return validas, len(partes) - len(validas)
 
 
@@ -170,3 +179,21 @@ async def quitar(actor: Actor, *, texto: str, repositorio: RepositorioCpc) -> bo
 async def limpiar(actor: Actor, *, repositorio: RepositorioCpc) -> int:
     """Vacía la lista. Devuelve cuántos términos había."""
     return await repositorio.limpiar(negocio_id=actor.negocio_id)
+
+
+# Cuántos códigos hijos se enseñan al desplegar un código padre. Es una ayuda para mirar, no un
+# listado: los más frecuentes primero.
+RAMAS_MAXIMAS = 40
+
+
+async def ramas(prefijo: str, *, repositorio: RamasCpc) -> tuple[dict[str, Any], ...]:
+    """Los códigos hijos de un código padre que aparecen en las contrataciones descargadas.
+
+    El CPC es jerárquico y el buscador ya compara por el inicio («8714» trae «871410032»); esto
+    enseña **qué** trae, con los códigos reales con que catalogan las entidades. El catálogo oficial
+    del SERCOP no está cargado en la base, así que es lo más fiel que hay sin inventar nombres.
+    """
+    digitos = re.sub(r"\D", "", prefijo or "")
+    if len(digitos) < 2:
+        raise DatoInvalido("Escribe un código de CPC de 2 dígitos o más.")
+    return await repositorio.ramas_cpc(digitos[:12], RAMAS_MAXIMAS)

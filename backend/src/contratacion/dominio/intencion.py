@@ -33,6 +33,7 @@ class TipoIntencion(StrEnum):
     CONSULTAR_RUC = "consultar_ruc"
     HISTORIAL_RUC = "historial_ruc"
     PREPARAR_PROFORMA = "preparar_proforma"
+    SIN_ADJUDICAR = "sin_adjudicar"
     LIBRE = "libre"
 
 
@@ -340,6 +341,35 @@ _PALABRAS_SALUDO = _palabras(
 )
 
 
+# «No adjudicadas», «sin adjudicar», «que no se han adjudicado», «pendientes de adjudicación»,
+# «las que siguen abiertas». Se busca sobre el texto plegado.
+_SIN_ADJUDICAR = re.compile(
+    r"\b(?:no|sin|aun no|todavia no|por|pendientes? de)\s+(?:se\s+(?:han|ha)\s+|estan?\s+)?"
+    r"adjudica\w*"
+    r"|\bsiguen?\s+abiert[oa]s?\b|\btodavia\s+abiert[oa]s?\b|\baun\s+abiert[oa]s?\b"
+)
+_PROCESOS = (
+    "procesos",
+    "proceso",
+    "licitaciones",
+    "licitacion",
+    "subastas",
+    "subasta",
+    "concursos",
+    "con oferta",
+    "ocds",
+    "contrataciones",
+)
+_INFIMAS = ("infima", "infimas", "infimas cuantias", "necesidades")
+# Lo que puede acompañar a la petición sin convertirla en una búsqueda con filtros.
+_RELLENO_SIN_ADJUDICAR = _RELLENO_PROPUESTAS | _palabras(
+    "adjudicada adjudicadas adjudicado adjudicados adjudicar adjudicacion aun todavia sin no "
+    "pendiente pendientes siguen sigue abierta abierto abiertos estan esta han ha se proceso "
+    "procesos licitacion licitaciones subasta subastas concursos contrataciones ocds necesidades "
+    "cuantia cuantias cuales listado lista solo"
+)
+
+
 def _orden(plano: str) -> str | None:
     if _tiene(plano, ("cierre", "cierran", "cierra", "cierran pronto", "urgente", "urgentes")):
         return "cierre"
@@ -348,13 +378,13 @@ def _orden(plano: str) -> str | None:
     return None
 
 
-def _solo_relleno(plano: str) -> bool:
-    """El mensaje no trae nada más que la petición de propuestas (y, como mucho, una provincia)."""
+def _solo_relleno(plano: str, relleno: frozenset[str] = _RELLENO_PROPUESTAS) -> bool:
+    """El mensaje no trae nada más que la petición (y, como mucho, una provincia)."""
     provincia = provincia_mencionada(plano)
     resto = f" {plano} "
     if provincia:
         resto = resto.replace(f" {plegar(provincia)} ", " ").replace(" santo domingo ", " ")
-    return all(palabra in _RELLENO_PROPUESTAS for palabra in resto.split())
+    return all(palabra in relleno for palabra in resto.split())
 
 
 def detectar(texto: str) -> Intencion:
@@ -395,12 +425,24 @@ def detectar(texto: str) -> Intencion:
     if _tiene(plano, _ALERTAS) and len(palabras) <= 8:
         return Intencion(TipoIntencion.LISTAR_ALERTAS)
 
+    sin_adjudicar = bool(_SIN_ADJUDICAR.search(plano))
     if _tiene(plano, _OFERTAS) and len(palabras) <= 10:
         argumentos: dict[str, Any] = {}
         etapa = next((_ETAPAS[p] for p in palabras if p in _ETAPAS), None)
-        if etapa:
+        # «Mis ofertas no adjudicadas» no pide las adjudicadas: se muestran todas.
+        if etapa and not (sin_adjudicar and etapa == "adjudicada"):
             argumentos["etapa"] = etapa
         return Intencion(TipoIntencion.MIS_OFERTAS, argumentos)
+
+    # «Ínfimas no adjudicadas», «procesos sin adjudicar», «las que siguen abiertas». Solo si no
+    # trae más filtros que una provincia; con texto («de limpieza») decide el modelo.
+    if sin_adjudicar and _solo_relleno(plano, _RELLENO_SIN_ADJUDICAR):
+        procesos = _tiene(plano, _PROCESOS) and not _tiene(plano, _INFIMAS)
+        argumentos = {"tipo": "procesos" if procesos else "infimas", "para_mi": True}
+        provincia = provincia_mencionada(plano)
+        if provincia:
+            argumentos["provincia"] = provincia
+        return Intencion(TipoIntencion.SIN_ADJUDICAR, argumentos)
 
     # Antes que «mi empresa»: «oportunidades para mi empresa» pide propuestas, no el perfil.
     if _tiene(plano, _PROPUESTAS) and _solo_relleno(plano):

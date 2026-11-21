@@ -16,8 +16,13 @@
 import { computed, reactive } from 'vue'
 
 import { api } from '@/api/endpoints'
-import { nombreParaApi } from '@/utils/provincias'
-import { LONGITUD_MINIMA_TERMINO, claveDeTermino, terminosDeLista } from '@/utils/terminos'
+import { codigoDeProvincia, nombreParaApi } from '@/utils/provincias'
+import {
+  LONGITUD_MINIMA_TERMINO,
+  claveDeTermino,
+  terminoCpcValido,
+  terminosDeLista,
+} from '@/utils/terminos'
 
 const estado = reactive({
   /** Todas las palabras clave del negocio, con su estado de ingesta. */
@@ -547,7 +552,8 @@ export const filtros = {
    */
   async agregarCpc(texto) {
     const limpio = String(texto || '').trim()
-    if (limpio.length < LONGITUD_MINIMA_TERMINO) return { agregado: false, motivo: 'corta' }
+    // Un código padre de dos dígitos («87») vale: el CPC se busca por su inicio.
+    if (!terminoCpcValido(limpio)) return { agregado: false, motivo: 'corta' }
 
     const clave = claveDeTermino(limpio)
     if (estado.cpc.some((termino) => claveDeTermino(termino) === clave)) {
@@ -597,7 +603,9 @@ export const filtros = {
    * pantalla tiene que poder decir por qué el resultado no coincide con lo que se pegó.
    */
   async agregarVariasCpc(texto) {
-    const { terminos, cortas } = terminosDeLista(texto)
+    const { terminos, cortas } = terminosDeLista(texto, LONGITUD_MINIMA_TERMINO, {
+      codigosCortos: true,
+    })
     if (!terminos.length) return { agregadas: [], repetidas: 0, cortas }
 
     // Una sola petición para toda la lista, igual que las palabras clave: veinte altas encadenadas
@@ -728,6 +736,33 @@ export const filtros = {
    * anterior y el usuario vería los controles vacíos, sin manera de entender de dónde sale lo que
    * está viendo.
    */
+  /**
+   * Pone en el **borrador** los filtros que salen del perfil de la empresa (QA ciclo 3).
+   *
+   * Los CPC del RUP y las palabras de lo que ofrece van a la búsqueda por CPC —el código por su rama
+   * y las palabras contra el nombre estándar del CPC—, con «solo CPC» y «Cualquiera», que es cómo se
+   * reconoce lo que la empresa vende; las provincias salen de su cobertura. **No se aplica nada**:
+   * el botón «Aplicar» cuenta los cambios y la persona decide; todo queda editable. Lo que ya
+   * estuviera en la lista se conserva.
+   */
+  cargarDesdePerfil(sugeridos) {
+    const datos = sugeridos || {}
+    const antes = estado.cpc.length
+    for (const termino of [...(datos.cpc || []), ...(datos.palabras || [])]) {
+      const limpio = String(termino || '').trim()
+      if (!limpio) continue
+      const clave = claveDeTermino(limpio)
+      if (!estado.cpc.some((guardado) => claveDeTermino(guardado) === clave)) estado.cpc.push(limpio)
+    }
+    const provincias = (datos.provincias || []).map(codigoDeProvincia).filter(Boolean)
+    if (provincias.length) estado.provincias = [...new Set(provincias)].sort()
+    if (estado.cpc.length) {
+      estado.cpcSolo = true
+      estado.modo = 'cualquiera'
+    }
+    return { terminos: estado.cpc.length - antes, provincias: provincias.length }
+  },
+
   limpiarTodo() {
     estado.seleccionadas = []
     estado.cpc = []

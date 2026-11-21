@@ -323,3 +323,73 @@ export function sugerenciaVisible(texto, vigentes) {
 export function sugerenciasVisibles(lista, vigentes) {
   return (Array.isArray(lista) ? lista : []).filter((texto) => sugerenciaVisible(texto, vigentes))
 }
+
+// ------------------------------------------------------------------------------ espera y fallos
+
+/**
+ * Cuánto espera el panel una respuesta antes de dejar de mirar. El servidor corta la IA a los 75 s
+ * (`asistente_tiempo_max_seg`) y contesta igual, así que esto solo salta si se perdió la conexión.
+ */
+export const ESPERA_MAX_MS = 100_000
+/** Desde cuándo se ofrece «Dejar de esperar». */
+export const OFRECER_CANCELAR_SEG = 15
+
+/** Lo que dice la burbuja de «Pensando…» según cuánto lleva esperando, para que no parezca colgado. */
+export function textoEspera(segundos) {
+  const s = Number(segundos) || 0
+  if (s < 5) return 'Pensando'
+  if (s < 15) return 'Buscando los datos'
+  if (s < 40) return 'Sigo trabajando, esto puede tardar un poco'
+  return 'Está tardando más de lo normal; ya casi'
+}
+
+/**
+ * Qué decir cuando un envío falla, y cuánto esperar antes de reintentar.
+ * Devuelve `{ mensaje, esperaSeg }`. El texto de la persona nunca se pierde: queda en su burbuja.
+ */
+export function falloDeEnvio(fallo) {
+  const espera = Math.max(0, Math.round(Number(fallo?.esperaSeg) || 0))
+  if (fallo?.codigo === 'tardanza') {
+    return {
+      mensaje: 'La respuesta está tardando demasiado. Tu mensaje sigue aquí: vuelve a intentarlo en un momento.',
+      esperaSeg: 0,
+    }
+  }
+  if (fallo?.estado === 503) {
+    const seg = espera || 10
+    return {
+      mensaje: `Hay mucha demanda en este momento. Tu mensaje no se perdió: podrás reintentar en ${seg} s.`,
+      esperaSeg: seg,
+    }
+  }
+  if (fallo?.estado === 429) {
+    const seg = espera || 30
+    return {
+      mensaje: `Enviaste muchos mensajes seguidos. Espera ${seg} s y vuelve a intentarlo.`,
+      esperaSeg: seg,
+    }
+  }
+  if (fallo?.estado === 0 || fallo?.codigo === 'sin_conexion') {
+    return { mensaje: 'No hay conexión con el servidor. Revisa tu internet y vuelve a intentarlo.', esperaSeg: 0 }
+  }
+  return {
+    mensaje: fallo?.message || 'No pudimos enviar tu mensaje. Vuelve a intentarlo.',
+    esperaSeg: 0,
+  }
+}
+
+/**
+ * Espera una promesa, pero no más de `ms`. Al pasar el tiempo rechaza con `codigo: 'tardanza'`.
+ * La promesa original sigue su curso: quien llama decide qué hacer si llega tarde.
+ */
+export function conTiempoMaximo(promesa, ms = ESPERA_MAX_MS) {
+  let reloj
+  const limite = new Promise((_, rechazar) => {
+    reloj = setTimeout(() => {
+      const error = new Error('La respuesta está tardando demasiado.')
+      error.codigo = 'tardanza'
+      rechazar(error)
+    }, ms)
+  })
+  return Promise.race([promesa, limite]).finally(() => clearTimeout(reloj))
+}

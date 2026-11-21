@@ -36,6 +36,7 @@ from contratacion.dominio.busqueda import (
 from contratacion.dominio.cpc import items_desde_crudos
 from contratacion.dominio.enlaces import enlace_del_registro
 from contratacion.dominio.palabras import normalizar_termino
+from contratacion.dominio.texto import reparar_codificacion
 from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     NORMALIZADO,
     clave_provincia,
@@ -111,12 +112,22 @@ WHERE n <= :limite
 ORDER BY campo, valor
 """
 
-INDICE_TEXTO = "to_tsvector('simple', r.texto_busqueda)"
+# Cómo se parte el texto antes de indexarlo: cualquier signo pasa a ser un espacio.
+#
+# El analizador `simple` de PostgreSQL deja juntos «llantas/neumaticos» (lo toma por una ruta),
+# «equipos.computo» (por un dominio) y, con la base en `C`, «“adquisicion» con su comilla. Ninguna
+# palabra clave alcanzaba esos tokens: medido en el histórico local, el 8 % de las filas tenía
+# alguna palabra pegada así. Partiendo con la misma regla que `palabras_de` —solo `a-z0-9`—, el
+# índice y la consulta ven exactamente las mismas palabras. La expresión es **la del índice** de la
+# migración 0049, letra a letra: si se separan, PostgreSQL deja de usarlo sin que falle nada.
+PARTIR = "regexp_replace({columna}, '[^a-z0-9]+', ' ', 'g')"
+
+INDICE_TEXTO = "to_tsvector('simple', " + PARTIR.format(columna="lower(r.texto_busqueda)") + ")"
 
 # El CPC se busca contra su propia columna y no se sumó a `texto_busqueda` a propósito: si
 # compartieran columna, el filtro de palabras clave volvería a encontrar el objeto de compra y el
 # problema que el CPC viene a resolver —traer todo lo que menciona la palabra— seguiría ahí.
-INDICE_CPC = "to_tsvector('simple', r.cpc_busqueda)"
+INDICE_CPC = "to_tsvector('simple', " + PARTIR.format(columna="lower(r.cpc_busqueda)") + ")"
 
 # La descripción **del producto** se busca contra el objeto de compra, que vive dentro de `datos`.
 #
@@ -139,7 +150,9 @@ INDICE_CPC = "to_tsvector('simple', r.cpc_busqueda)"
 # consulta pierde la tilde y la del índice la conserva. Se reutiliza `NORMALIZADO` para que la tabla
 # de tildes sea la misma que la de los demás filtros.
 INDICE_OBJETO = (
-    "to_tsvector('simple', " + NORMALIZADO.format(columna="r.datos ->> 'objeto_compra'") + ")"
+    "to_tsvector('simple', "
+    + PARTIR.format(columna=NORMALIZADO.format(columna="r.datos ->> 'objeto_compra'"))
+    + ")"
 )
 
 # La razón social de la entidad contratante, normalizada como las demás claves —minúsculas y sin
@@ -184,6 +197,7 @@ def _filtro_texto(
     indice: str = INDICE_TEXTO,
     nombre_parametro: str = "expr",
     permitir_identificador: bool = False,
+    tambien_en: str | None = None,
 ) -> str | None:
     """Añade la condición de texto completo si hay algo que buscar.
 
@@ -201,13 +215,26 @@ def _filtro_texto(
     condición se compone como siempre, con una sola expresión, para que el SQL de una búsqueda
     normal no cambie ni una letra. Eso deja intactos tanto los índices que el planificador elige
     como las pruebas que fijan esa forma.
+
+    `tambien_en` es un segundo índice donde **también** vale encontrar cada término: las palabras
+    clave se buscan además en los nombres estándar del CPC de los ítems («MANTENIMIENTO Y
+    REPARACION DE…»), que muchas veces dicen lo que el objeto de compra no dice. Con «cualquiera»
+    basta una condición por índice; con «todas» cada término puede estar en uno u otro, y por eso
+    entonces se arma término a término.
     """
     if not permitir_identificador or not any(es_identificador(t) for t in terminos):
+        if tambien_en is not None and modo is ModoBusqueda.TODAS and len(terminos) > 1:
+            return _por_termino(parametros, terminos, modo, indice, nombre_parametro, tambien_en)
         expresion = expresion_busqueda(terminos, modo)
         if expresion is None:
             return None
         parametros[nombre_parametro] = expresion
-        return f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
+        condicion = f"{indice} @@ to_tsquery('simple', :{nombre_parametro})"
+        if tambien_en is not None:
+            condicion = (
+                f"({condicion} OR {tambien_en} @@ to_tsquery('simple', :{nombre_parametro}))"
+            )
+        return condicion
 
     condiciones: list[str] = []
     for posicion, termino in enumerate(terminos):
@@ -217,14 +244,42 @@ def _filtro_texto(
         nombre = f"{nombre_parametro}{posicion}"
         parametros[nombre] = de_uno
         condicion = f"{indice} @@ to_tsquery('simple', :{nombre})"
+        if tambien_en is not None:
+            condicion = f"{condicion} OR {tambien_en} @@ to_tsquery('simple', :{nombre})"
         if es_identificador(termino):
             nombre_codigo = f"{nombre_parametro}_codigo{posicion}"
             parametros[nombre_codigo] = _patron(termino)
-            condicion = (
-                f"({condicion} OR COALESCE(r.datos ->> 'codigo', '') ILIKE :{nombre_codigo})"
-            )
-        condiciones.append(condicion)
+            condicion = f"{condicion} OR COALESCE(r.datos ->> 'codigo', '') ILIKE :{nombre_codigo}"
+        condiciones.append(f"({condicion})" if " OR " in condicion else condicion)
 
+    if not condiciones:
+        return None
+    if len(condiciones) == 1:
+        return condiciones[0]
+    union = " AND " if modo is ModoBusqueda.TODAS else " OR "
+    return f"({union.join(condiciones)})"
+
+
+def _por_termino(
+    parametros: dict[str, Any],
+    terminos: Sequence[str],
+    modo: ModoBusqueda,
+    indice: str,
+    nombre_parametro: str,
+    tambien_en: str,
+) -> str | None:
+    """Un término por condición, cada uno en cualquiera de los dos índices."""
+    condiciones: list[str] = []
+    for posicion, termino in enumerate(terminos):
+        de_uno = expresion_de_termino(termino)
+        if de_uno is None:
+            continue
+        nombre = f"{nombre_parametro}{posicion}"
+        parametros[nombre] = de_uno
+        condiciones.append(
+            f"({indice} @@ to_tsquery('simple', :{nombre})"
+            f" OR {tambien_en} @@ to_tsquery('simple', :{nombre}))"
+        )
     if not condiciones:
         return None
     if len(condiciones) == 1:
@@ -244,18 +299,37 @@ def _filtro_cpc(
     en «cualquiera», que esté alguno (`&&`, solapamiento). Las descripciones y los nombres
     estándar siguen por el índice de texto, como siempre.
 
-    Antes todos los términos iban por el texto completo. Funcionaba, pero un código se comparaba
-    como prefijo de palabra y el resultado dependía de la tokenización; con la columna de códigos,
-    la pregunta «¿esta necesidad está clasificada en 871410032?» tiene una respuesta de igualdad.
+    **Los códigos son jerárquicos**: «8714» trae todo lo que empieza por 8714 —«871410032»,
+    «8714100321»…—, porque las entidades catalogan en el código hijo y quien elige el padre espera
+    ver la rama entera. Antes se exigía el código exacto y elegir el padre devolvía cero filas.
+
+    La comparación se hace en dos pasos para que use índice: el de texto del CPC, donde cada código
+    es una palabra, resuelve el prefijo (`8714:*`) con el GIN; y como ese texto también lleva
+    números sueltos de las descripciones («20 ml»), la comprobación final es contra la columna de
+    códigos (`LIKE '8714%'`) solo en las filas que ya pasaron el índice.
     """
     codigos = [termino for termino in terminos if es_codigo_cpc(termino)]
     textos = [termino for termino in terminos if not es_codigo_cpc(termino)]
 
     grupos: list[str] = []
     if codigos:
-        parametros["cpc_codigos"] = codigos
-        operador = "@>" if modo is ModoBusqueda.TODAS else "&&"
-        grupos.append(f"r.cpc_codigos {operador} CAST(:cpc_codigos AS text[])")
+        union_ts = " & " if modo is ModoBusqueda.TODAS else " | "
+        parametros["cpc_prefijos"] = union_ts.join(f"{codigo}:*" for codigo in codigos)
+        parametros["cpc_patrones"] = [f"{codigo}%" for codigo in codigos]
+        por_indice = f"{INDICE_CPC} @@ to_tsquery('simple', :cpc_prefijos)"
+        if modo is ModoBusqueda.TODAS:
+            # Cada patrón tiene que encontrar algún código de la fila.
+            exacto = (
+                "NOT EXISTS (SELECT 1 FROM unnest(CAST(:cpc_patrones AS text[])) AS p(patron) "
+                "WHERE NOT EXISTS (SELECT 1 FROM unnest(r.cpc_codigos) AS c(codigo) "
+                "WHERE c.codigo LIKE p.patron))"
+            )
+        else:
+            exacto = (
+                "EXISTS (SELECT 1 FROM unnest(r.cpc_codigos) AS c(codigo) "
+                "WHERE c.codigo LIKE ANY(CAST(:cpc_patrones AS text[])))"
+            )
+        grupos.append(f"({por_indice} AND {exacto})")
 
     if textos:
         expresion = expresion_busqueda(textos, modo)
@@ -283,7 +357,11 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
 
     if not solo_cpc:
         principal = _filtro_texto(
-            parametros, filtros.terminos, filtros.modo, permitir_identificador=True
+            parametros,
+            filtros.terminos,
+            filtros.modo,
+            permitir_identificador=True,
+            tambien_en=INDICE_CPC,
         )
         if principal:
             condiciones.append(principal)
@@ -314,7 +392,11 @@ def _condiciones(filtros: Filtros) -> tuple[list[str], dict[str, Any]]:
     # El texto libre se suma con «y»: es un filtro más, no una sustitución de los términos.
     if filtros.texto and not solo_cpc:
         libre = _filtro_texto(
-            parametros, [filtros.texto], ModoBusqueda.TODAS, permitir_identificador=True
+            parametros,
+            [filtros.texto],
+            ModoBusqueda.TODAS,
+            permitir_identificador=True,
+            tambien_en=INDICE_CPC,
         )
         if libre:
             condiciones.append(libre)
@@ -582,6 +664,48 @@ class RepositorioConsultasBd:
             )
 
         return tuple(_fila_a_elemento(fila) for fila in filas)
+
+    async def ramas_cpc(self, prefijo: str, limite: int) -> tuple[dict[str, Any], ...]:
+        """Códigos de CPC que empiezan por `prefijo` en lo descargado, con nombre y frecuencia.
+
+        Va por el mismo índice que el filtro (`8714:*` sobre el texto del CPC) y solo después
+        recorre los ítems de las filas que pasaron, así que no lee el histórico entero.
+        """
+        consulta = text(
+            f"""
+            SELECT i.item ->> 'codigo' AS codigo,
+                   min(i.item ->> 'descripcion_cpc') AS nombre,
+                   count(DISTINCT r.id) AS procesos
+            FROM registro r
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(r.items) = 'array' THEN r.items ELSE '[]'::jsonb END
+            ) AS i(item)
+            WHERE {INDICE_CPC} @@ to_tsquery('simple', :prefijo_ts)
+              AND i.item ->> 'codigo' LIKE :patron
+            GROUP BY 1
+            ORDER BY procesos DESC, codigo
+            LIMIT :limite
+            """
+        )
+        async with sin_contexto(self._motor) as conexion:
+            filas = (
+                (
+                    await conexion.execute(
+                        consulta,
+                        {"prefijo_ts": f"{prefijo}:*", "patron": f"{prefijo}%", "limite": limite},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(
+            {
+                "codigo": str(fila["codigo"]),
+                "nombre": reparar_codificacion(str(fila["nombre"] or "")).strip(),
+                "procesos": int(fila["procesos"]),
+            }
+            for fila in filas
+        )
 
     async def catalogos(self) -> Mapping[str, Sequence[str]]:
 

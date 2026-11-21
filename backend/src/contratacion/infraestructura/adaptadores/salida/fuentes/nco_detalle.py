@@ -18,6 +18,7 @@ error visible: la tabla correcta seguiría estando, solo que en otro sitio.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from html.parser import HTMLParser
 
 from contratacion.dominio.cpc import ItemCpc
@@ -166,6 +167,31 @@ def _parece_archivo(nombre: str) -> bool:
     return any(limpio.endswith(extension) for extension in _EXTENSIONES)
 
 
+# Fecha de una celda entera: «14/11/2026», «14-11-2026 10:30», «2026-11-14», «2026-11-14 10:30:00».
+_FECHA_LATINA = re.compile(
+    r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$"
+)
+_FECHA_ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?)?$")
+
+
+def _fecha_de_celda(texto: str) -> str | None:
+    """La celda en ISO 8601 («2026-11-14» o «2026-11-14T10:30:00») si es una fecha, si no `None`."""
+    limpio = texto.strip()
+    if (latina := _FECHA_LATINA.match(limpio)) is not None:
+        dia, mes, anio, hora, minuto, segundo = latina.groups()
+    elif (iso := _FECHA_ISO.match(limpio)) is not None:
+        anio, mes, dia, hora, minuto, segundo = iso.groups()
+    else:
+        return None
+    try:
+        momento = datetime(
+            int(anio), int(mes), int(dia), int(hora or 0), int(minuto or 0), int(segundo or 0)
+        )
+    except ValueError:
+        return None
+    return momento.isoformat() if hora else momento.date().isoformat()
+
+
 class _Anclas(HTMLParser):
     """Enlaces de la ficha. El TDR, cuando está, es un `<a>`, no una celda suelta.
 
@@ -183,9 +209,12 @@ class _Anclas(HTMLParser):
         self._en_ancla = False
         self._celdas: list[str] = []  # texto de las celdas ya cerradas de la fila actual
         self._celda: list[str] | None = None
+        # Documentos de la fila actual con su nombre ya resuelto desde el enlace o desde la fila.
+        self._de_la_fila: list[tuple[dict[str, str], bool]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
+            self._completar_fila()
             self._celdas = []
             self._celda = None
         elif tag in ("td", "th"):
@@ -201,26 +230,60 @@ class _Anclas(HTMLParser):
 
     def _nombre_de_la_fila(self) -> str:
         for texto in self._celdas:
-            if texto and not parece_enlace(texto):
+            if texto and not parece_enlace(texto) and _fecha_de_celda(texto) is None:
                 return texto
         return ""
+
+    def _completar_fila(self) -> None:
+        """Al cerrar la fila ya se conocen todas sus celdas: se añaden la fecha y la descripción.
+
+        - `fecha`: la primera celda que sea una fecha («14/11/2026», «2026-11-14 10:30»), si la
+          ficha la publica. Hoy la tabla de archivos del portal no trae columna de fecha; si un día
+          la trae, llega sola hasta la ficha del panel.
+        - `descripcion`: cuando el enlace trae su propio texto («TDR_final.pdf») y la fila además
+          tiene una descripción escrita por la entidad («Términos de referencia»), se guardan las
+          dos. El `nombre` no cambia: es la clave con la que se pide el archivo.
+        - Si el enlace no tenía texto y la descripción venía **después** del icono, se toma ahora.
+        """
+        for documento, nombre_del_enlace in self._de_la_fila:
+            for texto in self._celdas:
+                fecha = _fecha_de_celda(texto)
+                if fecha:
+                    documento["fecha"] = fecha
+                    break
+            de_la_fila = reparar_codificacion(self._nombre_de_la_fila())
+            if not de_la_fila:
+                continue
+            if not nombre_del_enlace and documento["nombre"] == documento["enlace"]:
+                documento["nombre"] = de_la_fila
+            elif nombre_del_enlace and de_la_fila.lower() != documento["nombre"].lower():
+                documento["descripcion"] = de_la_fila
+        self._de_la_fila = []
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("td", "th") and self._celda is not None:
             self._celdas.append(ESPACIOS.sub(" ", "".join(self._celda)).strip())
             self._celda = None
             return
+        if tag in ("tr", "table"):
+            self._completar_fila()
+            return
         if tag != "a" or not self._en_ancla:
             return
         nombre = ESPACIOS.sub(" ", "".join(self._texto)).strip()
         enlace = self._href or ""
         if es_descarga(nombre, enlace):
-            if not nombre or parece_enlace(nombre):
+            nombre_del_enlace = bool(nombre) and not parece_enlace(nombre)
+            if not nombre_del_enlace:
                 nombre = self._nombre_de_la_fila() or nombre
-            self.documentos.append(
-                {"nombre": reparar_codificacion(nombre) or enlace, "enlace": enlace}
-            )
+            documento = {"nombre": reparar_codificacion(nombre) or enlace, "enlace": enlace}
+            self.documentos.append(documento)
+            self._de_la_fila.append((documento, nombre_del_enlace))
         self._en_ancla = False
+
+    def close(self) -> None:
+        super().close()
+        self._completar_fila()
 
     def handle_data(self, data: str) -> None:
         if self._en_ancla:

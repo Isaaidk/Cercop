@@ -106,6 +106,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', alPulsarTecla))
               :class="{
                 'menu__item--activo': activa === opcion.id,
                 'menu__item--cerrado': motivoCierre(opcion.id),
+                'menu__item--ia': opcion.id === 'asistente',
               }"
               :aria-current="activa === opcion.id ? 'page' : undefined"
               :aria-label="soloIconos() ? opcion.etiqueta : undefined"
@@ -114,6 +115,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', alPulsarTecla))
             >
               <IconoPanel :nombre="motivoCierre(opcion.id) ? 'candado' : opcion.id" />
               <span v-if="!soloIconos()" class="menu__texto">{{ opcion.etiqueta }}</span>
+              <!-- El Asistente es inteligencia artificial: se dice con su color y una insignia. -->
+              <span v-if="opcion.id === 'asistente' && !soloIconos()" class="menu__ia" title="Con inteligencia artificial">
+                <IconoPanel nombre="chispas" :tamano="12" /> IA
+              </span>
               <span
                 v-if="!soloIconos() && cuentas[opcion.id]"
                 class="menu__cuenta numeros"
@@ -237,6 +242,36 @@ onBeforeUnmount(() => document.removeEventListener('keydown', alPulsarTecla))
   background: var(--acento-suave);
   color: var(--acento-fuerte);
   font-weight: 650;
+}
+
+/* Asistente: el violeta de la IA (`--ia`), no el azul de acción, para que se lea como «la IA». */
+.menu__item--ia {
+  color: var(--ia-fuerte);
+}
+
+.menu__item--ia:hover {
+  background: var(--ia-tenue);
+  color: var(--ia-fuerte);
+}
+
+.menu__item--ia.menu__item--activo,
+.menu__item--ia.menu__item--activo:hover {
+  background: var(--ia-suave);
+  color: var(--ia-fuerte);
+  box-shadow: inset 3px 0 0 var(--ia);
+}
+
+.menu__ia {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 0.45rem;
+  border-radius: var(--r-redondo);
+  background: var(--ia-degradado);
+  color: var(--ia-sobre);
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
 }
 
 .menu__item--cerrado {

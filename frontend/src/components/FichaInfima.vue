@@ -14,22 +14,25 @@
  *
  * No cambia ninguna funcionalidad: usa las mismas acciones que antes estaban repartidas por la fila.
  *
- * Rediseño 2026-11: base neutra. El plazo ya no pinta un borde de color ni una barra roja o ámbar;
- * se dice con texto, una insignia pequeña y una barra gris de avance. Los bloques se separan con
- * espacio y un título corto, no con fondos de color.
+ * Rediseño 2026-11: base neutra. El plazo no pinta un borde ni un fondo de color; se dice con
+ * texto, una insignia pequeña y la barra de tiempo (`BarraPlazo.vue`): porcentaje del plazo ya
+ * transcurrido, con el color de la urgencia (pedido del cliente en el QA de la ficha) y lo que queda
+ * en palabras. Los bloques se separan con espacio y un título corto, no con fondos de color.
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/endpoints'
+import BarraPlazo from '@/components/BarraPlazo.vue'
 import VisorTdr from '@/components/VisorTdr.vue'
 import { itemsDe } from '@/utils/cpc'
 import { fechaCorta, horaCorta, sinEtiquetas } from '@/utils/formato'
-import { diasParaProforma, insigniaDePlazo, textoDePlazo } from '@/utils/plazo'
+import { avanceDelPlazo, diasParaProforma, insigniaDePlazo, textoDePlazo, textoRestante } from '@/utils/plazo'
 import { copiarAlPortapapeles } from '@/utils/portapapeles'
 import { descargarTdr } from '@/utils/tdr'
 
 // Fuera del componente: compartida por todas las fichas abiertas en la sesión.
 const memoriaMercado = new Map()
+const memoriaEntidad = new Map()
 
 const props = defineProps({
   fila: { type: Object, required: true },
@@ -50,19 +53,12 @@ const leyendoCpc = computed(() => props.fila.items_leidos === false && !items.va
 const dias = computed(() => diasParaProforma(props.fila.fecha_limite_proformas))
 const insignia = computed(() => insigniaDePlazo(dias.value))
 
-const linea = computed(() => {
-  const inicio = Date.parse(props.fila.fecha_publicacion)
-  const fin = Date.parse(props.fila.fecha_limite_proformas)
-  if (Number.isNaN(inicio) || Number.isNaN(fin) || fin <= inicio) return null
-  const avance = Math.min(1, Math.max(0, (Date.now() - inicio) / (fin - inicio)))
-  return { avance: Math.round(avance * 100) }
-})
-
 const textoCierre = computed(() => {
   if (dias.value === null) return 'Sin fecha límite publicada'
   if (dias.value < 0) return 'El plazo de proformas ya cerró'
   if (dias.value === 0) return `Cierra hoy a las ${horaCorta(props.fila.fecha_limite_proformas)}`
-  return `Quedan ${textoDePlazo(dias.value)} para enviar la proforma`
+  const restante = avanceDelPlazo(props.fila.fecha_publicacion, props.fila.fecha_limite_proformas)
+  return `Quedan ${restante ? textoRestante(restante.restanteMs) : textoDePlazo(dias.value)} para enviar la proforma`
 })
 
 // ------------------------------------------------------------------------------- datos
@@ -155,6 +151,58 @@ const usd = (valor) =>
     : new Intl.NumberFormat('es-EC', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(valor)
 
 onMounted(cargarMercado)
+// Los CPC pueden llegar después de abrir la ficha (el worker los lee de la ficha del portal):
+// entonces se buscan los competidores, sin esperar a que la persona cierre y vuelva a abrir.
+watch(cpcPrincipal, (nuevo, viejo) => {
+  if (nuevo && nuevo !== viejo) cargarMercado()
+})
+
+// ------------------------------------------------------------------------------- con quiénes
+
+/** ¿La ficha trae a quién preguntar? Si no, se dice en vez de dejar el hueco. */
+const tieneContacto = computed(() => ['funcionario', 'contacto', 'email', 'telefono'].some((c) => v(c)))
+
+/**
+ * Adjudicación de **este** proceso, si la fuente la publica. Las ínfimas (necesidades de
+ * contratación) no la publican: el portal solo recibe proformas. Se mira por si la fila viene de
+ * otra fuente que sí la trae.
+ */
+const adjudicadoA = computed(() => v('proveedor') || v('adjudicatario') || v('proveedor_adjudicado'))
+
+/**
+ * A quién le ha comprado antes esta entidad (adjudicaciones de los datos abiertos). Se pide solo
+ * cuando la persona lo abre —una consulta más al abrir cada ficha no compensa— y se recuerda por
+ * entidad durante la sesión.
+ */
+const compras = reactive({ cargando: false, abierto: false, filas: [], motivo: '' })
+
+async function verComprasDeLaEntidad() {
+  const entidad = v('entidad')
+  if (!entidad) return
+  compras.abierto = true
+  compras.cargando = true
+  compras.motivo = ''
+  try {
+    if (!memoriaEntidad.has(entidad)) memoriaEntidad.set(entidad, await api.adjudicaciones({ entidad }))
+    const respuesta = memoriaEntidad.get(entidad)
+    const porProveedor = new Map()
+    for (const fila of respuesta.filas || []) {
+      const nombre = String(fila.proveedor || '').trim()
+      if (!nombre) continue
+      const previo = porProveedor.get(nombre) || { nombre, veces: 0, monto: 0 }
+      previo.veces += 1
+      previo.monto += Number(fila.monto) || 0
+      porProveedor.set(nombre, previo)
+    }
+    compras.filas = [...porProveedor.values()].sort((a, b) => b.veces - a.veces || b.monto - a.monto).slice(0, 5)
+    compras.motivo = respuesta.motivo || ''
+  } catch (fallo) {
+    memoriaEntidad.delete(entidad)
+    compras.motivo = fallo.message
+  } finally {
+    compras.cargando = false
+  }
+}
 
 // ------------------------------------------------------------------------------- acciones
 
@@ -226,13 +274,11 @@ async function copiarCodigo() {
             <strong>{{ textoCierre }}</strong>
             <span class="etiqueta" :class="insignia.clase">{{ insignia.texto }}</span>
           </div>
-          <div v-if="linea" class="plazo-linea__barra" role="img" :aria-label="`Transcurrido el ${linea.avance}% del plazo`">
-            <span class="plazo-linea__relleno" :style="{ width: `${linea.avance}%` }" />
-          </div>
-          <div v-if="linea" class="plazo-linea__extremos">
-            <span>Publicada {{ fechaCorta(fila.fecha_publicacion) }}</span>
-            <span>Cierra {{ fechaCorta(fila.fecha_limite_proformas) }}</span>
-          </div>
+          <BarraPlazo
+            :publicacion="fila.fecha_publicacion"
+            :limite="fila.fecha_limite_proformas"
+            :mostrar-restante="false"
+          />
         </section>
 
         <!-- 3. Qué y quién -->
@@ -279,13 +325,20 @@ async function copiarCodigo() {
           </div>
         </section>
 
-        <!-- Mercado del CPC -->
-        <section v-if="cpcPrincipal" class="bloque-ficha">
+        <!-- Mercado del CPC: siempre a la vista; sin CPC se dice por qué no hay competidores. -->
+        <section class="bloque-ficha">
           <h4 class="bloque-ficha__titulo">
             Precio de referencia y competidores
-            <span class="bloque-ficha__sub">CPC {{ cpcPrincipal }}</span>
+            <span v-if="cpcPrincipal" class="bloque-ficha__sub">CPC {{ cpcPrincipal }}</span>
           </h4>
-          <p v-if="mercado.cargando" class="ficha__nota">Buscando lo que ya se adjudicó con este CPC…</p>
+          <p v-if="!cpcPrincipal && leyendoCpc" class="ficha__nota">
+            Los competidores aparecerán cuando terminemos de leer los CPC de la ficha.
+          </p>
+          <p v-else-if="!cpcPrincipal" class="ficha__nota">
+            Esta ficha no publica CPC, así que no podemos comparar precios ni buscar competidores por
+            producto. Puedes ver abajo a quién le ha comprado antes esta entidad.
+          </p>
+          <p v-else-if="mercado.cargando" class="ficha__nota">Buscando lo que ya se adjudicó con este CPC…</p>
           <p v-else-if="!mercado.precio && !mercado.proveedores.length" class="ficha__nota">
             {{ mercado.motivo || 'Aún no hay adjudicaciones con este CPC para comparar.' }}
           </p>
@@ -317,6 +370,41 @@ async function copiarCodigo() {
           </div>
         </section>
 
+        <!-- Con quiénes: adjudicación de este proceso y proveedores de la entidad (bajo pedido). -->
+        <section class="bloque-ficha" aria-labelledby="titulo-con-quienes">
+          <h4 id="titulo-con-quienes" class="bloque-ficha__titulo">Quién gana y a quién le compra la entidad</h4>
+          <p v-if="adjudicadoA" class="ficha__nota">
+            Adjudicado a <strong>{{ adjudicadoA }}</strong>.
+          </p>
+          <p v-else class="ficha__nota">
+            El portal no publica quién participa ni a quién se adjudica una ínfima cuantía: solo recibe
+            proformas. Para saber con quién compites, mira los competidores de arriba o a quién le ha
+            comprado antes esta entidad.
+          </p>
+          <template v-if="v('entidad')">
+            <button
+              v-if="!compras.abierto"
+              type="button"
+              class="boton boton--secundario boton--pequeno ficha__boton-compras"
+              @click="verComprasDeLaEntidad"
+            >
+              Ver a quién le ha comprado esta entidad
+            </button>
+            <p v-else-if="compras.cargando" class="ficha__nota" role="status">Buscando sus compras adjudicadas…</p>
+            <ol v-else-if="compras.filas.length" class="mercado-cpc__rivales">
+              <li v-for="proveedor in compras.filas" :key="proveedor.nombre">
+                <span>{{ proveedor.nombre }}</span>
+                <small class="numeros">
+                  {{ proveedor.veces }} {{ proveedor.veces === 1 ? 'proceso' : 'procesos' }} · {{ usd(proveedor.monto) }}
+                </small>
+              </li>
+            </ol>
+            <p v-else class="ficha__nota">
+              {{ compras.motivo || 'No encontramos adjudicaciones anteriores de esta entidad en los datos abiertos.' }}
+            </p>
+          </template>
+        </section>
+
         <!-- 5. Documentos -->
         <section v-if="tieneTdr" class="bloque-ficha">
           <h4 class="bloque-ficha__titulo">Documentos del proceso</h4>
@@ -344,6 +432,12 @@ async function copiarCodigo() {
             </dd>
           </div>
         </dl>
+        <p v-if="!tieneContacto" class="ficha__nota">
+          La entidad no publicó responsable, correo ni teléfono en esta ficha.
+          <template v-if="fila.enlace_publico">
+            Revisa la ficha en el portal: a veces los datos están en el TDR.
+          </template>
+        </p>
         <details v-if="resto.length" class="ficha__resto">
           <summary>Más datos de la fuente ({{ resto.length }})</summary>
           <dl class="hechos">
@@ -464,6 +558,10 @@ async function copiarCodigo() {
   }
 }
 
+.ficha__boton-compras {
+  align-self: flex-start;
+}
+
 /* Mercado del CPC */
 .mercado-cpc {
   display: flex;
@@ -514,7 +612,7 @@ async function copiarCodigo() {
   color: var(--texto-tenue);
 }
 
-/* Plazo: texto, insignia pequeña y una barra gris de avance. Sin bordes ni rellenos de color. */
+/* Plazo: texto, insignia pequeña y la barra de tiempo (`BarraPlazo.vue`), coloreada por urgencia. */
 .plazo-linea {
   display: flex;
   flex-direction: column;
@@ -536,29 +634,6 @@ async function copiarCodigo() {
 
 .plazo-linea__texto strong {
   font-weight: 600;
-}
-
-.plazo-linea__barra {
-  height: 4px;
-  border-radius: var(--r-redondo);
-  background: var(--superficie-3);
-  overflow: hidden;
-}
-
-.plazo-linea__relleno {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--texto-tenue);
-  transition: width var(--normal) var(--curva);
-}
-
-.plazo-linea__extremos {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--e-3);
-  font-size: var(--t-xs);
-  color: var(--texto-tenue);
 }
 
 /* Lateral */

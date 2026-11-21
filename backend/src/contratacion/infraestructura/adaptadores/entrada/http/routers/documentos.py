@@ -27,6 +27,7 @@ from contratacion.aplicacion.casos_uso.preparar_documentos import (
     titulos_usados,
 )
 from contratacion.aplicacion.hilos import en_hilo
+from contratacion.dominio.documentos import nombre_de_descarga
 from contratacion.dominio.errores import DatoInvalido, NoEncontrado
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.dominio.verificacion import verificar_proforma
@@ -625,11 +626,14 @@ async def _bajar(
     if documento is None:
         raise NoEncontrado("Esa proforma no está en la empresa.")
     # Maquetar el PDF o armar el Word es CPU: va en un hilo para no congelar a los demás.
+    # «ProformaCercoapp_<código del proceso>.pdf»: se reconoce entre las descargas de la persona.
+    codigo = str((documento.get("extras") or {}).get("codigo") or "")
     if formato == "pdf":
         pdf, _ = await en_hilo(_armar, documento)
-        contenido, tipo, nombre = pdf, "application/pdf", "documento.pdf"
+        contenido, tipo = pdf, "application/pdf"
     else:
-        contenido, tipo, nombre = await en_hilo(_word, documento), _DOCX, "documento.docx"
+        contenido, tipo = await en_hilo(_word, documento), _DOCX
+    nombre = nombre_de_descarga(codigo, formato)
     return StreamingResponse(
         io.BytesIO(contenido),
         media_type=tipo,

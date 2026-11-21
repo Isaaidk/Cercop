@@ -35,6 +35,7 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.worksheet.worksheet import Worksheet
 
 from contratacion.aplicacion.hilos import en_hilo
@@ -51,7 +52,7 @@ from contratacion.dominio.busqueda import (
 )
 from contratacion.dominio.cpc import items_desde_crudos, resumen_cpc
 from contratacion.dominio.errores import DatoInvalido
-from contratacion.dominio.exportacion import revisar_ventana
+from contratacion.dominio.exportacion import revisar_tope
 from contratacion.dominio.palabras import normalizar
 from contratacion.dominio.plazos import (
     NIVEL_AMARILLO,
@@ -91,7 +92,7 @@ COLUMNAS: tuple[tuple[str, str, int], ...] = (
     ("canton", "Cantón", 22),
     ("estado", "Estado", 16),
     ("fecha_publicacion", "Fecha de publicación", 20),
-    ("fecha_limite_proformas", "Límite de proformas", 20),
+    ("fecha_limite_proformas", "Fecha límite de proforma", 20),
 )
 
 # La columna que se calcula aquí y no viene de la fuente. Es la que responde a «¿me da tiempo?».
@@ -241,6 +242,11 @@ ALIAS_DE_TITULO: Mapping[str, tuple[str, ...]] = {
         "Fecha límite de entrega de proformas",
         "Fecha límite proformas",
         "Fecha máxima de entrega de proformas",
+        # La etiqueta que tuvo el archivo genérico hasta noviembre de 2026: las plantillas hechas a
+        # partir de una descarga anterior la llevan («Límite de proformas»).
+        "Límite de proformas",
+        "Fecha límite de proformas",
+        "Cierre",
     ),
     CAMPO_UBICACION: (
         "Provincia - Cantón",
@@ -249,6 +255,7 @@ ALIAS_DE_TITULO: Mapping[str, tuple[str, ...]] = {
         "Ubicación",
         "Provincia y cantón",
     ),
+    "provincia": ("Provincia de la entidad",),
 }
 
 
@@ -330,28 +337,16 @@ async def exportar(
     «todas», que es como se ha exportado siempre; quien llama es quien decide qué hacer si la fila
     de la selección no se puede leer, y por eso se recibe hecha y no se consulta aquí.
 
-    La **ventana** de la descarga se comprueba antes de consultar nada: cubre como mucho los últimos
-    tres meses y una petición que se remonte más atrás se rechaza con el motivo (ver
-    `dominio/exportacion.py`). Es la única operación del sistema que lee el histórico entero sin
-    paginar, y con 110.000 registros eso son minutos de base ocupada por un archivo que casi nunca
-    se necesita completo.
+    **La fecha de publicación es opcional**: el archivo trae exactamente lo que muestra la pantalla
+    con los mismos filtros. El coste se acota por el tope de filas (ver `dominio/exportacion.py`).
     """
     instante = momento or datetime.now(UTC)
     # Se valida también aquí, y no solo en la búsqueda: la exportación es el camino por el que los
     # datos salen de la plataforma, y el único que no pasa por `buscar`. Dos criterios que se
     # contradicen tienen que dar una explicación, no un archivo vacío.
     filtros = filtros.validado()
-    # El rechazo va **antes** de tocar la base: sin esto, una petición fuera de ventana seguiría
-    # lanzando la consulta cara y solo después se quejaría.
-    revisar_ventana(filtros.desde, momento=instante)
     filas = await repositorio.todos(filtros, limite + 1)
-
-    if len(filas) > limite:
-        raise DatoInvalido(
-            f"Con estos filtros hay más de {limite:,} contrataciones y el archivo se generaría "
-            "demasiado grande. Acota el rango de fechas o quita alguna palabra clave y vuelve a "
-            "intentarlo."
-        )
+    revisar_tope(len(filas), limite=limite)
 
     # Armar un libro de hasta 20.000 filas son segundos de CPU de corrido: en el bucle de eventos
     # congelaban a todas las demás peticiones del proceso mientras tanto. Va a un hilo, con tope.
@@ -637,7 +632,7 @@ def _primera_fila_de_datos(hoja: Worksheet, encabezado: EncabezadoDeLaPlantilla 
     """
     if encabezado is None:
         return _primera_fila_libre(hoja)
-    return encabezado.fila + 1
+    return _fin_de_la_cabecera(hoja, encabezado.fila) + 1
 
 
 def _vaciar_bajo_la_cabecera(hoja: Worksheet, fila_cabecera: int) -> None:
@@ -670,6 +665,16 @@ def _vaciar_bajo_la_cabecera(hoja: Worksheet, fila_cabecera: int) -> None:
     de la ficha que ocupaba esa celda en la descarga anterior, y pulsar un código abriría un proceso
     que no es el suyo.
     """
+    # Las celdas **combinadas** de la zona de datos se separan antes de nada. Una plantilla hecha
+    # a mano suele traer alguna —una fila de ejemplo con el objeto ocupando dos columnas, un pie
+    # combinado— y openpyxl no deja escribir en la parte tapada de una combinación: la exportación
+    # entera moría con «'MergedCell' object attribute 'value' is read-only» (reproducido con una
+    # plantilla como la del cliente, QA ciclo 3). Lo que está **por encima** de la cabecera —el
+    # título del informe, combinado de lado a lado— no se toca.
+    for rango in list(hoja.merged_cells.ranges):
+        if rango.min_row > fila_cabecera:
+            hoja.unmerge_cells(str(rango))
+
     for fila in range(fila_cabecera + 1, hoja.max_row + 1):
         for columna in range(1, hoja.max_column + 1):
             celda = hoja.cell(row=fila, column=columna)
@@ -677,6 +682,41 @@ def _vaciar_bajo_la_cabecera(hoja: Worksheet, fila_cabecera: int) -> None:
                 continue
             celda.value = None
             celda.hyperlink = None
+
+
+def _fin_de_la_cabecera(hoja: Worksheet, fila_cabecera: int) -> int:
+    """Última fila de la cabecera: la de los títulos o la última de un título combinado en vertical.
+
+    Hay plantillas con títulos de dos pisos —«Objeto de compra» combinado en las filas 4 y 5—. Los
+    datos empiezan **debajo** de esa combinación; empezar en la 5 sería escribir dentro del título.
+    """
+    fin = fila_cabecera
+    for rango in hoja.merged_cells.ranges:
+        if rango.min_row <= fila_cabecera <= rango.max_row:
+            fin = max(fin, rango.max_row)
+    return fin
+
+
+def _ajustar_tablas(hoja: Worksheet, fila_cabecera: int, ultima_fila: int) -> None:
+    """Estira las tablas de Excel («Insertar → Tabla») de la plantilla hasta la última fila escrita.
+
+    Una tabla con formato guarda su rango (`A4:I10`); escribiendo 300 filas debajo, las 290 que
+    quedan fuera salen sin el formato de la tabla y sin su autofiltro. Se estira solo la tabla cuya
+    cabecera es la fila de títulos que se reconoció; las demás son de la empresa y no se tocan.
+    """
+    for tabla in hoja.tables.values():
+        rango = CellRange(tabla.ref)
+        if rango.min_row != fila_cabecera:
+            continue
+        nuevo = CellRange(
+            min_col=rango.min_col,
+            min_row=rango.min_row,
+            max_col=rango.max_col,
+            max_row=max(ultima_fila, rango.min_row + 1),
+        )
+        tabla.ref = nuevo.coord
+        if tabla.autoFilter is not None:
+            tabla.autoFilter.ref = nuevo.coord
 
 
 def _separador_de_ubicacion(hoja: Worksheet, encabezado: EncabezadoDeLaPlantilla) -> str:
@@ -805,7 +845,8 @@ def _volcar_en_la_plantilla(
 
     for titulo, encabezado in encabezados.items():
         if encabezado is not None:
-            _vaciar_bajo_la_cabecera(libro[titulo], encabezado.fila)
+            hoja_vaciar = libro[titulo]
+            _vaciar_bajo_la_cabecera(hoja_vaciar, _fin_de_la_cabecera(hoja_vaciar, encabezado.fila))
 
     siguiente: dict[str, int] = {}
     for hoja, nombre, suyas in reparto:
@@ -832,6 +873,7 @@ def _volcar_en_la_plantilla(
                 hoja, suyas, columnas, encabezado, generado_en=generado_en, primera=fila
             )
             siguiente[hoja.title] = fila + len(suyas)
+            _ajustar_tablas(hoja, encabezado.fila, fila + len(suyas) - 1)
 
 
 def _escribir_en_columnas(

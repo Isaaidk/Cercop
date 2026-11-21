@@ -21,6 +21,7 @@ from contratacion.aplicacion.casos_uso.gestionar_perfil import (
     quitar_fila,
     ver_perfil,
 )
+from contratacion.dominio.propuestas import filtros_sugeridos
 from contratacion.dominio.serializacion import cuerpo_json
 from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     ActorDep,
@@ -284,3 +285,14 @@ for _coleccion in (
     "palabras",
 ):
     _ruta_coleccion(_coleccion)
+
+
+@router.get("/filtros-sugeridos", summary="Filtros de búsqueda a partir del perfil de la empresa")
+async def leer_filtros_sugeridos(
+    actor: ActorDep, perfil: PerfilDep, _: ConsentimientoDep
+) -> dict[str, Any]:
+    """CPC, palabras, provincias y tipos de procedimiento del perfil, listos para el panel.
+
+    Solo lee: el panel los pone en el borrador de los filtros y la persona decide si aplicarlos.
+    """
+    return cuerpo_json(filtros_sugeridos(await ver_perfil(actor, repositorio=perfil)))

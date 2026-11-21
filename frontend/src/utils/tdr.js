@@ -6,6 +6,7 @@
  */
 import { api } from '@/api/endpoints'
 import { guardarArchivo } from '@/utils/descargas'
+import { conExtension } from '@/utils/nombreArchivo'
 
 const ESPERA_MS = 2000
 const INTENTOS = 30
@@ -46,7 +47,8 @@ export async function descargarTdr(registroId) {
   for (const fila of listos) {
     try {
       const { contenido, nombre } = await api.archivoTdr(registroId, fila.id)
-      guardarArchivo(contenido, nombre || fila.nombre)
+      // El servidor manda el nombre con la extensión real; si no llegara, se arma con el tipo.
+      guardarArchivo(contenido, nombre || conExtension(fila.nombre, contenido.type || fila.mime))
       bajados += 1
     } catch (fallo) {
       // Si el archivo temporal venció, se vuelve a pedir y el siguiente clic ya lo encuentra.

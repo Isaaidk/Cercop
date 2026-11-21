@@ -87,6 +87,7 @@ def _catalogo() -> list[dict[str, Any]]:
 async def ver_plantilla(
     actor: ActorDep,
     plantillas: PlantillasDep,
+    almacen: AlmacenPlantillasDep,
     columnas: ColumnasDep,
 ) -> dict[str, Any]:
     """Dice si la empresa tiene plantilla, cuál es y qué columnas salen en sus exportaciones.
@@ -98,9 +99,17 @@ async def ver_plantilla(
     """
     guardada = await consultar(actor, repositorio=plantillas)
     elegidas = await consultar_columnas(actor, repositorio=columnas)
+    # ¿El archivo sigue en el disco? La fila puede existir y el archivo no —un disco que no es un
+    # volumen persistente se vacía en cada despliegue—, y entonces las descargas salen con el libro
+    # genérico sin decir nada. Se dice aquí para que la pantalla pida volver a subirla.
+    disponible = (
+        guardada is not None
+        and (await leer_contenido(actor, repositorio=plantillas, almacen=almacen)) is not None
+    )
     return cuerpo_json(
         {
             "tiene_plantilla": guardada is not None,
+            "archivo_disponible": disponible,
             "plantilla": None if guardada is None else guardada.como_diccionario(),
             "hoja_de_datos": nombre_de_la_hoja(),
             "tamano_maximo_bytes": TAMANO_MAXIMO_BYTES,

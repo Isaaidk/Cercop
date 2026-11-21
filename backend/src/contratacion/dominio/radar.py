@@ -11,8 +11,10 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from itertools import product
 from typing import Any
 
+from contratacion.dominio.palabras import raices, texto_indexable
 from contratacion.dominio.texto import sin_marcas
 
 _PESOS = {
@@ -81,34 +83,80 @@ def _numero(valor: Any) -> float | None:
         return None
 
 
-def _codigos(valores: tuple[str, ...] | list[str]) -> list[str]:
-    return [plegar(valor) for valor in valores if plegar(valor)]
+def _digitos(valor: str) -> str:
+    return re.sub(r"\D", "", valor)
+
+
+# Un código de la alerta vale desde dos dígitos: «87» es la división entera del CPC.
+_MINIMO_DIGITOS_CPC = 2
+# En el otro sentido —la oportunidad publica un código más corto que el de la alerta— se pide más:
+# una ínfima catalogada solo como «35» no dice qué compra.
+_MINIMO_DIGITOS_AJENO = 4
 
 
 def coincide_cpc(criterios: CriteriosComerciales, codigos: list[str]) -> bool:
-    """Un código del perfil cabe en uno de la oportunidad, o al revés, por el inicio."""
-    propios = _codigos(criterios.cpc)
-    ajenos = _codigos(codigos)
+    """Un código del perfil es el **inicio** de uno de la oportunidad, o al revés.
+
+    El CPC es jerárquico: «8714» abarca «871410032». Antes se comparaba por subcadena en cualquier
+    posición, así que «73» encajaba con «873…» y con «1732…», que no son de su rama.
+    """
+    propios = [d for d in (_digitos(c) for c in criterios.cpc) if len(d) >= _MINIMO_DIGITOS_CPC]
+    ajenos = [_digitos(c) for c in codigos]
     if not propios or not ajenos:
         return False
     for propio in propios:
         for ajeno in ajenos:
-            if propio in ajeno or ajeno in propio:
+            if ajeno.startswith(propio):
+                return True
+            if len(ajeno) >= _MINIMO_DIGITOS_AJENO and propio.startswith(ajeno):
                 return True
     return False
 
 
+def variantes_de_palabra(palabra: str) -> list[tuple[str, ...]]:
+    """Las secuencias de raíces con que se reconoce una palabra o frase del perfil.
+
+    «servicios de limpieza» → [("servicio", "de", "limpieza")]: la frase se encuentra si esas raíces
+    aparecen **en ese orden**. Es lo mismo que el `LIKE '%servicio%de%limpieza%'` con el que la base
+    de datos hace la criba (`bd/radar.py`): la criba nunca deja fuera algo que aquí entraría.
+    """
+    palabras = texto_indexable(palabra).split()
+    if not palabras:
+        return []
+    combinaciones = list(product(*(raices(p) for p in palabras)))
+    return [tuple(c) for c in combinaciones[:8]]
+
+
 def coincide_texto(criterios: CriteriosComerciales, texto: str) -> list[str]:
-    """Palabras del perfil que aparecen en el objeto o en el texto de la oportunidad."""
+    """Palabras del perfil que aparecen en el objeto o en el texto de la oportunidad.
+
+    Primero la frase tal cual; si no está, sus raíces en el mismo orden, para que quien vigila
+    «mantenimientos» vea «mantenimiento preventivo» y «servicios» encuentre «servicio de…».
+    """
     plano = plegar(texto)
     if not plano:
         return []
     halladas = []
     for palabra in criterios.palabras:
         plana = plegar(palabra)
-        if plana and plana in plano:
+        if not plana:
+            continue
+        if plana in plano or any(
+            _en_orden(variante, plano) for variante in variantes_de_palabra(plana)
+        ):
             halladas.append(palabra)
     return halladas
+
+
+def _en_orden(partes: tuple[str, ...], plano: str) -> bool:
+    """¿Aparecen las partes en el texto, una detrás de otra (con lo que sea entre medias)?"""
+    desde = 0
+    for parte in partes:
+        posicion = plano.find(parte, desde)
+        if posicion < 0:
+            return False
+        desde = posicion + len(parte)
+    return True
 
 
 def _monto_en_rango(criterios: CriteriosComerciales, monto: float | None) -> bool | None:

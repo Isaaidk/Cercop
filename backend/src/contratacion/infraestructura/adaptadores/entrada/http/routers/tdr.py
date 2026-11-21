@@ -6,17 +6,26 @@ el almacén temporal y no venció, se sirve. Si no, se deja una fila `pendiente`
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
+import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from contratacion.aplicacion.casos_uso.atender_tdr import archivo_local
+from contratacion.aplicacion.casos_uso.atender_tdr import (
+    archivo_local,
+    enlace_al_portal,
+    mensaje_de_error,
+    mime_real,
+    nombre_de_descarga,
+)
 from contratacion.dominio.acceso import fuentes_para_vistas
 from contratacion.dominio.anexos import elegir_anexos
 from contratacion.dominio.documentos import parece_enlace
@@ -32,6 +41,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
     VistasDep,
 )
 from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario
+from contratacion.infraestructura.adaptadores.salida.archivos.tdr import extension_de
 from contratacion.infraestructura.config.ajustes import obtener_ajustes
 
 router = APIRouter(prefix="/v1/tdr", tags=["TDR"])
@@ -111,17 +121,27 @@ async def estado(
     for posicion, anexo in enumerate(anexos, start=1):
         nombre = str(anexo.get("nombre") or "").strip()
         fila = por_nombre.get(nombre or "tdr") or {}
+        estado_fila = str(fila.get("estado") or "sin_pedir")
+        mime = str(fila.get("mime") or "")
+        descripcion = str(anexo.get("descripcion") or "").strip()
         lista.append(
             {
+                # El nombre que le dio la entidad, tal cual. Nuestro tipo («Términos de referencia
+                # (TDR)», «Otro anexo») va aparte, en `etiqueta_tipo`: nunca lo reemplaza.
                 "nombre": f"Documento {posicion}"
                 if not nombre or parece_enlace(nombre)
                 else nombre,
+                "descripcion": descripcion if descripcion.lower() != nombre.lower() else "",
                 "tipo": anexo["tipo"],
                 "etiqueta_tipo": anexo["etiqueta_tipo"],
                 "fecha": str(anexo.get("fecha") or "")[:10],
-                "estado": fila.get("estado") or "sin_pedir",
+                "estado": estado_fila,
                 "id": fila.get("id"),
-                "mime": fila.get("mime") or "",
+                "mime": mime,
+                "formato": extension_de(mime).lstrip(".").upper(),
+                # Para abrirlo con la conexión de la persona si el servidor no llega al portal.
+                "enlace_portal": enlace_al_portal(anexo.get("enlace")),
+                "error": mensaje_de_error(fila.get("error")) if estado_fila == "error" else "",
             }
         )
     # `documentos` son las filas de la cola, solo de los anexos elegidos: las actas viejas pedidas
@@ -151,12 +171,30 @@ async def archivo(
     ruta = await archivo_local(tdr, fila)
     if ruta is None:
         raise HTTPException(status_code=404, detail="El archivo temporal ya venció.")
+    # El tipo sale del contenido, no del nombre: el nombre es el texto de la ficha («INFORME DE
+    # NECESIDAD») y casi nunca trae extensión. Antes un .docx salía sin extensión ni tipo y el panel
+    # lo guardaba como `contrataciones.xlsx`.
+    mime = await asyncio.to_thread(
+        mime_real, ruta, str(fila.get("nombre") or ""), str(fila.get("mime") or "")
+    )
+    nombre = nombre_de_descarga(str(fila.get("nombre") or ""), mime)
     return FileResponse(
         ruta,
-        media_type=fila.get("mime") or "application/octet-stream",
-        filename=str(fila["nombre"]),
-        content_disposition_type="inline",
+        media_type=mime,
+        headers={"Content-Disposition": disposicion("inline", nombre)},
     )
+
+
+def disposicion(tipo: str, nombre: str) -> str:
+    """`Content-Disposition` con el nombre en ASCII **y** en UTF-8 (RFC 6266 / RFC 5987).
+
+    Starlette, con un nombre que lleva tildes o espacios, escribe solo `filename*=`. El panel leía
+    solo `filename=` y, al no encontrarlo, ponía su nombre por defecto. Con los dos, cualquier
+    cliente encuentra uno: los modernos usan el UTF-8 y los viejos el ASCII.
+    """
+    plano = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode("ascii")
+    plano = "".join(c if c.isprintable() and c not in '"\\' else "_" for c in plano).strip()
+    return f"{tipo}; filename=\"{plano or 'documento'}\"; filename*=UTF-8''{quote(nombre, safe='')}"
 
 
 @router.get(

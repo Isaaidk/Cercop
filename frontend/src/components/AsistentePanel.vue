@@ -11,9 +11,13 @@
  * --------
  * - Al abrirse pide `/v1/asistente/inicio` (saludo, resumen, sugerencias y conversaciones) y vuelve a
  *   la conversación en la que se quedó: la recordada en este navegador o, si no hay, `ultima_id`.
- * - Cada envío pinta enseguida la burbuja de quien escribe y un «Pensando…»; al llegar la respuesta
- *   se sustituyen por los mensajes que devuelve el servidor. Si falla, se dice en la misma burbuja y
- *   se ofrece «Reintentar».
+ * - Cada envío pinta enseguida la burbuja de quien escribe y un «Pensando…» que va diciendo en qué
+ *   está («Buscando los datos», «Sigo trabajando…»); a los 15 s ofrece «Dejar de esperar» y a los
+ *   100 s deja de esperar solo (el servidor corta la IA a los 75 s, así que es un caso de red). Al
+ *   llegar la respuesta se sustituyen por los mensajes que devuelve el servidor. Si falla, se dice en
+ *   la misma burbuja —con la espera que pide el servidor si hay mucha demanda (503) o demasiados
+ *   mensajes (429)— y se ofrecen «Reintentar» y «Editar». El texto escrito nunca se pierde, y si la
+ *   respuesta llega después de dejar de esperar, se pinta igual.
  * - Las tarjetas (`TarjetaAsistente`) avisan con `preparar(registro)` e `ir(pestana)`; esta pantalla
  *   solo los reenvía al panel, que es quien sabe abrir «Preparar oferta» o cambiar de pantalla.
  *
@@ -27,14 +31,19 @@ import TarjetaAsistente from '@/components/TarjetaAsistente.vue'
 import { api } from '@/api/endpoints'
 import { sesion } from '@/stores/sesion'
 import {
+  ESPERA_MAX_MS,
   LIMITE_TEXTO,
+  OFRECER_CANCELAR_SEG,
   chipsDeResumen,
+  conTiempoMaximo,
+  falloDeEnvio,
   fechaRelativa,
   primerNombre,
   segmentarTexto,
   sugerenciaVisible,
   sugerenciasVisibles,
   textoContador,
+  textoEspera,
 } from '@/utils/asistente'
 
 const props = defineProps({
@@ -66,8 +75,16 @@ const errorMensajes = ref('')
 
 const borrador = ref('')
 const enviando = ref(false)
-/** `{ texto, mensaje, idTemporal }` del último envío que falló. */
+/** `{ texto, mensaje, idTemporal, esperaSeg }` del último envío que falló. */
 const errorEnvio = ref(null)
+/** Segundos que lleva esperando la respuesta en curso (para el texto de «Pensando…»). */
+const segundosEsperando = ref(0)
+/** Segundos que faltan para poder reintentar (lo que pidió el servidor con Retry-After). */
+const esperaReintento = ref(0)
+/** Corta la espera del envío en curso («Dejar de esperar»). */
+let abandonarEnvio = null
+let relojEspera = null
+let relojReintento = null
 
 const creditos = ref(null)
 const iaDisponible = ref(true)
@@ -232,6 +249,48 @@ function ponerArriba(conversacion) {
   conversaciones.value = [conversacion, ...conversaciones.value.filter((item) => item.id !== conversacion.id)]
 }
 
+function iniciarRelojEspera() {
+  segundosEsperando.value = 0
+  clearInterval(relojEspera)
+  relojEspera = setInterval(() => {
+    segundosEsperando.value += 1
+  }, 1000)
+}
+
+function detenerRelojEspera() {
+  clearInterval(relojEspera)
+  relojEspera = null
+}
+
+function iniciarCuentaReintento(segundos) {
+  clearInterval(relojReintento)
+  esperaReintento.value = segundos
+  relojReintento = setInterval(() => {
+    esperaReintento.value = Math.max(0, esperaReintento.value - 1)
+    if (!esperaReintento.value) clearInterval(relojReintento)
+  }, 1000)
+}
+
+/** Pinta la respuesta del servidor en lugar de la burbuja temporal. */
+function aplicarRespuesta(respuesta, { temporal, mia, conversacionAlEnviar }) {
+  ponerArriba(respuesta.conversacion)
+  if (mia === vista) {
+    const nuevos = Array.isArray(respuesta.mensajes) ? respuesta.mensajes : []
+    mensajes.value = [...mensajes.value.filter((m) => m.id !== temporal.id), ...nuevos]
+    if (!conversacionAlEnviar && respuesta.conversacion?.id) {
+      actualId.value = respuesta.conversacion.id
+      recordar(respuesta.conversacion.id)
+    }
+  }
+  const saldo = respuesta.creditos?.saldo
+  if (saldo !== null && saldo !== undefined) creditos.value = saldo
+}
+
+/** «Dejar de esperar»: el mensaje queda con «Reintentar»; si la respuesta llega luego, se pinta. */
+function dejarDeEsperar() {
+  abandonarEnvio?.()
+}
+
 /**
  * Envía un mensaje. Sin argumento envía lo escrito en el campo (y lo vacía); con texto —un chip, una
  * sugerencia, «Reintentar»— envía ese texto y deja el campo como estaba.
@@ -252,32 +311,44 @@ async function enviar(textoDado) {
   const temporal = { id: `temporal-${Date.now()}`, rol: 'usuario', texto, tarjetas: [], temporal: true }
   mensajes.value = [...mensajes.value, temporal]
   enviando.value = true
+  iniciarRelojEspera()
   const mia = vista
   const conversacionAlEnviar = actualId.value
+  const contexto = { temporal, mia, conversacionAlEnviar }
   desplazarAbajo()
 
-  try {
-    const respuesta = (await api.asistenteEnviar({ texto, conversacion_id: conversacionAlEnviar })) || {}
-    ponerArriba(respuesta.conversacion)
-    if (mia === vista) {
-      const nuevos = Array.isArray(respuesta.mensajes) ? respuesta.mensajes : []
-      mensajes.value = [...mensajes.value.filter((m) => m.id !== temporal.id), ...nuevos]
-      if (!conversacionAlEnviar && respuesta.conversacion?.id) {
-        actualId.value = respuesta.conversacion.id
-        recordar(respuesta.conversacion.id)
-      }
+  const peticion = api.asistenteEnviar({ texto, conversacion_id: conversacionAlEnviar })
+  const abandono = new Promise((_, rechazar) => {
+    abandonarEnvio = () => {
+      const error = new Error('Dejaste de esperar.')
+      error.codigo = 'tardanza'
+      rechazar(error)
     }
-    const saldo = respuesta.creditos?.saldo
-    if (saldo !== null && saldo !== undefined) creditos.value = saldo
+  })
+
+  try {
+    const respuesta = (await Promise.race([conTiempoMaximo(peticion, ESPERA_MAX_MS), abandono])) || {}
+    aplicarRespuesta(respuesta, contexto)
   } catch (fallo) {
     if (mia === vista) {
-      errorEnvio.value = {
-        texto,
-        idTemporal: temporal.id,
-        mensaje: fallo?.message || 'No pudimos enviar tu mensaje. Revisa tu conexión.',
-      }
+      const { mensaje, esperaSeg } = falloDeEnvio(fallo)
+      errorEnvio.value = { texto, idTemporal: temporal.id, mensaje, esperaSeg }
+      if (esperaSeg) iniciarCuentaReintento(esperaSeg)
+    }
+    if (fallo?.codigo === 'tardanza') {
+      // Se dejó de esperar, pero la petición sigue: si llega y nadie reintentó, se pinta igual.
+      peticion
+        .then((respuesta) => {
+          if (errorEnvio.value?.idTemporal !== temporal.id) return
+          errorEnvio.value = null
+          aplicarRespuesta(respuesta || {}, contexto)
+          desplazarAbajo()
+        })
+        .catch(() => {})
     }
   } finally {
+    abandonarEnvio = null
+    detenerRelojEspera()
     enviando.value = false
     if (mia === vista) {
       desplazarAbajo()
@@ -288,10 +359,21 @@ async function enviar(textoDado) {
 
 function reintentar() {
   const fallido = errorEnvio.value
-  if (!fallido) return
+  if (!fallido || esperaReintento.value > 0) return
   mensajes.value = mensajes.value.filter((m) => m.id !== fallido.idTemporal)
   errorEnvio.value = null
   enviar(fallido.texto)
+}
+
+/** «Editar»: devuelve el texto al campo para corregirlo antes de enviarlo otra vez. */
+function editarFallido() {
+  const fallido = errorEnvio.value
+  if (!fallido) return
+  mensajes.value = mensajes.value.filter((m) => m.id !== fallido.idTemporal)
+  errorEnvio.value = null
+  borrador.value = fallido.texto
+  ajustarAltura()
+  enfocar()
 }
 
 function alPulsarTecla(evento) {
@@ -495,6 +577,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   detenerDictado()
+  detenerRelojEspera()
+  clearInterval(relojReintento)
   document.removeEventListener('click', alClicarDocumento)
   document.removeEventListener('keydown', alPulsarEscape)
 })
@@ -644,6 +728,10 @@ watch(
         >
           <IconoPanel nombre="conversaciones" :tamano="18" /> Conversaciones
         </button>
+        <span class="asistente__marca-ia" title="Asistente con inteligencia artificial">
+          <IconoPanel nombre="chispas" :tamano="16" />
+          <span>IA</span>
+        </span>
         <h2 class="asistente__titulo">{{ actual?.titulo || 'Asistente' }}</h2>
         <span
           v-if="creditos !== null"
@@ -740,6 +828,9 @@ watch(
             ]"
           >
             <p class="solo-lectores">{{ mensaje.rol === 'usuario' ? 'Tú dijiste:' : 'El asistente dice:' }}</p>
+            <span v-if="mensaje.rol !== 'usuario'" class="mensaje__autor" aria-hidden="true">
+              <IconoPanel nombre="chispas" :tamano="14" /> Asistente IA
+            </span>
             <!-- Lo que escribió la persona se pinta tal cual, con sus saltos de línea. -->
             <div v-if="mensaje.texto && mensaje.rol === 'usuario'" class="mensaje__burbuja">{{ mensaje.texto }}</div>
             <div v-else-if="mensaje.texto" class="mensaje__burbuja">
@@ -767,8 +858,16 @@ watch(
             <!-- Falló el envío: se dice aquí mismo, junto al mensaje. -->
             <div v-if="errorEnvio && errorEnvio.idTemporal === mensaje.id" class="mensaje__fallo" role="alert">
               <span>{{ errorEnvio.mensaje }}</span>
-              <button type="button" class="boton boton--secundario asistente__boton" @click="reintentar">
-                Reintentar
+              <button
+                type="button"
+                class="boton boton--secundario asistente__boton"
+                :disabled="esperaReintento > 0 || enviando"
+                @click="reintentar"
+              >
+                {{ esperaReintento > 0 ? `Reintentar en ${esperaReintento} s` : 'Reintentar' }}
+              </button>
+              <button type="button" class="boton boton--fantasma asistente__boton" @click="editarFallido">
+                Editar
               </button>
             </div>
 
@@ -803,10 +902,21 @@ watch(
 
         <!-- Pensando… -->
         <div v-if="enviando" class="mensaje mensaje--asistente" role="status">
+          <span class="mensaje__autor" aria-hidden="true">
+            <IconoPanel nombre="chispas" :tamano="14" /> Asistente IA
+          </span>
           <div class="mensaje__burbuja pensando">
-            <span>Pensando</span>
+            <span>{{ textoEspera(segundosEsperando) }}</span>
             <span class="pensando__puntos" aria-hidden="true"><i /><i /><i /></span>
           </div>
+          <button
+            v-if="segundosEsperando >= OFRECER_CANCELAR_SEG"
+            type="button"
+            class="boton boton--fantasma asistente__boton pensando__cancelar"
+            @click="dejarDeEsperar"
+          >
+            Dejar de esperar
+          </button>
         </div>
       </div>
 
@@ -1144,6 +1254,27 @@ watch(
 
 .asistente__creditos {
   font-size: 0.8125rem;
+  background: var(--ia-suave);
+  color: var(--ia-fuerte);
+}
+
+/* Insignia «IA» de la cabecera: el degradado violeta que identifica lo que hace la IA. */
+.asistente__marca-ia {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--r-redondo);
+  background: var(--ia-degradado);
+  color: var(--ia-sobre);
+  font-size: 0.8125rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.asistente__barra {
+  box-shadow: inset 0 -2px 0 var(--ia-suave);
 }
 
 .asistente__nueva-barra {
@@ -1357,11 +1488,25 @@ watch(
   white-space: pre-wrap;
 }
 
+/* Lo que escribe la IA va en su color: fondo violeta muy tenue y borde violeta suave. */
 .mensaje--asistente .mensaje__burbuja {
   align-self: flex-start;
   border-bottom-left-radius: var(--r-1);
-  background: var(--superficie-2);
-  border: 1px solid var(--borde);
+  background: var(--ia-tenue);
+  border: 1px solid var(--ia-borde);
+}
+
+.mensaje__autor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ia-fuerte);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.pensando__cancelar {
+  align-self: flex-start;
 }
 
 .mensaje--fallido .mensaje__burbuja {
@@ -1412,7 +1557,7 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: var(--e-2);
-  color: var(--texto-suave);
+  color: var(--ia-fuerte);
 }
 
 .pensando__puntos {

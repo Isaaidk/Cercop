@@ -14,7 +14,7 @@ import { api } from '@/api/endpoints'
 import { esperarVisible, siguientePausa } from '@/utils/sondeo'
 import TextoTdr from '@/components/TextoTdr.vue'
 import { guardarArchivo as guardarEnDisco } from '@/utils/descargas'
-import { armarProformaPdf } from '@/utils/proformaPdf'
+import { armarProformaPdf, nombreDeDescarga } from '@/utils/proformaPdf'
 import { decimal } from '@/utils/formato'
 import { esImagen, textoDeArchivo } from '@/utils/ocr'
 import { presupuestoValido, usoDelPresupuesto } from '@/utils/presupuesto'
@@ -81,7 +81,65 @@ const NOMBRES_SECCION = {
   presupuesto: 'Presupuesto',
   requisitos_tecnicos: 'Requisitos técnicos',
   condiciones: 'Condiciones de participación',
+  justificacion: 'Justificación',
+  objetivos: 'Objetivos',
+  metodologia: 'Metodología de trabajo',
+  protocolo: 'Protocolo del servicio',
+  personal: 'Personal técnico',
+  equipos: 'Equipos',
+  obligaciones: 'Obligaciones del contratista',
   contexto_anexos: 'Texto de todos los anexos (lo usa la IA para armar la proforma)',
+}
+
+/** «alcance» → «5. Alcance»: el numeral y el título con que el TDR nombra cada apartado. */
+function numeralesDelTdr(secciones) {
+  try {
+    const valor = JSON.parse(secciones?._numerales || '{}')
+    return valor && typeof valor === 'object' ? valor : {}
+  } catch {
+    return {}
+  }
+}
+
+/** «6.1. Protocolo…» → [6, 1]: para ordenar los apartados como los numera el TDR. */
+function ordenNumeral(rotulo) {
+  const hallado = String(rotulo || '').match(/^\s*(\d{1,2}(?:\.\d{1,2})*)/)
+  return hallado ? hallado[1].split('.').map(Number) : [999]
+}
+
+function compararNumerales(a, b) {
+  const x = ordenNumeral(a)
+  const y = ordenNumeral(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    const diferencia = (x[i] ?? -1) - (y[i] ?? -1)
+    if (diferencia) return diferencia
+  }
+  return 0
+}
+
+// Si el servidor no dice el nombre del archivo, la ayuda común devuelve este genérico: un anexo
+// Word no puede bajarse como «contrataciones.xlsx».
+const NOMBRE_GENERICO = 'contrataciones.xlsx'
+const EXTENSION_DE_TIPO = {
+  'application/pdf': 'pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'application/zip': 'zip',
+  'application/x-rar-compressed': 'rar',
+  'application/vnd.rar': 'rar',
+  'text/plain': 'txt',
+}
+
+/** El nombre con que se guarda un anexo: el que manda el servidor, o el visible con su extensión. */
+function nombreDeAnexo(delServidor, anexo, contenido) {
+  const servidor = String(delServidor || '').trim()
+  if (servidor && servidor !== NOMBRE_GENERICO) return servidor
+  const visible = String(anexo?.nombre || 'anexo').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'anexo'
+  if (/\.[a-z0-9]{2,4}$/i.test(visible)) return visible
+  const extension = EXTENSION_DE_TIPO[String(contenido?.type || '').split(';')[0].trim()]
+  return extension ? `${visible}.${extension}` : visible
 }
 
 const EJEMPLOS = [
@@ -173,10 +231,17 @@ const proforma = reactive({
 const extras = reactive({
   empresa: {},
   carta: '',
-  // Bloque «Entidad» y número de la proforma, como en el formulario del SOCE.
-  entidad: { ruc: '', direccion: '', telefono: '' },
+  // Bloque «Entidad» y número de la proforma, como en el formulario del SOCE. El correo y el sitio
+  // web son opcionales: se imprimen solo si se conocen.
+  entidad: { ruc: '', direccion: '', telefono: '', correo: '', web: '' },
   numero: '',
   necesidad: '',
+  // Una frase medible del alcance del TDR («Un mínimo de 193 procedimientos…»): va tras las
+  // condiciones en la proforma.
+  alcance: '',
+  // El texto largo de las condiciones (cronograma, forma de pago completa): va al documento de
+  // respaldo, no a cada casilla.
+  detalle_condiciones: '',
   // El Formulario de Perfil de Integridad (Anexo I, Res. R.E-SERCOP-2026-0005) viaja con la oferta.
   integridad: true,
   condiciones: Object.fromEntries(CONDICIONES.map((item) => [item.id, ''])),
@@ -246,9 +311,105 @@ const revision = computed(() => {
       etiqueta: `Respuestas al TDR ${respuestas.value.hechas}/${respuestas.value.total}`,
       ok: respuestas.value.total > 0 && respuestas.value.hechas === respuestas.value.total,
     },
-    { id: 'empresa', etiqueta: 'Datos de tu empresa', ok: !borrador.value?.faltantes?.length },
+    { id: 'empresa', etiqueta: 'Datos de tu empresa', ok: !faltanEmpresa.value.length },
   ]
 })
+
+/** «180 días», «6 meses», «2 semanas» → días. `null` si el texto no trae una duración. */
+function diasDe(texto) {
+  const hallado = String(texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .match(/(\d{1,4})\s*(?:\([^)]{1,40}\)\s*)?(dias?|mes(?:es)?|semanas?|anos?)/)
+  if (!hallado) return null
+  const factor = hallado[2].startsWith('mes') ? 30 : hallado[2].startsWith('semana') ? 7 : hallado[2].startsWith('ano') ? 365 : 1
+  return Number(hallado[1]) * factor
+}
+
+/**
+ * Qué campo falta o no cumple, uno por uno. `error` impide generar y se marca en rojo junto al
+ * campo; `aviso` (precio en 0, cantidad distinta de la pedida, plazo más largo o vigencia más corta
+ * que el TDR) se marca en ámbar y no impide nada. Cada uno lleva el `id` del campo para llegar a él.
+ */
+const problemas = computed(() => {
+  const lista = []
+  const agregar = (id, mensaje, nivel = 'error') => lista.push({ id, mensaje, nivel })
+  if (tipo.value === 'ficha') {
+    if (!tieneTexto(ficha.nombre)) agregar('campo-ficha-nombre', 'Escribe el nombre del producto o servicio.')
+    return lista
+  }
+  if (tituloEnUso.value) agregar('campo-titulo', 'Ya usaste este título en otra proforma: cámbialo.')
+  if (!tieneTexto(proforma.entidad)) agregar('campo-entidad', 'Escribe la entidad contratante.')
+  const ruc = String(extras.entidad.ruc || '').trim()
+  if (ruc && !/^\d{13}$/.test(ruc)) agregar('campo-entidad-ruc', 'El RUC de la entidad tiene 13 dígitos.')
+  const correo = String(extras.entidad.correo || '').trim()
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
+    agregar('campo-entidad-correo', 'El correo de la entidad no tiene forma de correo (nombre@dominio).')
+  }
+  if (!tieneTexto(proforma.objeto)) agregar('campo-objeto', 'Escribe el objeto de contratación.')
+  if (tipo.value === 'proforma') {
+    const pedidos = itemsPedidos.value
+    proforma.lineas.forEach((linea, n) => {
+      const num = n + 1
+      if (!tieneTexto(linea.descripcion)) agregar(`linea-${n}-descripcion`, `Línea ${num}: falta la descripción.`)
+      if (linea.precio_unitario === '' || linea.precio_unitario == null) {
+        agregar(`linea-${n}-precio`, `Línea ${num}: escribe el valor unitario.`)
+      } else if (!(Number(linea.precio_unitario) > 0)) {
+        agregar(`linea-${n}-precio`, `Línea ${num}: el valor unitario está en 0. Confírmalo o corrígelo.`, 'aviso')
+      }
+      const cantidad = Number(linea.cantidad)
+      if (!(cantidad > 0)) {
+        agregar(`linea-${n}-cantidad`, `Línea ${num}: la cantidad debe ser mayor que 0.`)
+      } else {
+        const pedido = pedidos.find((item) => item.cpc && item.cpc === linea.cpc) || (pedidos.length === proforma.lineas.length ? pedidos[n] : null)
+        if (pedido && Number(pedido.cantidad) && Math.abs(Number(pedido.cantidad) - cantidad) > 1e-9) {
+          agregar(`linea-${n}-cantidad`, `Línea ${num}: la entidad pide ${decimal(pedido.cantidad)}, aquí hay ${decimal(cantidad)}.`, 'aviso')
+        }
+      }
+    })
+    if (usoPresupuesto.value?.supera) {
+      agregar('bloque-presupuesto', `El total supera el presupuesto de la entidad en USD ${decimal(usoPresupuesto.value.exceso)}.`)
+    }
+  }
+  for (const id of CONDICIONES_SERCOP) {
+    if (!tieneTexto(extras.condiciones[id])) {
+      const etiqueta = CONDICIONES.find((item) => item.id === id)?.etiqueta || id
+      agregar(`condicion-${id}`, `Falta «${etiqueta}».`)
+    }
+  }
+  // Vigencia: la que pide el TDR, o 45 días como mínimo habitual de la proforma.
+  const vigenciaPedida = diasDe(lectura.value?.secciones?.vigencia_proforma) || 45
+  const vigencia = diasDe(extras.condiciones.validez)
+  if (vigencia != null && vigencia < vigenciaPedida) {
+    agregar('condicion-validez', `La vigencia (${vigencia} días) es menor que la pedida (${vigenciaPedida} días).`, 'aviso')
+  }
+  // Plazo: ofrecer más días de los que da el TDR no cumple.
+  const plazoTdr = diasDe(lectura.value?.condiciones_sugeridas?.plazo_ejecucion || lectura.value?.condiciones_sugeridas?.plazo_entrega)
+  for (const id of ['plazo_entrega', 'plazo_ejecucion']) {
+    const ofrecido = diasDe(extras.condiciones[id])
+    if (plazoTdr && ofrecido && ofrecido > plazoTdr) {
+      agregar(`condicion-${id}`, `El plazo ofrecido (${ofrecido} días) es mayor que el del TDR (${plazoTdr} días).`, 'aviso')
+    }
+  }
+  return lista
+})
+const errores = computed(() => problemas.value.filter((p) => p.nivel === 'error'))
+const avisosCampos = computed(() => problemas.value.filter((p) => p.nivel === 'aviso'))
+// Los errores se marcan en rojo después del primer intento de generar; los avisos, siempre.
+const intentoGenerar = ref(false)
+function problemaDe(id) {
+  const propio = problemas.value.filter((p) => p.id === id)
+  return propio.find((p) => p.nivel === 'error' && intentoGenerar.value) || propio.find((p) => p.nivel === 'aviso') || null
+}
+const invalido = (id) => (problemaDe(id)?.nivel === 'error' ? 'true' : undefined)
+const descrito = (id) => (problemaDe(id) ? `msg-${id}` : undefined)
+function irAlCampo(id) {
+  const campo = document.getElementById(id)
+  if (!campo) return
+  campo.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  if (typeof campo.focus === 'function') campo.focus({ preventScroll: true })
+}
 
 const BLOQUE_DE = { empresa: 'entidad', origen: 'bien' }
 
@@ -367,6 +528,24 @@ function corto(valor, tope = 160) {
 }
 
 function condicionesDelTdr() {
+  // El servidor ya trae cada condición en una frase («180 días contados a partir del día siguiente
+  // de la suscripción de la orden de compra.»), el alcance medible y el detalle largo aparte.
+  const sugeridas = lectura.value?.condiciones_sugeridas || {}
+  for (const { id } of CONDICIONES) {
+    const valor = String(sugeridas[id] || '').trim()
+    if (valor && !extras.condiciones[id]) {
+      extras.condiciones[id] = valor
+      marcarAuto(`condicion.${id}`, valor)
+    }
+  }
+  if (sugeridas.alcance && !extras.alcance) {
+    extras.alcance = sugeridas.alcance
+    marcarAuto('alcance', extras.alcance)
+  }
+  if (sugeridas.detalle && !extras.detalle_condiciones) {
+    extras.detalle_condiciones = sugeridas.detalle
+    marcarAuto('detalle_condiciones', extras.detalle_condiciones)
+  }
   for (const dato of datosClave.value) {
     const casilla = CONDICION_DE[dato.clave]
     if (casilla && !extras.condiciones[casilla]) {
@@ -425,9 +604,12 @@ async function cargarTitulosUsados() {
   }
 }
 
-/** RUC, dirección y teléfono de la entidad, tal como los arma el backend desde la ficha publicada. */
+/**
+ * RUC, dirección, teléfono, correo y sitio web de la entidad, tal como los arma el backend desde la
+ * ficha publicada y el membrete o pie de sus anexos («Email: …», «Web: …»).
+ */
 function llenarEntidad(datos) {
-  for (const campo of ['ruc', 'direccion', 'telefono']) {
+  for (const campo of ['ruc', 'direccion', 'telefono', 'correo', 'web']) {
     const valor = String(datos?.[campo] || '').trim()
     if (valor && !extras.entidad[campo]) {
       extras.entidad[campo] = valor
@@ -753,7 +935,8 @@ async function bajarAnexo(anexo) {
   error.value = ''
   try {
     const { contenido, nombre } = await api.archivoTdr(proceso.value.registroId, anexo.documento_id)
-    guardarEnDisco(contenido, nombre || anexo.nombre)
+    // El nombre (y su extensión) lo da el servidor en Content-Disposition; aquí no se inventa.
+    guardarEnDisco(contenido, nombreDeAnexo(nombre, anexo, contenido))
   } catch (fallo) {
     error.value = fallo.message
   } finally {
@@ -787,18 +970,40 @@ const YA_MOSTRADAS = [
   'objeto', 'numero', 'plazo_entrega', 'plazos', 'forma_pago', 'lugar_entrega', 'garantia',
   'vigencia_proforma', 'presupuesto',
 ]
-const detalleDelTdr = computed(() =>
-  Object.entries(lectura.value?.secciones || {})
+// Con numerales, los apartados salen en el orden del TDR y con su numeral («5. Alcance»,
+// «6. Metodología de trabajo»…). Las claves con «_» son datos internos de la lectura.
+const detalleDelTdr = computed(() => {
+  const secciones = lectura.value?.secciones || {}
+  const numerales = numeralesDelTdr(secciones)
+  const partes = Object.entries(secciones)
+    .filter(([clave]) => !clave.startsWith('_'))
     .map(([clave, texto]) => [clave, textoLegible(texto)])
     .filter(([clave, texto]) => !YA_MOSTRADAS.includes(clave) && texto)
     .map(([clave, texto]) => ({
       clave,
-      titulo: NOMBRES_SECCION[clave] || clave.replace(/_/g, ' '),
+      numeral: numerales[clave] || '',
+      titulo: numerales[clave] || NOMBRES_SECCION[clave] || clave.replace(/_/g, ' '),
       texto,
       // Para la cabecera plegada: la primera frase, así se sabe de qué va sin abrirla.
       adelanto: corto(texto.split('\n')[0], 90),
-    })),
-)
+    }))
+  if (!Object.keys(numerales).length) return partes
+  return partes
+    .map((parte, posicion) => ({ parte, posicion }))
+    .sort((a, b) => compararNumerales(a.parte.numeral, b.parte.numeral) || a.posicion - b.posicion)
+    .map(({ parte }) => parte)
+})
+
+/** El formato de proforma que adjuntó la propia entidad, si lo hay (lo detecta el servidor). */
+const formatoEntidad = computed(() => lectura.value?.formato_entidad || null)
+const anexoDelFormato = computed(() => {
+  const formato = formatoEntidad.value
+  if (!formato?.documento_id) return null
+  return (proceso.value?.anexos || []).find((anexo) => anexo.documento_id === formato.documento_id) || {
+    nombre: formato.nombre,
+    documento_id: formato.documento_id,
+  }
+})
 
 const FASES = [
   { id: 'buscando', texto: 'Buscando el proceso' },
@@ -849,9 +1054,12 @@ function empezarDesdeCodigo(codigoNuevo) {
   extras.cumplimiento = []
   paso.value = 'proceso'
   // Otro proceso, otra entidad: el RUC, la dirección y las condiciones del anterior ya no valen.
-  extras.entidad = { ruc: '', direccion: '', telefono: '' }
+  extras.entidad = { ruc: '', direccion: '', telefono: '', correo: '', web: '' }
+  extras.alcance = ''
+  extras.detalle_condiciones = ''
   // El título que se escribió a mano era de la otra ínfima: vuelve a la sugerencia.
   tituloTocado.value = false
+  intentoGenerar.value = false
   for (const { id } of CONDICIONES) extras.condiciones[id] = ''
   autollenado.clear()
   return pedirResumen()
@@ -903,6 +1111,15 @@ function aplicarBorrador(datos) {
     } else if (!condicionesDelTdrIds.value.has(id)) {
       extras.condiciones[id] = ''
     }
+  }
+  // El alcance y el detalle de las condiciones: lo que la persona ya escribió no se pisa.
+  if (datos.alcance && !tieneTexto(extras.alcance)) {
+    extras.alcance = datos.alcance
+    marcarAuto('alcance', datos.alcance)
+  }
+  if (datos.detalle_condiciones && !tieneTexto(extras.detalle_condiciones)) {
+    extras.detalle_condiciones = datos.detalle_condiciones
+    marcarAuto('detalle_condiciones', datos.detalle_condiciones)
   }
   extras.experiencia = (datos.experiencia || []).join('\n')
   extras.personal = (datos.personal || []).join('\n')
@@ -974,10 +1191,48 @@ function responderConPlantilla() {
       }
     }
     if (!extras.empresa?.ruc && datos.empresa) extras.empresa = datos.empresa
+    if (!tieneTexto(extras.alcance) && datos.alcance) extras.alcance = datos.alcance
+    if (!tieneTexto(extras.detalle_condiciones) && datos.detalle_condiciones) {
+      extras.detalle_condiciones = datos.detalle_condiciones
+    }
     aviso.value = completadas
       ? `La plantilla completó ${completadas} respuestas. Revísalas: son tu declaración ante la entidad.`
       : 'No había respuestas vacías que la plantilla pudiera completar.'
   })
+}
+
+// Lo que de verdad falta del perfil (impide una proforma completa) y lo recomendado (catálogo,
+// experiencia), que no cuenta como «faltan datos».
+const faltanEmpresa = computed(() => (borrador.value?.faltantes || []).filter((dato) => !dato.opcional))
+const recomendadosEmpresa = computed(() => (borrador.value?.faltantes || []).filter((dato) => dato.opcional))
+
+/**
+ * Vuelve a mirar el perfil. Antes el aviso «Faltan datos de tu empresa» quedaba con la lista del
+ * primer borrador: aunque la persona completara el perfil, seguía saliendo hasta rehacer la oferta.
+ * Solo actualiza la lista y los datos de la empresa: no toca líneas, precios ni respuestas.
+ */
+let revisandoEmpresa = false
+async function revisarEmpresa() {
+  if (revisandoEmpresa || !borrador.value) return
+  if (!lectura.value?.lectura_id && !tieneTexto(proforma.objeto)) return
+  revisandoEmpresa = true
+  try {
+    const datos = await api.generarOferta({
+      lectura_id: lectura.value?.lectura_id || null,
+      entidad: proforma.entidad,
+      objeto: proforma.objeto,
+      con_ia: false,
+    })
+    borrador.value = { ...borrador.value, faltantes: datos.faltantes || [] }
+    if (datos.empresa && Object.keys(datos.empresa).length) extras.empresa = datos.empresa
+  } catch {
+    // Sin respuesta queda la lista anterior; el servidor completa la empresa al guardar.
+  } finally {
+    revisandoEmpresa = false
+  }
+}
+function alVolverALaPestana() {
+  if (document.visibilityState === 'visible' && paso.value === 'documento') revisarEmpresa()
 }
 
 function comprar(codigoPaquete) {
@@ -1007,6 +1262,8 @@ function extrasParaGuardar() {
     necesidad: extras.necesidad,
     integridad: tipo.value === 'proforma' ? extras.integridad : false,
     condiciones: { ...extras.condiciones },
+    alcance: extras.alcance,
+    detalle_condiciones: extras.detalle_condiciones,
     experiencia: lista(extras.experiencia),
     personal: lista(extras.personal),
     equipo: lista(extras.equipo),
@@ -1093,6 +1350,13 @@ function quitarEspecificacion(indiceFila) {
 }
 
 function generar() {
+  intentoGenerar.value = true
+  if (errores.value.length) {
+    const total = errores.value.length
+    error.value = `${total === 1 ? 'Falta 1 dato' : `Faltan ${total} datos`} o no ${total === 1 ? 'es válido' : 'son válidos'}: están marcados en rojo y en la lista «Revisa antes de generar».`
+    irAlCampo(errores.value[0].id)
+    return undefined
+  }
   if (tipo.value === 'proforma') return guardarProforma()
   if (tipo.value === 'cotizacion') return guardarCotizacion()
   return guardarFicha()
@@ -1264,18 +1528,20 @@ async function preguntar(texto) {
 }
 
 // Revocar la URL en el mismo instante del clic cancelaba la descarga en algunos navegadores: el
-// ayudante común espera a que termine de escribirse.
-function guardarArchivo(bajado, nombre) {
-  guardarEnDisco(bajado.contenido, bajado.nombre || nombre)
+// ayudante común (`guardarEnDisco`) espera a que termine de escribirse.
+/** «ProformaCercoapp_NIC-….pdf»: el código del proceso identifica la descarga entre otras. */
+function nombreDescarga(formato, sufijo = '') {
+  return nombreDeDescarga(String(lectura.value?.codigo || codigo.value || '').trim(), formato, sufijo)
 }
 
 function bajar(formato) {
   return ejecutar(async () => {
     if (formato === 'pdf' && vistaPdf.blob) {
-      guardarArchivo({ contenido: vistaPdf.blob, nombre: 'proforma.pdf' }, 'proforma.pdf')
+      guardarEnDisco(vistaPdf.blob, nombreDescarga('pdf'))
       return
     }
-    guardarArchivo(await api.bajarDocumento(documento.value.id, formato), `documento.${formato}`)
+    // Siempre «ProformaCercoapp_<código>.<pdf|docx>», venga lo que venga del servidor.
+    guardarEnDisco((await api.bajarDocumento(documento.value.id, formato)).contenido, nombreDescarga(formato))
   })
 }
 
@@ -1293,7 +1559,7 @@ function firmar() {
       const firmado = vistaPdf.blob
         ? await api.firmarPdf(documento.value.id, vistaPdf.blob, vistaPdf.cajas, firma.archivo, firma.clave, lugar)
         : await api.firmarDocumento(documento.value.id, firma.archivo, firma.clave, lugar)
-      guardarArchivo(firmado, 'documento-firmado.pdf')
+      guardarEnDisco(firmado.contenido, nombreDescarga('pdf', '_firmado'))
       const recuadros = firmado.firmas > 1 ? ` en sus ${firmado.firmas} recuadros` : ''
       aviso.value = `PDF firmado${firmado.firmante ? ` por ${firmado.firmante}` : ''}${recuadros}. Tu certificado y tu clave no se guardaron.`
     } finally {
@@ -1392,6 +1658,17 @@ onMounted(() => {
   aplicarEmpresa().catch(() => {})
   cargarCreditos().catch(() => {})
   cargarTitulosUsados()
+  document.addEventListener('visibilitychange', alVolverALaPestana)
+  window.addEventListener('focus', alVolverALaPestana)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', alVolverALaPestana)
+  window.removeEventListener('focus', alVolverALaPestana)
+})
+// Al volver del perfil (otra pestaña del panel) el componente puede seguir montado: al entrar al
+// paso 3 se revisa otra vez qué falta de la empresa.
+watch(paso, (nuevo) => {
+  if (nuevo === 'documento') revisarEmpresa()
 })
 </script>
 
@@ -1575,6 +1852,27 @@ onMounted(() => {
           </p>
         </article>
 
+        <aside v-if="formatoEntidad" class="docs__formato" role="note" aria-label="Formato de proforma de la entidad">
+          <p>
+            <strong>La entidad entregó su propio formato de proforma: «{{ formatoEntidad.nombre }}».</strong>
+            Úsalo o adáptalo con tus datos: es el formato que la entidad espera recibir. La proforma de
+            CercoApp sigue disponible en el paso 3 y te sirve para llenarlo.
+          </p>
+          <p v-if="formatoEntidad.garantias?.length" class="docs__formato-garantias">
+            Garantías que menciona: <strong>{{ formatoEntidad.garantias.join(' · ') }}</strong>.
+          </p>
+          <button
+            v-if="anexoDelFormato"
+            type="button"
+            class="boton boton--secundario boton--pequeno"
+            :disabled="bajandoAnexo === anexoDelFormato.documento_id"
+            @click="bajarAnexo(anexoDelFormato)"
+          >
+            {{ bajandoAnexo === anexoDelFormato.documento_id ? 'Bajando…' : 'Descargar el formato de la entidad' }}
+          </button>
+          <p v-else class="docs__nota">Ábrelo desde la lista de anexos del proceso.</p>
+        </aside>
+
         <section v-if="itemsPedidos.length" class="proceso__items" aria-label="Ítems que pide la entidad">
           <h4>Lo que pide cotizar</h4>
           <ul>
@@ -1696,6 +1994,24 @@ onMounted(() => {
         Llenamos {{ autollenado.size }} {{ autollenado.size === 1 ? 'dato' : 'datos' }} con tu perfil, la
         ficha del proceso y el TDR. Revísalos; lo que te toca es escribir tus precios.
       </p>
+      <aside v-if="formatoEntidad && tipo !== 'ficha'" class="docs__formato" role="note">
+        <p>
+          <strong>La entidad entregó su propio formato de proforma: «{{ formatoEntidad.nombre }}».</strong>
+          Usa o adapta ese formato; esta proforma te sirve para tener los datos listos.
+          <template v-if="formatoEntidad.garantias?.length">
+            Garantías que menciona: <strong>{{ formatoEntidad.garantias.join(' · ') }}</strong>.
+          </template>
+        </p>
+        <button
+          v-if="anexoDelFormato"
+          type="button"
+          class="boton boton--fantasma boton--pequeno"
+          :disabled="bajandoAnexo === anexoDelFormato.documento_id"
+          @click="bajarAnexo(anexoDelFormato)"
+        >
+          {{ bajandoAnexo === anexoDelFormato.documento_id ? 'Bajando…' : 'Descargar el formato' }}
+        </button>
+      </aside>
       <h4 class="docs__armar-titulo">Tipo de documento</h4>
       <div class="docs__tipos" role="radiogroup" aria-label="Tipo de documento">
         <button
@@ -1764,17 +2080,44 @@ onMounted(() => {
         </div>
       </div>
 
-      <div v-if="tipo !== 'ficha' && borrador?.faltantes?.length" class="docs__faltan" role="status">
+      <div v-if="tipo !== 'ficha' && faltanEmpresa.length" class="docs__faltan" role="status">
         <p>
-          <strong>Faltan datos de tu empresa.</strong> Puedes seguir: lo que falte no se imprime
-          en la oferta.
+          <strong>Faltan estos datos de tu empresa:</strong> {{ faltanEmpresa.map((dato) => dato.etiqueta).join(', ') }}.
+          Puedes seguir: lo que falte no se imprime en la oferta.
         </p>
         <div class="docs__faltan-lista">
-          <span v-for="dato in borrador.faltantes" :key="dato.etiqueta" class="docs__falta">{{ dato.etiqueta }}</span>
+          <span v-for="dato in faltanEmpresa" :key="dato.etiqueta" class="docs__falta">{{ dato.etiqueta }}</span>
         </div>
-        <button type="button" class="boton boton--secundario boton--pequeno" @click="emit('perfil')">
-          Completar en Perfil de empresa
-        </button>
+        <div class="docs__acciones">
+          <button type="button" class="boton boton--secundario boton--pequeno" @click="emit('perfil')">
+            Completarlos en «Perfil y RUP»
+          </button>
+          <button type="button" class="boton boton--fantasma boton--pequeno" @click="revisarEmpresa">
+            Ya los completé: revisar de nuevo
+          </button>
+        </div>
+      </div>
+      <p v-else-if="tipo !== 'ficha' && recomendadosEmpresa.length" class="docs__nota">
+        Tu perfil está completo para la proforma. Para que la carta y las respuestas salgan mejor, puedes
+        agregar en «Perfil y RUP»: {{ recomendadosEmpresa.map((dato) => dato.etiqueta).join(', ') }}.
+      </p>
+
+      <div
+        v-if="tipo !== 'ficha' && ((intentoGenerar && errores.length) || avisosCampos.length)"
+        class="docs__revisar"
+        :class="{ 'docs__revisar--error': intentoGenerar && errores.length }"
+        role="region"
+        aria-label="Revisa antes de generar"
+      >
+        <strong>Revisa antes de generar</strong>
+        <ul>
+          <li v-for="p in (intentoGenerar ? errores : [])" :key="`e-${p.id}-${p.mensaje}`" class="docs__revisar-error">
+            <button type="button" class="docs__enlace-chico" @click="irAlCampo(p.id)">{{ p.mensaje }}</button>
+          </li>
+          <li v-for="p in avisosCampos" :key="`a-${p.id}-${p.mensaje}`" class="docs__revisar-aviso">
+            <button type="button" class="docs__enlace-chico" @click="irAlCampo(p.id)">{{ p.mensaje }}</button>
+          </li>
+        </ul>
       </div>
 
       <nav class="docs__control" aria-label="Lo que revisa la entidad">
@@ -1801,6 +2144,7 @@ onMounted(() => {
             <input
               v-model="proforma.titulo"
               maxlength="300"
+              id="campo-titulo"
               class="docs__titulo-input"
               :placeholder="tituloSugerido"
               :aria-invalid="tituloEnUso"
@@ -1840,19 +2184,21 @@ onMounted(() => {
             </span>
             <input v-model="tituloEmpresa" placeholder="Razón social del perfil" />
           </label>
-          <label class="formulario__campo" :class="{ 'docs__campo--falta': !proforma.entidad }">
+          <label class="formulario__campo" :class="{ 'docs__campo--falta': !proforma.entidad, 'docs__campo--error': invalido('campo-entidad') }">
             <span>
               Entidad contratante
               <em v-if="esAuto('entidad', proforma.entidad)" class="docs__auto">autollenado · revisa</em>
             </span>
-            <input v-model="proforma.entidad" placeholder="Ej. GAD Municipal de Quito" />
+            <input id="campo-entidad" v-model="proforma.entidad" placeholder="Ej. GAD Municipal de Quito" :aria-invalid="invalido('campo-entidad')" :aria-describedby="descrito('campo-entidad')" />
+            <small v-if="problemaDe('campo-entidad')" id="msg-campo-entidad" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad').nivel}`">{{ problemaDe('campo-entidad').mensaje }}</small>
           </label>
           <label class="formulario__campo">
             <span>
               RUC de la entidad
               <em v-if="esAuto('entidad.ruc', extras.entidad.ruc)" class="docs__auto">autollenado · revisa</em>
             </span>
-            <input v-model="extras.entidad.ruc" type="text" inputmode="numeric" maxlength="13" placeholder="Sale del código de la ínfima o del TDR" />
+            <input id="campo-entidad-ruc" v-model="extras.entidad.ruc" type="text" inputmode="numeric" maxlength="13" placeholder="Sale del código de la ínfima o del TDR" :aria-invalid="invalido('campo-entidad-ruc')" :aria-describedby="descrito('campo-entidad-ruc')" />
+            <small v-if="problemaDe('campo-entidad-ruc')" id="msg-campo-entidad-ruc" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad-ruc').nivel}`">{{ problemaDe('campo-entidad-ruc').mensaje }}</small>
           </label>
           <label class="formulario__campo">
             <span>
@@ -1868,12 +2214,28 @@ onMounted(() => {
             </span>
             <input v-model="extras.entidad.telefono" type="text" />
           </label>
-          <label class="formulario__campo formulario__campo--ancho" :class="{ 'docs__campo--falta': !proforma.objeto }">
+          <label class="formulario__campo">
+            <span>
+              Correo de la entidad <small>(opcional)</small>
+              <em v-if="esAuto('entidad.correo', extras.entidad.correo)" class="docs__auto">autollenado · revisa</em>
+            </span>
+            <input id="campo-entidad-correo" v-model="extras.entidad.correo" type="email" placeholder="Sale del membrete o pie del TDR" :aria-invalid="invalido('campo-entidad-correo')" :aria-describedby="descrito('campo-entidad-correo')" />
+            <small v-if="problemaDe('campo-entidad-correo')" id="msg-campo-entidad-correo" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad-correo').nivel}`">{{ problemaDe('campo-entidad-correo').mensaje }}</small>
+          </label>
+          <label class="formulario__campo">
+            <span>
+              Sitio web de la entidad <small>(opcional)</small>
+              <em v-if="esAuto('entidad.web', extras.entidad.web)" class="docs__auto">autollenado · revisa</em>
+            </span>
+            <input v-model="extras.entidad.web" type="text" inputmode="url" placeholder="Ej. www.municipio.gob.ec" />
+          </label>
+          <label class="formulario__campo formulario__campo--ancho" :class="{ 'docs__campo--falta': !proforma.objeto, 'docs__campo--error': invalido('campo-objeto') }">
             <span>
               Objeto de contratación <small>(tal como lo dice el TDR)</small>
               <em v-if="esAuto('objeto', proforma.objeto)" class="docs__auto">autollenado · revisa</em>
             </span>
-            <textarea v-model="proforma.objeto" rows="2" placeholder="Ej. Mantenimiento de impresoras" />
+            <textarea id="campo-objeto" v-model="proforma.objeto" rows="2" placeholder="Ej. Mantenimiento de impresoras" :aria-invalid="invalido('campo-objeto')" :aria-describedby="descrito('campo-objeto')" />
+            <small v-if="problemaDe('campo-objeto')" id="msg-campo-objeto" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-objeto').nivel}`">{{ problemaDe('campo-objeto').mensaje }}</small>
           </label>
           <label v-if="tipo !== 'ficha'" class="formulario__campo">
             <span>
@@ -1923,22 +2285,31 @@ onMounted(() => {
               <input v-model="linea.cpc" placeholder="CPC" maxlength="20" aria-label="CPC" />
               <small v-if="linea.cpc_nombre" :title="linea.cpc_nombre">{{ linea.cpc_nombre }}</small>
             </span>
-            <textarea v-model="linea.descripcion" rows="2" placeholder="Producto o servicio que ofreces" aria-label="Descripción" />
+            <span class="docs__celda docs__celda--descripcion">
+              <textarea :id="`linea-${n}-descripcion`" v-model="linea.descripcion" rows="2" placeholder="Producto o servicio que ofreces" aria-label="Descripción" :class="{ 'docs__entrada--error': invalido(`linea-${n}-descripcion`) }" :aria-invalid="invalido(`linea-${n}-descripcion`)" :aria-describedby="descrito(`linea-${n}-descripcion`)" />
+              <small v-if="problemaDe(`linea-${n}-descripcion`)" :id="`msg-linea-${n}-descripcion`" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe(`linea-${n}-descripcion`).nivel}`">{{ problemaDe(`linea-${n}-descripcion`).mensaje }}</small>
+            </span>
             <input v-model="linea.unidad" placeholder="Unidad" aria-label="Unidad" maxlength="30" />
-            <input v-model.number="linea.cantidad" type="number" min="0.01" step="0.01" aria-label="Cantidad" />
+            <span class="docs__celda">
+              <input :id="`linea-${n}-cantidad`" v-model.number="linea.cantidad" type="number" min="0.01" step="0.01" aria-label="Cantidad" :class="{ 'docs__entrada--error': invalido(`linea-${n}-cantidad`), 'docs__entrada--aviso': problemaDe(`linea-${n}-cantidad`)?.nivel === 'aviso' }" :aria-invalid="invalido(`linea-${n}-cantidad`)" :aria-describedby="descrito(`linea-${n}-cantidad`)" />
+              <small v-if="problemaDe(`linea-${n}-cantidad`)" :id="`msg-linea-${n}-cantidad`" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe(`linea-${n}-cantidad`).nivel}`">{{ problemaDe(`linea-${n}-cantidad`).mensaje }}</small>
+            </span>
             <input
+              :id="`linea-${n}-precio`"
               v-model="linea.precio_unitario"
               type="number"
               min="0"
               step="0.01"
               placeholder="0.00"
               aria-label="Valor unitario ofertado"
-              :class="{ 'docs__entrada--falta': linea.precio_unitario === '' }"
+              :class="{ 'docs__entrada--falta': linea.precio_unitario === '', 'docs__entrada--error': invalido(`linea-${n}-precio`), 'docs__entrada--aviso': problemaDe(`linea-${n}-precio`)?.nivel === 'aviso' }"
+              :aria-invalid="invalido(`linea-${n}-precio`)" :aria-describedby="descrito(`linea-${n}-precio`)"
             />
             <span class="docs__subtotal">
               {{ linea.precio_unitario === '' ? '—' : decimal(Number(linea.precio_unitario) * Number(linea.cantidad || 0)) }}
             </span>
             <button type="button" class="boton boton--fantasma boton--icono" :disabled="proforma.lineas.length === 1" aria-label="Quitar línea" @click="quitarLinea(n)">✕</button>
+            <small v-if="problemaDe(`linea-${n}-precio`)" :id="`msg-linea-${n}-precio`" class="docs__msg-campo docs__msg-linea" :class="`docs__msg-campo--${problemaDe(`linea-${n}-precio`).nivel}`">{{ problemaDe(`linea-${n}-precio`).mensaje }}</small>
           </div>
         </div>
         <div class="docs__pie">
@@ -1951,7 +2322,7 @@ onMounted(() => {
             <div class="docs__total"><dt>TOTAL</dt><dd>{{ decimal(totalesPrevios.total) }}</dd></div>
           </dl>
         </div>
-        <div class="docs__presupuesto" aria-label="Presupuesto de la entidad">
+        <div id="bloque-presupuesto" class="docs__presupuesto" tabindex="-1" aria-label="Presupuesto de la entidad">
           <template v-if="usoPresupuesto">
             <p class="docs__presupuesto-cabecera">
               <span>Presupuesto de la entidad: <strong>{{ textoPresupuesto }}</strong></span>
@@ -2023,7 +2394,7 @@ onMounted(() => {
               v-for="item in CONDICIONES"
               :key="item.id"
               class="formulario__campo"
-              :class="{ 'docs__campo--falta': CONDICIONES_SERCOP.includes(item.id) && !extras.condiciones[item.id] }"
+              :class="{ 'docs__campo--falta': CONDICIONES_SERCOP.includes(item.id) && !extras.condiciones[item.id], 'docs__campo--error': invalido(`condicion-${item.id}`), 'docs__campo--aviso': problemaDe(`condicion-${item.id}`)?.nivel === 'aviso' }"
             >
               <span>
                 {{ item.etiqueta }}
@@ -2032,9 +2403,38 @@ onMounted(() => {
                   autollenado · revisa
                 </em>
               </span>
-              <textarea v-model="extras.condiciones[item.id]" rows="2" :placeholder="item.pista" />
+              <textarea :id="`condicion-${item.id}`" v-model="extras.condiciones[item.id]" rows="2" :placeholder="item.pista" :aria-invalid="invalido(`condicion-${item.id}`)" :aria-describedby="descrito(`condicion-${item.id}`)" />
+              <small v-if="problemaDe(`condicion-${item.id}`)" :id="`msg-condicion-${item.id}`" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe(`condicion-${item.id}`).nivel}`">{{ problemaDe(`condicion-${item.id}`).mensaje }}</small>
+            </label>
+            <label class="formulario__campo formulario__campo--ancho">
+              <span>
+                Alcance <small>(opcional; una frase medible del TDR)</small>
+                <em v-if="esAuto('alcance', extras.alcance)" class="docs__auto">autollenado · revisa</em>
+              </span>
+              <textarea
+                v-model="extras.alcance"
+                rows="2"
+                maxlength="1000"
+                placeholder="Ej. Un mínimo de 193 procedimientos quirúrgicos distribuidos entre caninos y felinos, machos y hembras."
+              />
             </label>
           </div>
+          <details class="docs__detalle-condiciones">
+            <summary>
+              Detalle de las condiciones según el TDR <small>(va al documento de respaldo, no a cada casilla)</small>
+              <em v-if="esAuto('detalle_condiciones', extras.detalle_condiciones)" class="docs__auto">autollenado · revisa</em>
+            </summary>
+            <p class="docs__nota">
+              Cada condición queda en una frase. Aquí va el texto largo del TDR (cronograma, forma de pago
+              completa), que se imprime aparte en el PDF de respaldo y en el Word.
+            </p>
+            <textarea
+              v-model="extras.detalle_condiciones"
+              rows="5"
+              maxlength="6000"
+              aria-label="Detalle de las condiciones según el TDR"
+            />
+          </details>
           <div class="formulario">
             <label class="formulario__campo">
               <span>Nº de proforma <small>(el tuyo, ej. PFA-02-050-2026)</small></span>
@@ -2177,7 +2577,7 @@ onMounted(() => {
           <div class="formulario">
             <label class="formulario__campo" :class="{ 'docs__campo--falta': !ficha.nombre }">
               <span>Producto o servicio</span>
-              <input v-model="ficha.nombre" placeholder="Ej. Impresora láser monocromática" />
+              <input id="campo-ficha-nombre" v-model="ficha.nombre" placeholder="Ej. Impresora láser monocromática" :aria-invalid="invalido('campo-ficha-nombre')" />
             </label>
             <label class="formulario__campo" :class="{ 'docs__campo--falta': !ficha.marca }">
               <span>Marca</span>
@@ -2308,14 +2708,13 @@ onMounted(() => {
         </small>
       </div>
 
-      <details class="docs__firma docs__plegable">
+      <details class="docs__firma docs__firma--resaltada docs__plegable">
         <summary><h4>Firmar con tu firma electrónica <small>(opcional en la proforma)</small></h4></summary>
       <form class="docs__firma-form" autocomplete="off" @submit.prevent="firmar">
         <p class="docs__nota">
           En la ínfima cuantía la firma electrónica es exigible en la orden de compra o la factura;
           en la proforma es opcional. Si firmas, el sello de FirmaEC queda en <strong>cada recuadro
-          de firma</strong> del PDF: uno por requisito del TDR, el final y el del formulario de
-          integridad.
+          de firma</strong> del PDF (marcado en azul): el del oferente y el del formulario de integridad.
         </p>
         <p class="docs__nota">
           Sirve el archivo .p12 o .pfx de FirmaEC, Security Data, ANF, Banco Central o cualquier
@@ -2706,6 +3105,27 @@ onMounted(() => {
 .docs__auto { display: inline-block; margin-left: var(--e-2); padding: 0 0.5rem; border-radius: var(--r-redondo); background: var(--acento-tenue); color: var(--acento-fuerte); font-size: var(--t-xs); font-style: normal; font-weight: 600; line-height: 1.6; vertical-align: middle; white-space: nowrap; }
 .docs__autollenado { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie-2); color: var(--texto-suave); font-size: var(--t-sm); }
 .docs__autollenado .docs__auto { margin-left: 0; }
+.docs__formato { display: grid; gap: var(--e-2); justify-items: start; padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-left: 4px solid var(--acento, #2563eb); border-radius: var(--r-2); background: var(--superficie-2); color: var(--texto); font-size: var(--t-sm); }
+.docs__formato p { margin: 0; }
+.docs__firma--resaltada { border: 2px solid var(--acento) !important; background: var(--acento-tenue); border-radius: var(--r-2); }
+.docs__firma--resaltada > summary h4::before { content: "✍ "; color: var(--acento); }
+.docs__celda { display: grid; gap: 2px; min-width: 0; }
+.docs__celda textarea, .docs__celda input { width: 100%; }
+.docs__campo--error input, .docs__campo--error textarea, .docs__entrada--error, .docs__entrada--error:focus { border-color: var(--error) !important; box-shadow: 0 0 0 1px var(--error); }
+.docs__campo--aviso input, .docs__campo--aviso textarea, .docs__entrada--aviso { border-color: var(--aviso) !important; }
+.docs__msg-campo { display: block; font-size: var(--t-xs, 0.75rem); line-height: 1.3; }
+.docs__msg-campo--error { color: var(--error); }
+.docs__msg-campo--aviso { color: var(--aviso); }
+.docs__msg-linea { grid-column: 1 / -1; }
+.docs__revisar { display: grid; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--aviso); border-radius: var(--r-2); background: var(--superficie-2); font-size: var(--t-sm); }
+.docs__revisar--error { border-color: var(--error); }
+.docs__revisar ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 2px; }
+.docs__revisar-error, .docs__revisar-error .docs__enlace-chico { color: var(--error); }
+.docs__revisar-aviso, .docs__revisar-aviso .docs__enlace-chico { color: var(--aviso); }
+.docs__formato-garantias { color: var(--texto-suave); }
+.docs__detalle-condiciones { display: grid; gap: var(--e-2); margin-top: var(--e-3); }
+.docs__detalle-condiciones summary { cursor: pointer; font-size: var(--t-sm); }
+.docs__detalle-condiciones textarea { width: 100%; }
 .docs__atajo { color: var(--texto-suave); font-size: var(--t-sm); }
 .docs__atajo .docs__enlace { margin: 0 2px; }
 .docs__enlace:disabled { opacity: 0.6; cursor: progress; }
@@ -2750,7 +3170,7 @@ onMounted(() => {
   .asistente__pie .boton { flex: 1 1 auto; justify-content: center; }
   .asistente__pie--fijo { margin: 0 calc(var(--e-4) * -1) calc(var(--e-4) * -1); padding: var(--e-3) var(--e-4); }
   .docs__linea--soce { grid-template-columns: 2.2rem minmax(0, 1fr) minmax(0, 1fr); min-width: 0; padding: var(--e-3); border: 1px solid var(--borde); border-radius: var(--r-2); }
-  .docs__linea--soce textarea, .docs__linea--soce .docs__cpc { grid-column: 2 / -1; }
+  .docs__linea--soce textarea, .docs__linea--soce .docs__cpc, .docs__linea--soce .docs__celda--descripcion { grid-column: 2 / -1; }
   .docs__linea--soce .docs__subtotal { text-align: left; }
   .docs__linea--cabecera { display: none; }
   .docs__producto { grid-template-columns: 1fr 1fr; }

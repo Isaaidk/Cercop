@@ -34,7 +34,7 @@ from contratacion.aplicacion.casos_uso.gestionar_acceso import vistas_vigentes
 from contratacion.aplicacion.puertos.accesos import RepositorioAccesos
 from contratacion.aplicacion.puertos.cache import Cache
 from contratacion.aplicacion.puertos.consultas import RepositorioConsultas
-from contratacion.aplicacion.puertos.cpc import RepositorioCpc
+from contratacion.aplicacion.puertos.cpc import RamasCpc, RepositorioCpc
 from contratacion.aplicacion.puertos.cuentas import (
     RepositorioCuentas,
     RepositorioSesiones,
@@ -489,6 +489,11 @@ def repositorio_cpc() -> RepositorioCpc:
     return RepositorioCpcBd(obtener_motor())
 
 
+def ramas_cpc() -> RamasCpc:
+    """Códigos hijos de un CPC en el histórico compartido (sin contexto de negocio)."""
+    return RepositorioConsultasBd(obtener_motor())
+
+
 def almacen_plantillas() -> AlmacenPlantillas:
     """Dónde vive el archivo de la plantilla."""
     return obtener_almacen()
@@ -518,6 +523,7 @@ PlantillasDep = Annotated[RepositorioPlantillas, Depends(repositorio_plantillas)
 AlmacenPlantillasDep = Annotated[AlmacenPlantillas, Depends(almacen_plantillas)]
 ColumnasDep = Annotated[RepositorioColumnasExportacion, Depends(repositorio_columnas)]
 CpcDep = Annotated[RepositorioCpc, Depends(repositorio_cpc)]
+RamasCpcDep = Annotated[RamasCpc, Depends(ramas_cpc)]
 
 
 def repositorio_perfil() -> RepositorioPerfil:

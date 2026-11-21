@@ -25,13 +25,17 @@ from typing import Any
 from contratacion.dominio.radar import (
     CriteriosComerciales,
     coincide_texto,
+    cpc_del_perfil,
     plegar,
     puntuar,
 )
 
-# Un código de CPC más corto que esto ya no dice qué se compra: «73» es toda una división. Por
-# debajo de cuatro dígitos no se acepta la coincidencia en ningún sentido.
+# Un código que **publica la ínfima** más corto que esto ya no dice qué se compra: «73» es toda una
+# división, y una ínfima catalogada así no se le propone a quien vende algo concreto de esa rama.
 _MINIMO_DIGITOS = 4
+# Un código **del perfil** vale desde dos dígitos: quien elige «87» (la división entera) pide ver
+# toda la rama, igual que en el buscador (QA ciclo 3: el CPC es jerárquico).
+_MINIMO_DIGITOS_PROPIO = 2
 
 ORDENES = ("coincidencia", "cierre", "presupuesto")
 
@@ -54,13 +58,17 @@ def cpc_que_coinciden(propios: tuple[str, ...], ajenos: list[str]) -> list[str]:
     empresa con «73210» la puede ofertar.
     """
     codigos_ajenos = [solo_digitos(codigo) for codigo in ajenos]
-    codigos_ajenos = [codigo for codigo in codigos_ajenos if len(codigo) >= _MINIMO_DIGITOS]
+    codigos_ajenos = [codigo for codigo in codigos_ajenos if len(codigo) >= _MINIMO_DIGITOS_PROPIO]
     halladas: list[str] = []
     for propio in propios:
         digitos = solo_digitos(propio)
-        if len(digitos) < _MINIMO_DIGITOS:
+        if len(digitos) < _MINIMO_DIGITOS_PROPIO:
             continue
-        if any(ajeno.startswith(digitos) or digitos.startswith(ajeno) for ajeno in codigos_ajenos):
+        if any(
+            ajeno.startswith(digitos)
+            or (len(ajeno) >= _MINIMO_DIGITOS and digitos.startswith(ajeno))
+            for ajeno in codigos_ajenos
+        ):
             halladas.append(propio)
     return list(dict.fromkeys(halladas))
 
@@ -76,7 +84,7 @@ def condiciones_cpc(propios: tuple[str, ...]) -> tuple[list[str], list[str]]:
     inicios: list[str] = []
     for propio in propios:
         digitos = solo_digitos(propio)
-        if len(digitos) < _MINIMO_DIGITOS:
+        if len(digitos) < _MINIMO_DIGITOS_PROPIO:
             continue
         codigos.append(digitos)
         inicios.extend(digitos[:largo] for largo in range(_MINIMO_DIGITOS, len(digitos) + 1))
@@ -293,4 +301,79 @@ def resumen_criterios(criterios: CriteriosComerciales, zonas: tuple[Zona, ...]) 
         "presupuesto_min": minimo,
         "presupuesto_max": maximo,
         "texto": " · ".join(partes),
+    }
+
+
+# Cómo se llama en los datos cada tipo de procedimiento que la empresa marca en su perfil
+# (`dominio.perfil.TIPOS_PROCEDIMIENTO`). Son los valores del filtro «Tipo de contratación».
+TIPOS_DE_PROCESO_POR_PROCEDIMIENTO: dict[str, tuple[str, ...]] = {
+    "subasta_inversa": ("Subasta Inversa Electrónica",),
+    "licitacion": ("Licitación",),
+    "catalogo": (
+        "Catálogo electrónico - Compra directa",
+        "Catálogo electrónico - Mejor oferta",
+        "Catálogo electrónico - Gran compra mejor oferta",
+        "Catálogo electrónico - Gran compra puja",
+    ),
+}
+_PALABRAS_SUGERIDAS = 25
+_LARGO_PALABRA_SUGERIDA = 80
+
+
+def filtros_sugeridos(perfil: dict[str, Any]) -> dict[str, Any]:
+    """Los filtros de búsqueda que salen de lo que la empresa registró en su perfil.
+
+    Es lo que rellena el botón «Usar los datos de mi empresa» del panel de filtros (QA ciclo 3). No
+    inventa nada: CPC del RUP y de la experiencia, palabras clave comerciales y nombres de lo que
+    ofrece, provincias de la cobertura y tipos de procedimiento a los que se dedica. El panel los
+    deja en el borrador, editables, y no los aplica hasta que la persona pulsa «Aplicar».
+    """
+    cpc: list[str] = []
+    for codigo in cpc_del_perfil(perfil):
+        digitos = solo_digitos(codigo)
+        if len(digitos) >= _MINIMO_DIGITOS_PROPIO and digitos not in cpc:
+            cpc.append(digitos)
+
+    palabras: list[str] = []
+    vistas: set[str] = set()
+    candidatas = [str(fila.get("texto") or "") for fila in perfil.get("palabras") or []]
+    candidatas += [str(fila.get("nombre") or "") for fila in perfil.get("ofertas") or []]
+    for crudo in candidatas:
+        texto = " ".join(re.sub(r"\bCPC\W{0,3}[\d.]+", " ", crudo, flags=re.IGNORECASE).split())
+        clave = plegar(texto)
+        if len(texto) < 3 or len(texto) > _LARGO_PALABRA_SUGERIDA or clave in vistas:
+            continue
+        vistas.add(clave)
+        palabras.append(texto)
+        if len(palabras) >= _PALABRAS_SUGERIDAS:
+            break
+
+    provincias = list(
+        dict.fromkeys(
+            str(fila.get("provincia") or "").strip()
+            for fila in perfil.get("cobertura") or []
+            if str(fila.get("provincia") or "").strip()
+        )
+    )
+
+    procedimientos = list(
+        dict.fromkeys(
+            str(fila.get("tipo_procedimiento") or "").strip().lower()
+            for fila in perfil.get("dedicaciones") or []
+            if fila.get("tipo_procedimiento")
+        )
+    )
+    tipos: list[str] = []
+    for procedimiento in procedimientos:
+        for tipo in TIPOS_DE_PROCESO_POR_PROCEDIMIENTO.get(procedimiento, ()):
+            if tipo not in tipos:
+                tipos.append(tipo)
+
+    return {
+        "cpc": cpc,
+        "palabras": palabras,
+        "provincias": provincias,
+        "tipos_proceso": tipos,
+        "procedimientos": procedimientos,
+        "vacio": not (cpc or palabras or provincias or tipos),
     }

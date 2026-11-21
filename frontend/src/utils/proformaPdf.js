@@ -8,9 +8,9 @@
  *
  * El diseño sigue el formulario de proformas de ínfima cuantía del SOCE: datos del proveedor,
  * detalle del objeto de compra con CPC, unidad, cantidad, valor unitario ofertado y total, vigencia
- * de la proforma y documentos anexos. Después van las secciones propias de la oferta (condiciones,
- * cumplimiento del TDR con un recuadro de firma por requisito, declaración, firma y el Formulario de
- * Perfil de Integridad).
+ * de la proforma y documentos anexos. Después van las secciones propias de la oferta (condiciones y
+ * alcance, declaración, firma y el Formulario de Perfil de Integridad). El PDF se firma una sola vez:
+ * no hay recuadros de firma por requisito.
  *
  * Devuelve también los **recuadros de firma** (página y rectángulo en puntos PDF): el servidor
  * estampa ahí la firma electrónica sin volver a maquetar nada.
@@ -56,6 +56,22 @@ const VERDE = [169, 209, 142]
 const AZUL_BLOQUE = [132, 151, 176]
 const AZUL_CABECERA = [132, 151, 176]
 const GRIS_CLARO = [217, 217, 217]
+// El recuadro de la firma electrónica, en un color propio para que se distinga del resto.
+const AZUL_FIRMA = [37, 99, 235]
+const FONDO_FIRMA = [239, 246, 255]
+
+/**
+ * «ProformaCercoapp_NIC-0360019760001-2026-00028.pdf». Sin código, «ProformaCercoapp.pdf». Solo
+ * letras, cifras, guion, punto y guion bajo: Windows no admite «/», «:» ni «?» en un nombre.
+ */
+export function nombreDeDescarga(codigo, extension, sufijo = '') {
+  const limpio = String(codigo || '')
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    .slice(0, 80)
+  return `${limpio ? `ProformaCercoapp_${limpio}` : 'ProformaCercoapp'}${sufijo}.${String(extension).replace(/^\./, '')}`
+}
 
 /** «45 días calendario» → «45 DÍAS»; lo que no empieza con un número se deja en mayúsculas. */
 function diasEnMayuscula(valor) {
@@ -142,6 +158,30 @@ export function tituloDelDocumento(documento = {}) {
   const [generico] = TIPOS[documento.tipo] || TIPOS.proforma
   const propio = String(documento.titulo || '').replace(/\s+/g, ' ').trim()
   return propio ? propio.toUpperCase() : generico
+}
+
+const planoComparable = (texto) =>
+  String(texto || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ]+/g, ' ')
+    .trim()
+
+/**
+ * El título de la barra verde sin repetir el objeto. El sugerido es «Proforma — <objeto> · <código>»
+ * y el objeto ya va, una sola vez, en el bloque «OBJETO»: arriba queda «PROFORMA · <código>». Un
+ * título propio que no repite el objeto se deja como está.
+ */
+export function tituloSinObjeto(documento = {}) {
+  const titulo = tituloDelDocumento(documento)
+  const partes = titulo.split(/\s+[—–-]\s+/)
+  if (partes.length < 2 || !String(documento.objeto || '').trim()) return titulo
+  const [primero, ...demas] = partes
+  const [medio, ...resto] = demas.join(' - ').split(' · ')
+  const plano = planoComparable(medio.replace(/[….]+$/, ''))
+  if (plano.length < 10 || !planoComparable(documento.objeto).startsWith(plano)) return titulo
+  return [primero, resto.join(' · ').trim()].filter(Boolean).join(' · ')
 }
 
 const INTEGRIDAD = [
@@ -300,8 +340,9 @@ class Maquetador {
   numeroDeProforma() {
     const { extras, documento } = this
     // La barra verde lleva el título que escribió la persona (referente a la ínfima) en lugar del
-    // genérico «PROFORMA»; sin título propio, queda el genérico.
-    const titulo = tituloDelDocumento(documento)
+    // genérico «PROFORMA»; sin título propio, queda el genérico. Si repite el objeto, se quita:
+    // el objeto sale una sola vez, en su bloque bajo los datos del oferente.
+    const titulo = tituloSinObjeto(documento)
     const numero = String(extras.numero || '').trim()
     const texto = numero ? `${titulo} Nro.${numero}` : titulo
     const size = texto.length > 90 ? 9.5 : 11
@@ -320,6 +361,9 @@ class Maquetador {
     this.fila('RUC', e.ruc, { negrita: true })
     this.fila('Dirección', e.direccion)
     this.fila('Teléfono', e.telefono)
+    // Opcionales: solo si se conocen (membrete o pie del TDR, o el formulario).
+    if (String(e.correo || '').trim()) this.fila('Correo electrónico', e.correo)
+    if (String(e.web || '').trim()) this.fila('Sitio web', e.web)
   }
 
   bloqueInformacion() {
@@ -355,11 +399,14 @@ class Maquetador {
     // El sello de la firma queda en el centro de este recuadro.
     const ancho = 70
     const x = 10 + (ANCHO - ancho) / 2
-    this.doc.setDrawColor(...GRIS)
-    this.doc.setLineWidth(0.2)
-    this.doc.rect(x, this.y + 2.5, ancho, alto - 5)
+    // El área de la firma resalta (marco y fondo azul tenue, rótulo en azul): es el único recuadro
+    // de firma del documento y quien firma lo encuentra a la primera.
+    this.doc.setDrawColor(...AZUL_FIRMA)
+    this.doc.setFillColor(...FONDO_FIRMA)
+    this.doc.setLineWidth(0.5)
+    this.doc.rect(x, this.y + 2.5, ancho, alto - 5, 'FD')
     this.registrarCaja(x, this.y + 2.5, ancho, alto - 5)
-    this.fuente(6, 'normal', GRIS)
+    this.fuente(6.5, 'bold', AZUL_FIRMA)
     this.doc.text('Firma electrónica del oferente', x + ancho / 2, this.y + alto - 2.2, { align: 'center', baseline: 'top' })
     this.y += alto
     this.barra('', AZUL_BLOQUE, 8, 2.5)
@@ -465,6 +512,8 @@ class Maquetador {
     const filas = [
       ['Plazo de entrega:', c.plazo_entrega],
       ['Lugar de entrega:', c.lugar_entrega],
+      // El alcance va tras las condiciones: una frase medible del TDR.
+      ['Alcance:', this.extras.alcance],
     ].filter(([, v]) => String(v || '').trim())
     if (!filas.length) return
     this.seccion('CONDICIONES DE LA OFERTA')
@@ -484,10 +533,12 @@ class Maquetador {
     const filas = (this.extras.cumplimiento || []).filter((f) => f && String(f.requisito || '').trim())
     if (!filas.length) return
     this.seccion('CUMPLIMIENTO DE LOS TÉRMINOS DE REFERENCIA')
-    const anchos = [10, 56, 70, 54]
+    // Sin columna de firma por fila: el PDF se firma una sola vez, en el recuadro del oferente. Su
+    // ancho pasa a «Cómo cumple el oferente».
+    const anchos = [10, 70, 110]
     const cabecera = () => {
       let x = 10
-      ;['N.º', 'Requisito del TDR', 'Cómo cumple el oferente', 'Firma electrónica'].forEach((t, i) => {
+      ;['N.º', 'Requisito del TDR', 'Cómo cumple el oferente'].forEach((t, i) => {
         this.doc.setFillColor(...AZUL_OSCURO)
         this.doc.rect(x, this.y, anchos[i], 6.5, 'F')
         this.fuente(8, 'bold', [255, 255, 255])
@@ -498,11 +549,10 @@ class Maquetador {
     }
     this.asegurar(30)
     cabecera()
-    const firmante = limpio(this.empresa.representante || this.nombre)
     filas.forEach((fila, n) => {
       const textos = [`R${n + 1}`, String(fila.requisito).trim(), String(fila.como_cumple || '').trim() || 'Sin respuesta']
       const partidas = textos.map((t, i) => this.partir(t, anchos[i] - 2, 8.5, i < 2 ? 'bold' : 'normal'))
-      const alto = Math.max(20, ...partidas.map((l) => l.length * this.alto(8.5) + 2.8))
+      const alto = Math.max(6.5, ...partidas.map((l) => l.length * this.alto(8.5) + 2.8))
       if (this.y + alto > LIMITE) {
         this.nuevaPagina()
         cabecera()
@@ -517,14 +567,6 @@ class Maquetador {
         this.doc.text(lineas, i === 0 ? x + anchos[0] / 2 : x + 1, this.y + 1, { align: i === 0 ? 'center' : 'left', baseline: 'top' })
         x += anchos[i]
       })
-      // Recuadro de firma de la fila: el sello de la firma electrónica queda exactamente aquí.
-      const fx = x + 1.5
-      this.doc.setDrawColor(...LINEA)
-      this.doc.setLineWidth(0.2)
-      this.doc.rect(fx, this.y + 1.2, anchos[3] - 3, alto - 8.5)
-      this.registrarCaja(fx, this.y + 1.2, anchos[3] - 3, alto - 8.5)
-      this.fuente(6, 'normal', GRIS)
-      this.doc.text(this.partir(firmante, anchos[3] - 2, 6).slice(0, 2), x + anchos[3] / 2, this.y + alto - 6.8, { align: 'center', baseline: 'top' })
       this.y += alto
     })
     this.doc.setDrawColor(...LINEA)

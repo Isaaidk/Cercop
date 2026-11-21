@@ -84,7 +84,8 @@ def test_un_termino_con_operadores_no_puede_alterar_la_consulta() -> None:
     disyunción. Al limpiar las palabras, se convierte en la conjunción que se pretendía.
     """
     expresion = expresion_busqueda(["obras|viales"], ModoBusqueda.TODAS)
-    assert expresion == "(obras:* & viales:*)"
+    # Las palabras van por su raíz: «obras» → «obra», «viales» → «vial».
+    assert expresion == "(obra:* & vial:*)"
 
 
 def test_expresion_usa_prefijos_para_que_vial_encuentre_viales() -> None:
@@ -92,12 +93,12 @@ def test_expresion_usa_prefijos_para_que_vial_encuentre_viales() -> None:
 
 
 def test_expresion_combina_con_y_en_modo_todas() -> None:
-    assert expresion_busqueda(["obras", "puentes"], ModoBusqueda.TODAS) == "(obras:*) & (puentes:*)"
+    assert expresion_busqueda(["obras", "puentes"], ModoBusqueda.TODAS) == "(obra:*) & (puente:*)"
 
 
 def test_expresion_combina_con_o_en_modo_cualquiera() -> None:
     expresion = expresion_busqueda(["obras", "puentes"], ModoBusqueda.CUALQUIERA)
-    assert expresion == "(obras:*) | (puentes:*)"
+    assert expresion == "(obra:*) | (puente:*)"
 
 
 def test_expresion_es_nula_sin_terminos() -> None:
@@ -110,10 +111,10 @@ def test_expresion_de_un_termino_es_la_pieza_suelta() -> None:
     Es lo que impide que las dos versiones se separen: la búsqueda que trata los términos uno a uno
     —la de los códigos de proceso— compone con esta función, y la de siempre une las mismas piezas.
     """
-    assert expresion_de_termino("obras viales") == "(obras:* & viales:*)"
+    assert expresion_de_termino("obras viales") == "(obra:* & vial:*)"
     assert expresion_de_termino("###") is None
     assert expresion_busqueda(["obras viales", "puentes"], ModoBusqueda.TODAS) == (
-        "(obras:* & viales:*) & (puentes:*)"
+        "(obra:* & vial:*) & (puente:*)"
     )
 
 
@@ -575,8 +576,14 @@ def test_un_codigo_de_cpc_se_reconoce_por_su_forma() -> None:
 def test_una_descripcion_no_es_un_codigo() -> None:
     """Confundirlos no da un error: da menos filas de las que hay."""
     assert not es_codigo_cpc("lavado")
-    assert not es_codigo_cpc("87141")
+    assert not es_codigo_cpc("8")
     assert not es_codigo_cpc("87141003A")
+
+
+def test_un_codigo_padre_de_dos_digitos_o_mas_tambien_es_codigo() -> None:
+    """El CPC es jerárquico: «87», «8714» o «87141» son ramas y se buscan por su inicio."""
+    assert es_codigo_cpc("87")
+    assert es_codigo_cpc("87141")
 
 
 def test_la_huella_distingue_solo_cpc_de_cpc_mas_palabras() -> None:

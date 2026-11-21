@@ -25,7 +25,9 @@ from contratacion.dominio.errores import DatoInvalido
 from contratacion.dominio.palabras import (
     LONGITUD_MINIMA_TERMINO,
     SEPARADOR_TERMINOS,
+    coincide_raiz,
     normalizar,
+    raices,
 )
 
 # --- Paginación ---------------------------------------------------------------
@@ -127,9 +129,16 @@ PALABRA_VALIDA = re.compile(r"[^a-z0-9]+")
 # nomenclatura, no una descripción. Se reconoce por su forma y no con una lista porque el CPC es
 # numérico: quien filtra por clasificación pega el código tal cual («871410032»).
 #
-# Seis dígitos como mínimo: los códigos del CPC que se ven hoy tienen nueve, y el mínimo deja margen
-# a que la nomenclatura publique niveles más cortos sin que dejen de reconocerse como código.
-PATRON_CODIGO_CPC = re.compile(r"^\d{6,}$")
+# **Dos dígitos como mínimo**, y se compara por el **inicio**: el CPC es jerárquico —«87» es una
+# división, «8714» un grupo y «871410032» un producto de ese grupo— y las entidades suelen catalogar
+# en el código hijo. Quien elige el padre espera ver toda su rama (pedido del cliente, QA ciclo 3).
+LARGO_MINIMO_CODIGO_CPC = 2
+PATRON_CODIGO_CPC = re.compile(r"^\d{2,}$")
+
+# Un código escrito con los puntos de la nomenclatura («73210.00.1»). Se reduce a sus dígitos antes
+# de nada: partirlo por los puntos lo convertiría en tres «palabras» sin sentido. Los guiones no
+# entran: «2026-00062» es un trozo de código de proceso, no un CPC.
+PATRON_CODIGO_CON_SIGNOS = re.compile(r"^\d[\d.]*\d$")
 
 
 def es_codigo_cpc(termino: str) -> bool:
@@ -140,6 +149,15 @@ def es_codigo_cpc(termino: str) -> bool:
     completo. Confundirlos no da un error, da menos filas de las que hay.
     """
     return bool(PATRON_CODIGO_CPC.match(termino.strip()))
+
+
+def codigo_cpc_limpio(texto: str) -> str | None:
+    """«73210.00.1» → «73210001»; `None` si el texto no es un código (o es de un solo dígito)."""
+    limpio = texto.strip()
+    if not PATRON_CODIGO_CON_SIGNOS.match(limpio):
+        return None
+    digitos = re.sub(r"\D", "", limpio)
+    return digitos if len(digitos) >= LARGO_MINIMO_CODIGO_CPC else None
 
 
 # Un **código de proceso**: grupos de letras o dígitos separados por guiones, con al menos dos
@@ -269,6 +287,11 @@ def normalizar_terminos(entrada: Iterable[str] | str | None) -> tuple[str, ...]:
     for parte in partes:
         for crudo in SEPARADOR_TERMINOS.split(parte):
             texto = normalizar(crudo)
+            # Un código de CPC vale desde dos dígitos («87», la división entera) y con sus puntos.
+            codigo = codigo_cpc_limpio(texto)
+            if codigo is not None:
+                unicos.add(codigo)
+                continue
             if len(texto) < LONGITUD_MINIMA_TERMINO:
                 continue
             palabras = palabras_de(texto)
@@ -312,13 +335,15 @@ def _coincide_termino(palabras_texto: Sequence[str], termino: str) -> bool:
 
     Se compara por **prefijo de palabra**, no por subcadena, para que «vial» encuentre «viales» sin
     que «oral» encuentre «moral». Es la misma semántica que aplica la base de datos con `palabra:*`,
-    y por eso ambas coinciden.
+    y por eso ambas coinciden. Cada palabra se compara por sus **raíces** (`palabras.raices`):
+    «servicios» encuentra «servicio» igual que la base de datos.
     """
     necesarias = palabras_de(termino)
     if not necesarias:
         return False
     return all(
-        any(palabra.startswith(necesaria) for palabra in palabras_texto) for necesaria in necesarias
+        any(coincide_raiz(palabra, necesaria) for palabra in palabras_texto)
+        for necesaria in necesarias
     )
 
 
@@ -369,7 +394,15 @@ def expresion_de_termino(termino: str) -> str | None:
     palabras = palabras_de(termino)
     if not palabras:
         return None
-    return "(" + " & ".join(f"{palabra}:*" for palabra in palabras) + ")"
+    return "(" + " & ".join(_prefijos(palabra) for palabra in palabras) + ")"
+
+
+def _prefijos(palabra: str) -> str:
+    """`servicio:*` para «servicios»; `(lapiz:* | lapices:*)` cuando hay dos formas."""
+    formas = raices(palabra)
+    if len(formas) == 1:
+        return f"{formas[0]}:*"
+    return "(" + " | ".join(f"{forma}:*" for forma in formas) + ")"
 
 
 @dataclass(frozen=True, slots=True)

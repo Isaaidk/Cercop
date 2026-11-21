@@ -14,6 +14,7 @@ from contratacion.dominio.documentos import (
     puntaje_secciones,
     resumir_ficha,
     resumir_secciones,
+    sin_referencia,
 )
 from contratacion.dominio.errores import DatoInvalido
 
@@ -89,8 +90,12 @@ def test_resumen_de_ficha_no_dice_que_el_tdr_no_trae_lo_que_no_publica_el_listad
 
 def test_checklist_sale_de_las_lineas_del_documento() -> None:
     items = checklist(extraer_secciones(_TDR))
-    assert "Toner original del fabricante." in items
-    assert "RUC activo." in items
+    assert "Toner original del fabricante. (TDR 5. Requisitos técnicos)" in items
+    assert "RUC activo. (TDR 6. Condiciones de participación)" in items
+    assert "Toner original del fabricante." in [sin_referencia(item) for item in items]
+    # En el orden del TDR: los entregables (3) van antes que los requisitos técnicos (5).
+    textos = [sin_referencia(item) for item in items]
+    assert textos.index("Informe mensual de intervenciones.") < textos.index("RUC activo.")
 
 
 _FORMULARIO = (

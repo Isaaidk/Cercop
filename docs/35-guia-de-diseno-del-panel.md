@@ -17,6 +17,7 @@ Objetivo que pidió el cliente: **moderno, fácil de entender, que el usuario no
 
 - Base **neutra**: fondos blancos y grises muy suaves, texto gris oscuro. **Un solo color de acento** (el azul `--acento`) para la acción principal, el enlace y el elemento seleccionado.
 - Los colores de estado (`--ok`, `--aviso`, `--error`, `--info`) **solo** en insignias pequeñas (texto + fondo suave), **nunca** en bordes de fila, fondos de bloques grandes ni barras de color. Nada de semáforos llenando la tabla.
+- **IA**: lo que hace o escribe la inteligencia artificial (el Asistente, sus respuestas y tarjetas) va en violeta: tokens `--ia*` de `main.css`. No se usa para nada más, para que «violeta = IA» se lea de un vistazo.
 - Urgencia del plazo: una insignia discreta («Cierra hoy», «2 días») con texto; rojo solo si cierra hoy o mañana.
 
 ## Tipografía y espacio

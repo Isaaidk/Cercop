@@ -18,7 +18,13 @@
 import { computed, ref } from 'vue'
 
 import { filtros } from '@/stores/filtros'
-import { LONGITUD_MINIMA_TERMINO, terminosDeLista } from '@/utils/terminos'
+import { api } from '@/api/endpoints'
+import {
+  LONGITUD_MINIMA_TERMINO,
+  esCodigoCpc,
+  terminoCpcValido,
+  terminosDeLista,
+} from '@/utils/terminos'
 
 const estado = filtros.estado
 
@@ -30,7 +36,7 @@ const error = ref('')
 const aviso = ref('')
 const guardando = ref(false)
 
-const puedeAgregar = computed(() => nuevo.value.trim().length >= LONGITUD_MINIMA_TERMINO)
+const puedeAgregar = computed(() => terminoCpcValido(nuevo.value))
 
 /**
  * «Todas» con más de una clasificación solo puede devolver cero.
@@ -43,7 +49,60 @@ const puedeAgregar = computed(() => nuevo.value.trim().length >= LONGITUD_MINIMA
 const avisoModoTodas = computed(() => estado.modo === 'todas' && estado.cpc.length > 1)
 
 /** Lo que se detecta en el recuadro, sin repetir y sin las de menos de tres letras. */
-const delLote = computed(() => terminosDeLista(lote.value))
+const delLote = computed(() =>
+  terminosDeLista(lote.value, LONGITUD_MINIMA_TERMINO, { codigosCortos: true }),
+)
+
+/**
+ * La lista agrupada por rama: cada código va debajo del código más corto de la lista que lo
+ * contiene («871410032» debajo de «8714»). Así se ve de un vistazo que el padre ya trae a sus hijos
+ * —el buscador compara por el inicio— y que el hijo suelto sobra. Las palabras van al final.
+ */
+const listaAgrupada = computed(() => {
+  const codigos = estado.cpc.filter(esCodigoCpc)
+  const digitos = (texto) => String(texto).replace(/\D/g, '')
+  const ordenados = [...codigos].sort((a, b) => digitos(a).localeCompare(digitos(b)))
+  const filas = ordenados.map((termino) => {
+    const propio = digitos(termino)
+    const padre = ordenados.find(
+      (otro) => otro !== termino && propio.startsWith(digitos(otro)) && digitos(otro) !== propio,
+    )
+    return { termino, padre: padre || null, codigo: true }
+  })
+  const palabras = estado.cpc
+    .filter((termino) => !esCodigoCpc(termino))
+    .map((termino) => ({ termino, padre: null, codigo: false }))
+  return [...filas, ...palabras]
+})
+
+/** Ramas abiertas: código → lista de códigos hijos vistos en las contrataciones descargadas. */
+const ramas = ref({})
+const cargandoRama = ref('')
+
+/**
+ * Qué incluye un código padre, con los códigos hijos que aparecen en lo ya descargado.
+ *
+ * El catálogo oficial del SERCOP no está en la base (su sitio tiene hoy el certificado caducado), así
+ * que se enseñan los códigos **reales** con los que las entidades catalogan, con su nombre y en
+ * cuántas contrataciones aparecen. Es solo para mirar: no cambia la lista ni el filtro.
+ */
+async function alternarRama(termino) {
+  if (ramas.value[termino]) {
+    const copia = { ...ramas.value }
+    delete copia[termino]
+    ramas.value = copia
+    return
+  }
+  cargandoRama.value = termino
+  try {
+    const respuesta = await api.ramasCpc(String(termino).replace(/\D/g, ''))
+    ramas.value = { ...ramas.value, [termino]: respuesta.codigos || [] }
+  } catch (fallo) {
+    error.value = fallo.message
+  } finally {
+    cargandoRama.value = ''
+  }
+}
 
 async function agregar() {
   if (!puedeAgregar.value || guardando.value) return
@@ -56,7 +115,7 @@ async function agregar() {
     if (!resultado.agregado) {
       error.value =
         resultado.motivo === 'corta'
-          ? `«${texto}» tiene menos de ${LONGITUD_MINIMA_TERMINO} letras.`
+          ? `«${texto}» es muy corto: escribe una palabra de ${LONGITUD_MINIMA_TERMINO} letras o más, o un código de 2 dígitos o más.`
           : `«${texto}» ya está en la lista de CPC.`
       return
     }
@@ -146,6 +205,9 @@ async function usarPalabrasClave() {
       Busca en el <strong>código y el nombre estándar</strong> del CPC de cada ítem, no en la
       descripción que escribe la entidad. Sirve para lo mismo que una palabra clave, pero sin traer
       lo que solo menciona el término de pasada.
+      <strong>Un código corto incluye a todos los que empiezan igual</strong>: «8714» trae también
+      «871410032» y los demás códigos de esa rama. Pulsa «Ver qué incluye» junto a un código para
+      ver los códigos hijos que aparecen en las contrataciones.
       {{
         estado.modo === 'todas'
           ? ' Con «Todas» se exigen todos los términos añadidos aquí.'
@@ -189,18 +251,45 @@ async function usarPalabrasClave() {
       coincide con otra. El resultado va a ser vacío. Cambia a «Cualquiera», o deja un solo término.
     </p>
 
-    <ul v-if="estado.cpc.length" class="cpc__lista">
-      <li v-for="termino in estado.cpc" :key="termino">
-        <button
-          type="button"
-          class="chip"
-          :aria-label="`Quitar ${termino} de la lista de CPC`"
-          @click="quitar(termino)"
-        >
-          <span class="chip__marca" aria-hidden="true">⌗</span>
-          <span class="chip__texto">{{ termino }}</span>
-          <span class="chip__quitar" aria-hidden="true">✕</span>
-        </button>
+    <ul v-if="estado.cpc.length" class="cpc__lista cpc__lista--ramas">
+      <li
+        v-for="fila in listaAgrupada"
+        :key="fila.termino"
+        :class="{ 'cpc__hijo': fila.padre }"
+      >
+        <div class="cpc__fila">
+          <button
+            type="button"
+            class="chip"
+            :aria-label="`Quitar ${fila.termino} de la lista de CPC`"
+            @click="quitar(fila.termino)"
+          >
+            <span class="chip__marca" aria-hidden="true">{{ fila.padre ? '↳' : '⌗' }}</span>
+            <span class="chip__texto">{{ fila.termino }}</span>
+            <span class="chip__quitar" aria-hidden="true">✕</span>
+          </button>
+          <span v-if="fila.padre" class="cpc__nota-rama">ya incluido en {{ fila.padre }}</span>
+          <button
+            v-if="fila.codigo"
+            type="button"
+            class="boton boton--fantasma boton--pequeno"
+            :aria-expanded="Boolean(ramas[fila.termino])"
+            :disabled="cargandoRama === fila.termino"
+            @click="alternarRama(fila.termino)"
+          >
+            {{ ramas[fila.termino] ? 'Ocultar' : cargandoRama === fila.termino ? 'Buscando…' : 'Ver qué incluye' }}
+          </button>
+        </div>
+        <ul v-if="ramas[fila.termino]" class="cpc__rama">
+          <li v-if="!ramas[fila.termino].length" class="cpc__vacio">
+            Todavía no hay contrataciones descargadas con códigos de esta rama.
+          </li>
+          <li v-for="hijo in ramas[fila.termino]" :key="hijo.codigo">
+            <span class="numeros">{{ hijo.codigo }}</span>
+            {{ hijo.nombre || '' }}
+            <span class="cpc__cuenta">({{ hijo.procesos }})</span>
+          </li>
+        </ul>
       </li>
     </ul>
 
@@ -260,7 +349,7 @@ async function usarPalabrasClave() {
         class="entrada"
         type="text"
         autofocus
-        :placeholder="`lavado, 871410032… (mínimo ${LONGITUD_MINIMA_TERMINO} letras)`"
+        :placeholder="`lavado, 8714, 871410032… (palabras de ${LONGITUD_MINIMA_TERMINO} letras o más)`"
         @keydown.esc="cancelarCampo"
       />
       <div class="cpc__nueva-acciones">
@@ -295,7 +384,7 @@ async function usarPalabrasClave() {
           {{ delLote.terminos.length === 1 ? 'término' : 'términos' }}.
         </template>
         <template v-if="delLote.cortas">
-          Se descartarán {{ delLote.cortas }} por tener menos de {{ LONGITUD_MINIMA_TERMINO }} letras.
+          Se descartarán {{ delLote.cortas }} por ser demasiado cortos.
         </template>
       </p>
       <div class="cpc__nueva-acciones">
@@ -321,6 +410,38 @@ async function usarPalabrasClave() {
 </template>
 
 <style scoped>
+.cpc__lista--ramas {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.cpc__fila {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.cpc__hijo {
+  padding-left: 1.25rem;
+}
+
+.cpc__nota-rama,
+.cpc__cuenta {
+  font-size: var(--t-xs, 0.8rem);
+  color: var(--texto-tenue, #6b7280);
+}
+
+.cpc__rama {
+  margin: 0.3rem 0 0.4rem 1.25rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: var(--t-xs, 0.8rem);
+}
+
 .cpc {
   display: flex;
   flex-direction: column;

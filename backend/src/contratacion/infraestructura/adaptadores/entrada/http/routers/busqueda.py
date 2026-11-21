@@ -399,10 +399,9 @@ async def exportar_registros(
     - **No se pagina.** Un archivo con las veinticinco filas de la página en curso no sirve para
       trabajar fuera de la plataforma, que es justo para lo que se exporta. El tope que sí se aplica
       es el de configuración, y si se supera se rechaza en lugar de entregar un archivo incompleto.
-    - **No llega más atrás de tres meses.** Es la única operación que lee el histórico entero sin
-      paginar, así que la ventana se acota por fecha de publicación y una petición que se remonte
-      más atrás se rechaza indicando desde cuándo sí se puede. Rechazar y no recortar es deliberado:
-      un archivo al que le faltan filas sin decirlo deja de coincidir con lo que hay en pantalla.
+    - **La fecha de publicación es opcional** (QA ciclo 3): el archivo trae las mismas filas que la
+      tabla con los mismos filtros. Lo que acota el coste es el tope de filas; si se supera se
+      rechaza con el motivo, nunca se recorta: un archivo con filas de menos deja de coincidir.
     - **Pide permiso de exportación, no de consulta.** Un lector ve la tabla y no descarga el
       archivo: lo que sale de la plataforma deja de estar bajo nuestro control.
 

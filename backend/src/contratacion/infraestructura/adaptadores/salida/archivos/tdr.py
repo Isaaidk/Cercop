@@ -15,7 +15,9 @@ descargar (SSRF; auditoría de seguridad, doc 38).
 from __future__ import annotations
 
 import hashlib
+import io
 import ipaddress
+import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -163,3 +165,121 @@ def _podar(carpeta: Path) -> None:
         peso = ruta.stat().st_size
         ruta.unlink(missing_ok=True)
         ocupado -= peso
+
+
+# ── Tipo real del archivo ─────────────────────────────────────────────────────────────────────
+# El nombre del anexo es el texto que la entidad escribió en la ficha («INFORME DE NECESIDAD»,
+# «Anexo»), no un nombre de archivo: no trae extensión, o trae una que no corresponde. Por eso el
+# tipo se decide por los primeros bytes del archivo ya bajado («números mágicos») y no por el
+# nombre. Sin esto un .docx se servía como `application/octet-stream` y sin extensión, y el panel
+# lo guardaba con su nombre por defecto (`contrataciones.xlsx`).
+
+MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MIME_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+MIME_GENERICO = "application/octet-stream"
+
+EXTENSION_DE_MIME = {
+    "application/pdf": ".pdf",
+    MIME_DOCX: ".docx",
+    MIME_XLSX: ".xlsx",
+    MIME_PPTX: ".pptx",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/zip": ".zip",
+    "application/vnd.rar": ".rar",
+    "application/x-7z-compressed": ".7z",
+    "application/rtf": ".rtf",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/tiff": ".tif",
+    "image/webp": ".webp",
+}
+
+_FIRMAS: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"II*\x00", "image/tiff"),
+    (b"MM\x00*", "image/tiff"),
+    (b"Rar!\x1a\x07", "application/vnd.rar"),
+    (b"7z\xbc\xaf\x27\x1c", "application/x-7z-compressed"),
+    (b"{\\rtf", "application/rtf"),
+)
+_ZIP = b"PK\x03\x04"
+_OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _tipo_de_zip(contenido: bytes) -> str:
+    """DOCX, XLSX, PPTX y ODF son ZIP: se distinguen por las partes que llevan dentro."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(contenido)) as paquete:
+            nombres = paquete.namelist()
+            if "mimetype" in nombres:
+                declarado = paquete.read("mimetype").decode("ascii", "ignore").strip()
+                if declarado in EXTENSION_DE_MIME:
+                    return declarado
+    except (zipfile.BadZipFile, OSError, ValueError, KeyError):
+        return "application/zip"
+    if any(nombre.startswith("word/") for nombre in nombres):
+        return MIME_DOCX
+    if any(nombre.startswith("xl/") for nombre in nombres):
+        return MIME_XLSX
+    if any(nombre.startswith("ppt/") for nombre in nombres):
+        return MIME_PPTX
+    return "application/zip"
+
+
+def _tipo_de_ole(contenido: bytes) -> str:
+    """DOC, XLS y PPT viejos comparten contenedor (OLE): el flujo interno dice cuál es."""
+    if "WordDocument".encode("utf-16-le") in contenido:
+        return "application/msword"
+    if "Workbook".encode("utf-16-le") in contenido or "Book".encode("utf-16-le") in contenido:
+        return "application/vnd.ms-excel"
+    if "PowerPoint Document".encode("utf-16-le") in contenido:
+        return "application/vnd.ms-powerpoint"
+    return MIME_GENERICO
+
+
+def tipo_por_contenido(contenido: bytes) -> str:
+    """El tipo MIME por los bytes del archivo, o `application/octet-stream` si no se reconoce."""
+    cabecera = contenido[:1024]
+    if cabecera.startswith(_ZIP):
+        return _tipo_de_zip(contenido)
+    if cabecera.startswith(_OLE):
+        return _tipo_de_ole(contenido)
+    # Algunos generadores de PDF dejan basura antes de la firma; la norma la admite en el primer KB.
+    # Va después del ZIP: un ZIP de PDF sin comprimir también lleva «%PDF-» al principio.
+    if b"%PDF-" in cabecera:
+        return "application/pdf"
+    if cabecera.startswith(b"RIFF") and cabecera[8:12] == b"WEBP":
+        return "image/webp"
+    for firma, mime in _FIRMAS:
+        if cabecera.startswith(firma):
+            return mime
+    return MIME_GENERICO
+
+
+def tipo_de_archivo(ruta: Path) -> str:
+    """`tipo_por_contenido` de un archivo en disco (como mucho 25 MB, el tope de descarga).
+
+    Solo ZIP y OLE se leen enteros (su índice está al final); el resto se decide con el primer KB.
+    """
+    try:
+        with ruta.open("rb") as archivo:
+            cabecera = archivo.read(8)
+            if cabecera.startswith((_ZIP, _OLE)):
+                return tipo_por_contenido(cabecera + archivo.read(TOPE_BYTES))
+            return tipo_por_contenido(cabecera + archivo.read(1016))
+    except OSError:
+        return MIME_GENERICO
+
+
+def extension_de(mime: str) -> str:
+    """«.pdf», «.docx»… o cadena vacía si el tipo no se conoce."""
+    return EXTENSION_DE_MIME.get((mime or "").split(";")[0].strip().lower(), "")

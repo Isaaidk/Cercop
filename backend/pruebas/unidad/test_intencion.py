@@ -196,3 +196,51 @@ def test_provincias() -> None:
     assert provincia_oficial("santo domingo") == "Santo Domingo de los Tsáchilas"
     assert provincia_oficial("Quito") is None
     assert provincia_mencionada("infimas en los rios hoy") == "Los Ríos"
+
+
+# --- Lo que no está adjudicado ----------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("texto", "tipo"),
+    [
+        ("ínfimas no adjudicadas", "infimas"),
+        ("Muéstrame las que no están adjudicadas", "infimas"),
+        ("las que siguen abiertas", "infimas"),
+        ("¿cuáles aún no se han adjudicado?", "infimas"),
+        ("procesos sin adjudicar", "procesos"),
+        ("licitaciones que no se han adjudicado", "procesos"),
+        ("ínfimas pendientes de adjudicación", "infimas"),
+    ],
+)
+def test_sin_adjudicar_va_por_el_camino_rapido(texto: str, tipo: str) -> None:
+    intencion = detectar(texto)
+    assert intencion.tipo is T.SIN_ADJUDICAR
+    assert intencion.rapida
+    assert intencion.argumentos["tipo"] == tipo
+    assert intencion.argumentos["para_mi"] is True
+
+
+def test_sin_adjudicar_con_provincia() -> None:
+    intencion = detectar("ínfimas no adjudicadas en Guayas")
+    assert intencion.tipo is T.SIN_ADJUDICAR
+    assert intencion.argumentos["provincia"] == "Guayas"
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "ínfimas de limpieza no adjudicadas",
+        "busca procesos sin adjudicar de computadoras",
+        "¿por qué no me adjudicaron el NIC-1768123450001-2026-00123?",
+    ],
+)
+def test_sin_adjudicar_con_filtros_va_al_modelo(texto: str) -> None:
+    assert detectar(texto).tipo is not T.SIN_ADJUDICAR
+
+
+def test_mis_ofertas_no_adjudicadas_no_filtra_por_adjudicadas() -> None:
+    intencion = detectar("mis ofertas no adjudicadas")
+    assert intencion.tipo is T.MIS_OFERTAS
+    assert "etapa" not in intencion.argumentos
+    assert detectar("mis ofertas adjudicadas").argumentos == {"etapa": "adjudicada"}

@@ -108,10 +108,11 @@ watch(() => props.registroId, cargar)
       <ul v-if="anexos.length" class="lista">
         <li v-for="anexo in anexos" :key="anexo.enlace" class="lista__item">
           <div class="lista__texto">
-            <span class="etiqueta">{{ anexo.etiqueta_tipo }}</span>
+            <!-- El nombre que le dio la entidad va primero; nuestro tipo, como insignia secundaria. -->
             <p class="lista__nombre">{{ anexo.nombre }}</p>
             <p class="lista__detalle">
-              <span v-if="anexo.fecha">Publicado el {{ fechaCorta(anexo.fecha) }}</span>
+              <span class="etiqueta">{{ anexo.etiqueta_tipo }}</span>
+              <span v-if="anexo.fecha"> Publicado el {{ fechaCorta(anexo.fecha) }}</span>
               <span v-if="formatoDe(anexo)"> · {{ formatoDe(anexo) }}</span>
             </p>
           </div>
@@ -257,6 +258,7 @@ watch(() => props.registroId, cargar)
 }
 
 .lista__nombre {
+  font-weight: 600;
   font-size: var(--t-sm);
   overflow-wrap: anywhere;
 }

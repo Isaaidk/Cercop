@@ -49,14 +49,17 @@ from contratacion.aplicacion.puertos.radar import InfimasAbiertas
 from contratacion.aplicacion.puertos.seguimiento import RepositorioSeguimiento
 from contratacion.dominio.acceso import Vista, fuentes_para_vistas
 from contratacion.dominio.busqueda import (
+    TAMANO_MAXIMO,
     Categoria,
     Filtros,
+    ModoBusqueda,
     codigo_cercoapp,
     es_codigo_cpc,
     normalizar_terminos,
 )
 from contratacion.dominio.errores import DatoInvalido, ErrorDominio, EstadoInvalido
 from contratacion.dominio.intencion import codigo_de_proceso, provincia_oficial
+from contratacion.dominio.perfil_comercial import PerfilComercial, resumen_comercial
 from contratacion.dominio.verificacion import ruc_valido
 
 registro = logging.getLogger(__name__)
@@ -64,6 +67,10 @@ registro = logging.getLogger(__name__)
 MAX_ELEMENTOS = 8
 _FRECUENCIAS = ("inmediata", "diaria", "semanal")
 _ORDENES = ("coincidencia", "cierre", "presupuesto")
+_TIPOS_SIN_ADJUDICAR = ("infimas", "procesos")
+# Estados OCDS (`tender.status` traducido) en los que un proceso ya terminó sin seguir abierto.
+# «Finalizado» sin proveedor publicado sigue contando como «sin adjudicación publicada».
+_ESTADOS_CERRADOS = {"cancelado", "desierto", "retirado"}
 # Pestañas del panel a las que el asistente puede mandar. Son las que el panel reconoce.
 PESTANAS = ("propuestas", "ofertas", "alertas", "mis-ofertas", "empresa", "documentos")
 _MENSAJE_RUC = (
@@ -87,6 +94,7 @@ FUENTES_POR_HERRAMIENTA: dict[str, tuple[str, ...]] = {
     "precio_referencia": ("OCDS",),
     "competidores": ("OCDS",),
     "historial_ruc": ("OCDS",),
+    "sin_adjudicar": CUALQUIER_FUENTE,
 }
 SIN_VISTA = (
     "Tu cuenta no tiene acceso a esos datos: el administrador de la plataforma no tiene activa "
@@ -242,6 +250,20 @@ def _validar_propuestas(crudos: dict[str, Any]) -> dict[str, Any]:
     if orden not in _ORDENES:
         orden = "coincidencia"
     return {"orden": orden, "provincia": _provincia(crudos.get("provincia"))}
+
+
+def _validar_sin_adjudicar(crudos: dict[str, Any]) -> dict[str, Any]:
+    tipo = _texto(crudos.get("tipo"), largo=20).lower() or "infimas"
+    if tipo not in _TIPOS_SIN_ADJUDICAR:
+        tipo = "infimas"
+    texto = _texto(crudos.get("texto"), largo=120)
+    return {
+        "tipo": tipo,
+        "texto": texto,
+        "provincia": _provincia(crudos.get("provincia")),
+        # Sin texto, lo útil es lo que encaja con el perfil de la empresa.
+        "para_mi": _booleano(crudos.get("para_mi"), not texto),
+    }
 
 
 def _validar_codigo(crudos: dict[str, Any]) -> dict[str, Any]:
@@ -558,12 +580,22 @@ async def estado_proceso(servicios: Servicios, argumentos: dict[str, Any]) -> Re
     return Resultado(resumen, tarjetas)
 
 
+async def perfil_comercial(servicios: Servicios) -> PerfilComercial:
+    """Qué vende la empresa según su **perfil** (más la lista de CPC del buscador, que solo suma).
+
+    Es lo que el asistente usa para hablar de la empresa: vaciar los filtros de búsqueda no la
+    deja «sin nada cargado».
+    """
+    ficha = await servicios.perfil.leer(servicios.actor.negocio_id)
+    claves = await servicios.cpc.listar(negocio_id=servicios.actor.negocio_id)
+    return resumen_comercial(ficha, [clave.texto for clave in claves])
+
+
 async def datos_empresa(servicios: Servicios, _: dict[str, Any]) -> Resultado:
     ficha = await servicios.perfil.leer(servicios.actor.negocio_id)
     claves = await servicios.cpc.listar(negocio_id=servicios.actor.negocio_id)
-    provincias = sorted(
-        {str(f.get("provincia") or "") for f in ficha.get("cobertura") or [] if f.get("provincia")}
-    )
+    comercial = resumen_comercial(ficha, [clave.texto for clave in claves])
+    provincias = list(comercial.provincias)
     rango = ""
     if ficha.get("presupuesto_min") or ficha.get("presupuesto_max"):
         rango = f"{_dinero(ficha.get('presupuesto_min'))} a {_dinero(ficha.get('presupuesto_max'))}"
@@ -578,13 +610,16 @@ async def datos_empresa(servicios: Servicios, _: dict[str, Any]) -> Resultado:
         ("Provincias donde trabaja", ", ".join(provincias) or "Todo el país"),
         ("Rango de presupuesto", rango),
         ("Productos y servicios", str(len(ficha.get("ofertas") or [])) or ""),
+        ("Palabras clave comerciales", ", ".join(comercial.palabras)),
+        ("Dedicación", "; ".join(comercial.dedicaciones)),
     ]
     filas = [{"etiqueta": e, "valor": str(v)} for e, v in campos if v not in (None, "")]
+    # Los CPC del perfil (RUP, lo ofrecido, la experiencia) y los de la lista del buscador.
     cpc = [
-        {"codigo": c.texto, "descripcion": ""}
-        if es_codigo_cpc(c.texto) or (c.texto.isdigit() and len(c.texto) >= 4)
-        else {"codigo": "", "descripcion": c.texto}
-        for c in claves[:30]
+        {"codigo": texto, "descripcion": ""}
+        if es_codigo_cpc(texto) or (texto.replace(".", "").isdigit() and len(texto) >= 4)
+        else {"codigo": "", "descripcion": texto}
+        for texto in comercial.cpc
     ]
     tarjeta = {
         "tipo": "empresa",
@@ -593,8 +628,10 @@ async def datos_empresa(servicios: Servicios, _: dict[str, Any]) -> Resultado:
         "cpc": cpc,
     }
     resumen = "; ".join(f"{f['etiqueta']}: {f['valor']}" for f in filas)
-    textos_cpc = ", ".join(c.texto for c in claves[:12])
-    resumen += f". CPC y palabras guardadas ({len(claves)}): {textos_cpc or 'ninguno'}."
+    resumen += (
+        f". CPC del perfil ({len(comercial.cpc)}): {', '.join(comercial.cpc) or 'ninguno'}. "
+        f"Palabras y productos: {', '.join(comercial.palabras) or 'ninguno'}."
+    )
     return Resultado(resumen, [tarjeta, _ir("Abrir Mi empresa", "empresa")])
 
 
@@ -880,6 +917,152 @@ async def competidores(servicios: Servicios, argumentos: dict[str, Any]) -> Resu
     )
 
 
+_NOTA_INFIMAS = (
+    "Las ínfimas que todavía reciben proformas aún no están adjudicadas. El SERCOP no publica a "
+    "quién se adjudica una ínfima, así que de las que ya cerraron no se puede saber."
+)
+_NOTA_PROCESOS = (
+    "Procesos con oferta sin proveedor adjudicado en los datos abiertos del SERCOP. Puede que la "
+    "adjudicación exista y el SERCOP aún no la haya publicado."
+)
+
+
+def _adjudicado(fila: Any) -> bool:
+    """Un proceso OCDS está adjudicado si publica proveedor, o terminó cancelado o desierto."""
+    if str(fila.get("proveedor") or "").strip():
+        return True
+    return str(fila.get("estado") or "").strip().lower() in _ESTADOS_CERRADOS
+
+
+async def _infimas_sin_adjudicar(servicios: Servicios, argumentos: dict[str, Any]) -> Resultado:
+    if "NCO" not in fuentes_para_vistas(servicios.vistas):
+        return Resultado("La cuenta no tiene acceso a las ínfimas cuantías.")
+    provincia = argumentos.get("provincia")
+    texto = str(argumentos.get("texto") or "")
+    if argumentos.get("para_mi") and not texto:
+        respuesta = await ver_propuestas(
+            servicios.actor,
+            vistas=servicios.vistas,
+            perfil=servicios.perfil,
+            cpc=servicios.cpc,
+            infimas=servicios.infimas,
+            cache=servicios.cache,
+            tamano=MAX_ELEMENTOS,
+            orden="cierre",
+            provincia=provincia,
+            solo_abiertas=True,
+        )
+        propuestas = list(respuesta.get("propuestas") or [])
+        if propuestas:
+            elementos = [_elemento_infima(fila) for fila in propuestas[:MAX_ELEMENTOS]]
+            total = int(respuesta.get("total") or len(elementos))
+            tarjeta = {
+                "tipo": "infimas",
+                "titulo": "Ínfimas sin adjudicar para tu empresa",
+                "total": total,
+                "elementos": elementos,
+                "ver_mas": {"pestana": "propuestas"},
+                "nota": _NOTA_INFIMAS,
+            }
+            return Resultado(
+                f"{total} ínfimas que encajan con el perfil de la empresa siguen recibiendo "
+                f"proformas, así que aún no están adjudicadas. {_NOTA_INFIMAS} Las que cierran "
+                "antes:\n" + _lineas_infimas(elementos),
+                [tarjeta],
+            )
+        # Sin coincidencias con el perfil: se enseñan las abiertas de todo el país (o provincia).
+    filtros = Filtros(
+        terminos=normalizar_terminos(texto) if texto else (),
+        categoria=Categoria.INFIMAS,
+        fuentes_permitidas=("NCO",),
+        provincias=(provincia,) if provincia else (),
+        solo_con_plazo=True,
+        tamano=MAX_ELEMENTOS,
+    )
+    pagina = await buscar(
+        filtros,
+        cache=servicios.cache,
+        repositorio=servicios.consultas,
+        ttl_memo_seg=servicios.ttl_memo_seg,
+    )
+    elementos = [_elemento_infima(fila, []) for fila in list(pagina.elementos)[:MAX_ELEMENTOS]]
+    criterio = ", ".join(p for p in (texto, provincia or "") if p) or "todo el país"
+    if not elementos:
+        return Resultado(f"No hay ínfimas abiertas (sin adjudicar) en {criterio}. {_NOTA_INFIMAS}")
+    tarjeta = {
+        "tipo": "infimas",
+        "titulo": f"Ínfimas sin adjudicar: {criterio}"[:120],
+        "total": pagina.total,
+        "elementos": elementos,
+        "ver_mas": None,
+        "nota": _NOTA_INFIMAS,
+    }
+    return Resultado(
+        f"{pagina.total} ínfimas abiertas (aún sin adjudicar) en {criterio}. {_NOTA_INFIMAS}\n"
+        + _lineas_infimas(elementos),
+        [tarjeta],
+    )
+
+
+async def _procesos_sin_adjudicar(servicios: Servicios, argumentos: dict[str, Any]) -> Resultado:
+    if "OCDS" not in fuentes_para_vistas(servicios.vistas):
+        return Resultado(SIN_VISTA)
+    provincia = argumentos.get("provincia")
+    texto = str(argumentos.get("texto") or "")
+    palabras: tuple[str, ...] = ()
+    if texto:
+        palabras = normalizar_terminos(texto)
+    elif argumentos.get("para_mi"):
+        comercial = await perfil_comercial(servicios)
+        palabras = normalizar_terminos(list(comercial.palabras[:6]))
+    filtros = Filtros(
+        terminos=palabras,
+        modo=ModoBusqueda.CUALQUIERA,
+        categoria=Categoria.OFERTAS,
+        fuentes_permitidas=("OCDS",),
+        provincias=(provincia,) if provincia else (),
+        tamano=TAMANO_MAXIMO,
+    )
+    pagina = await buscar(
+        filtros,
+        cache=servicios.cache,
+        repositorio=servicios.consultas,
+        ttl_memo_seg=servicios.ttl_memo_seg,
+    )
+    revisados = list(pagina.elementos)
+    libres = [fila for fila in revisados if not _adjudicado(fila)]
+    criterio = ", ".join(p for p in (texto, provincia or "") if p) or (
+        "lo que vende tu empresa" if palabras else "todo el país"
+    )
+    if not libres:
+        return Resultado(
+            f"De los {len(revisados)} procesos con oferta más recientes ({criterio}), ninguno "
+            "está sin adjudicar en los datos abiertos."
+        )
+    elementos = [{**_elemento_infima(fila, []), "cierre": None} for fila in libres[:MAX_ELEMENTOS]]
+    tarjeta = {
+        "tipo": "infimas",
+        "titulo": f"Procesos sin adjudicar: {criterio}"[:120],
+        "total": len(libres),
+        "elementos": elementos,
+        "ver_mas": None,
+        "proforma": False,
+        "nota": _NOTA_PROCESOS,
+    }
+    return Resultado(
+        f"De los {len(revisados)} procesos con oferta más recientes ({criterio}), {len(libres)} "
+        f"no tienen adjudicación publicada. {_NOTA_PROCESOS}\n" + _lineas_infimas(elementos),
+        [tarjeta],
+    )
+
+
+async def sin_adjudicar(servicios: Servicios, argumentos: dict[str, Any]) -> Resultado:
+    """Ínfimas o procesos que todavía no están adjudicados, con lo que publica cada fuente."""
+    if argumentos.get("tipo") == "procesos":
+        return await _procesos_sin_adjudicar(servicios, argumentos)
+    return await _infimas_sin_adjudicar(servicios, argumentos)
+
+
 async def preparar_proforma(servicios: Servicios, argumentos: dict[str, Any]) -> Resultado:
     codigo = str(argumentos.get("codigo") or "")
     registro_id = str(argumentos.get("registro_id") or "")
@@ -924,7 +1107,8 @@ HERRAMIENTAS: dict[str, Herramienta] = {
         ),
         Herramienta(
             "propuestas_para_ti",
-            "Ínfimas abiertas que encajan con el perfil de la empresa (sus CPC y provincias).",
+            "Ínfimas abiertas que encajan con el PERFIL guardado de la empresa (CPC, palabras "
+            "clave comerciales, productos, cobertura). No depende de los filtros del buscador.",
             _objeto_json(
                 {
                     "orden": {"type": "string", "enum": list(_ORDENES)},
@@ -933,6 +1117,26 @@ HERRAMIENTAS: dict[str, Herramienta] = {
             ),
             _validar_propuestas,
             propuestas_para_ti,
+        ),
+        Herramienta(
+            "sin_adjudicar",
+            "Ínfimas o procesos que todavía NO están adjudicados. tipo=infimas: las que aún "
+            "reciben proformas (el SERCOP no publica la adjudicación de las ínfimas). "
+            "tipo=procesos: procesos con oferta sin proveedor adjudicado publicado. Sin texto y "
+            "con para_mi=true usa el perfil de la empresa.",
+            _objeto_json(
+                {
+                    "tipo": {"type": "string", "enum": list(_TIPOS_SIN_ADJUDICAR)},
+                    "texto": {**_TEXTO, "description": "Qué se compra (opcional)."},
+                    "provincia": {**_TEXTO, "description": "Provincia del Ecuador."},
+                    "para_mi": {
+                        "type": "boolean",
+                        "description": "Según el perfil de la empresa. Por defecto true sin texto.",
+                    },
+                }
+            ),
+            _validar_sin_adjudicar,
+            sin_adjudicar,
         ),
         Herramienta(
             "estado_proceso",

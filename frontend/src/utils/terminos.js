@@ -38,7 +38,28 @@ export const LONGITUD_MINIMA_TERMINO = 3
  * Vive aquí y no en cada gestor porque la usan el CPC, la descripción del producto y las palabras
  * clave: es la misma idea —pegar una lista— y tiene que comportarse igual en los tres sitios.
  */
-export function terminosDeLista(texto, minimo = LONGITUD_MINIMA_TERMINO) {
+/**
+ * ¿Es un código de CPC padre de dos dígitos o más («87», «8714», «73210.00.1»)?
+ *
+ * El CPC es jerárquico y el buscador compara por el inicio: «87» trae toda la división. Por eso en
+ * la lista de CPC un código numérico vale desde **dos** dígitos, aunque una palabra necesite tres.
+ */
+export function esCodigoCpc(texto) {
+  const limpio = String(texto || '').trim()
+  return /^\d[\d.]*\d$/.test(limpio) && limpio.replace(/\D/g, '').length >= 2
+}
+
+/** ¿Vale este término para la lista de CPC? Palabras desde tres letras; códigos desde dos dígitos. */
+export function terminoCpcValido(texto) {
+  const limpio = String(texto || '').trim()
+  return limpio.length >= LONGITUD_MINIMA_TERMINO || esCodigoCpc(limpio)
+}
+
+export function terminosDeLista(
+  texto,
+  minimo = LONGITUD_MINIMA_TERMINO,
+  { codigosCortos = false } = {},
+) {
   const partes = String(texto || '')
     .split(/[,;\n]/)
     .map((parte) => parte.trim())
@@ -47,7 +68,7 @@ export function terminosDeLista(texto, minimo = LONGITUD_MINIMA_TERMINO) {
   const utiles = new Map()
   let cortas = 0
   for (const parte of partes) {
-    if (parte.length < minimo) {
+    if (parte.length < minimo && !(codigosCortos && esCodigoCpc(parte))) {
       cortas += 1
       continue
     }

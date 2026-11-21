@@ -35,7 +35,13 @@ from typing import Any
 
 from sqlalchemy import text
 
-from contratacion.dominio.busqueda import Filtros, ModoBusqueda, OrdenBusqueda, huella_filtros
+from contratacion.dominio.busqueda import (
+    Filtros,
+    ModoBusqueda,
+    OrdenBusqueda,
+    huella_filtros,
+    normalizar_terminos,
+)
 from contratacion.dominio.plazos import PATRON_FECHA_ISO
 from contratacion.infraestructura.adaptadores.salida.bd.claves import (
     PROVINCIA_NORMALIZADA,
@@ -47,7 +53,9 @@ from contratacion.infraestructura.adaptadores.salida.bd.claves import (
 )
 from contratacion.infraestructura.adaptadores.salida.bd.consultas import (
     ENTIDAD_NORMALIZADA,
+    INDICE_CPC,
     INDICE_OBJETO,
+    INDICE_TEXTO,
     ORDENES,
     _condiciones,
 )
@@ -258,10 +266,13 @@ def test_sqlalchemy_reconoce_todos_los_parametros() -> None:
 
 
 def test_sin_cpc_no_se_anade_ninguna_condicion() -> None:
+    """Sin términos de CPC no hay filtro de CPC; las palabras clave sí miran además los nombres
+    estándar del CPC (un `OR`, que nunca recorta)."""
     condiciones, parametros = _condiciones(Filtros(terminos=("lavado",)))
 
     assert "expr_cpc" not in parametros
-    assert not any("cpc_busqueda" in condicion for condicion in condiciones)
+    assert "cpc_prefijos" not in parametros
+    assert not any("cpc_codigos" in condicion for condicion in condiciones)
 
 
 def test_el_cpc_usa_su_propia_columna_y_no_la_del_texto() -> None:
@@ -312,13 +323,28 @@ def test_un_cpc_sin_palabras_buscables_no_filtra() -> None:
 
 
 def test_un_codigo_de_cpc_usa_la_columna_de_codigos() -> None:
-    """Un código es un valor, no texto: se compara por igualdad contra `cpc_codigos`."""
+    """Un código se compara por su **inicio** contra `cpc_codigos`, con el índice del CPC."""
     condiciones, parametros = _condiciones(Filtros(cpc=("871410032",)))
     unida = " AND ".join(condiciones)
 
-    assert "cpc_codigos @>" in unida
-    assert parametros["cpc_codigos"] == ["871410032"]
+    assert "c.codigo LIKE" in unida
+    assert "unnest(r.cpc_codigos)" in unida
+    assert parametros["cpc_patrones"] == ["871410032%"]
+    assert parametros["cpc_prefijos"] == "871410032:*"
     assert "expr_cpc" not in parametros
+
+
+def test_un_codigo_padre_trae_toda_su_rama() -> None:
+    """Elegir «8714» tiene que traer «871410032»: las entidades catalogan en el código hijo."""
+    condiciones, parametros = _condiciones(Filtros(cpc=normalizar_terminos(["8714", "35"])))
+
+    assert parametros["cpc_patrones"] == ["35%", "8714%"]
+    assert parametros["cpc_prefijos"] == "35:* & 8714:*"
+    assert any("NOT EXISTS" in condicion for condicion in condiciones)
+
+
+def test_un_codigo_con_puntos_se_reduce_a_sus_digitos() -> None:
+    assert normalizar_terminos(["73210.00.1"]) == ("73210001",)
 
 
 def test_con_cualquiera_los_codigos_se_solapan() -> None:
@@ -327,8 +353,9 @@ def test_con_cualquiera_los_codigos_se_solapan() -> None:
         Filtros(cpc=("871410032", "431510128"), modo=ModoBusqueda.CUALQUIERA)
     )
 
-    assert "cpc_codigos &&" in " AND ".join(condiciones)
-    assert parametros["cpc_codigos"] == ["871410032", "431510128"]
+    assert "LIKE ANY" in " AND ".join(condiciones)
+    assert parametros["cpc_patrones"] == ["871410032%", "431510128%"]
+    assert parametros["cpc_prefijos"] == "871410032:* | 431510128:*"
 
 
 def test_un_codigo_y_una_descripcion_se_combinan() -> None:
@@ -336,9 +363,9 @@ def test_un_codigo_y_una_descripcion_se_combinan() -> None:
     condiciones, parametros = _condiciones(Filtros(cpc=("871410032", "lavado")))
     unida = " AND ".join(condiciones)
 
-    assert "cpc_codigos @>" in unida
+    assert "c.codigo LIKE" in unida
     assert "cpc_busqueda" in unida
-    assert parametros["cpc_codigos"] == ["871410032"]
+    assert parametros["cpc_patrones"] == ["871410032%"]
     assert parametros["expr_cpc"] == "(lavado:*)"
 
 
@@ -349,7 +376,7 @@ def test_solo_cpc_no_exige_las_palabras_clave() -> None:
     )
     unida = " AND ".join(condiciones)
 
-    assert "cpc_codigos @>" in unida
+    assert "c.codigo LIKE" in unida
     assert "texto_busqueda" not in unida
     assert "expr" not in parametros
 
@@ -463,7 +490,26 @@ def test_una_palabra_normal_no_se_busca_contra_el_codigo() -> None:
     condiciones, parametros = _condiciones(Filtros(terminos=("medicamentos",)))
 
     assert not any("codigo" in condicion for condicion in condiciones)
-    assert parametros["expr"] == "(medicamentos:*)"
+    assert parametros["expr"] == "(medicamento:*)"
+
+
+def test_las_palabras_clave_buscan_tambien_en_el_nombre_del_cpc() -> None:
+    """QA ciclo 3: una palabra que solo está en el nombre estándar del CPC del ítem también cuenta.
+
+    Con «todas», cada término puede estar en el texto **o** en el CPC: se arma uno a uno.
+    """
+    condiciones, _ = _condiciones(Filtros(terminos=("mantenimiento",)))
+    unida = " AND ".join(condiciones)
+    assert "texto_busqueda" in unida
+    assert "cpc_busqueda" in unida
+    assert " OR " in unida
+
+    todas, por_termino = _condiciones(
+        Filtros(terminos=("mantenimiento", "vehiculos"), modo=ModoBusqueda.TODAS)
+    )
+    assert por_termino["expr0"] == "(mantenimiento:*)"
+    assert por_termino["expr1"] == "(vehiculo:*)"
+    assert todas[0].count("cpc_busqueda") == 2
 
 
 def test_con_dos_codigos_la_union_respeta_el_modo() -> None:
@@ -505,8 +551,8 @@ def test_la_descripcion_respeta_el_modo() -> None:
         Filtros(descripcion=("mesas", "sillas"), modo=ModoBusqueda.CUALQUIERA)
     )
 
-    assert todas["expr_descripcion"] == "(mesas:*) & (sillas:*)"
-    assert cualquiera["expr_descripcion"] == "(mesas:*) | (sillas:*)"
+    assert todas["expr_descripcion"] == "(mesa:*) & (silla:*)"
+    assert cualquiera["expr_descripcion"] == "(mesa:*) | (silla:*)"
 
 
 def test_sin_descripcion_no_se_anade_ninguna_condicion() -> None:
@@ -540,12 +586,21 @@ def test_el_indice_de_la_descripcion_es_el_de_la_consulta() -> None:
     histórico entero calculando un `tsvector` por fila —unos 10 s— y el único síntoma es que va
     lenta. Esta prueba es lo único que avisa.
     """
-    migracion = _sin_huecos(
-        RUTA_MIGRACION_DESCRIPCION.read_text(encoding="utf-8").replace("{TILDES}", TILDES_SQL)
+    especificacion = importlib.util.spec_from_file_location(
+        "migracion_0049", RUTA_MIGRACION_DESCRIPCION
     )
+    assert especificacion is not None and especificacion.loader is not None
+    modulo = importlib.util.module_from_spec(especificacion)
+    especificacion.loader.exec_module(modulo)
 
-    # El índice nombra la columna sin el alias de la tabla: `datos`, no `r.datos`.
-    assert _sin_huecos(INDICE_OBJETO).replace("r.", "") in migracion
+    # Los índices nombran la columna sin el alias de la tabla: `datos`, no `r.datos`.
+    esperados = {
+        "ix_registro_objeto_palabras": INDICE_OBJETO,
+        "ix_registro_texto_palabras": INDICE_TEXTO,
+        "ix_registro_cpc_palabras": INDICE_CPC,
+    }
+    for nombre, consulta in esperados.items():
+        assert _sin_huecos(modulo.INDICES[nombre]) == _sin_huecos(consulta).replace("r.", "")
 
 
 # --------------------------------------------------------------------------- #
@@ -720,7 +775,10 @@ RUTA_MIGRACION_CLAVES = (
 )
 
 RUTA_MIGRACION_DESCRIPCION = (
-    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0020_indice_descripcion.py"
+    Path(__file__).resolve().parents[2]
+    / "alembic"
+    / "versions"
+    / "0049_indices_palabras_partidas.py"
 )
 
 # La migración escribe la tabla de tildes como un marcador (`{TILDES}`) para no repetirla dentro del

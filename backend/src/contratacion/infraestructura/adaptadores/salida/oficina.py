@@ -140,6 +140,8 @@ def parrafos_de(documento: dict[str, Any]) -> list[str]:
     lineas += _dato("RUC de la entidad", entidad.get("ruc"))
     lineas += _dato("Dirección de la entidad", entidad.get("direccion"))
     lineas += _dato("Teléfono de la entidad", entidad.get("telefono"))
+    lineas += _dato("Correo de la entidad", entidad.get("correo"))
+    lineas += _dato("Sitio web de la entidad", entidad.get("web"))
     lineas += _dato("Objeto", documento.get("objeto"))
     lineas += _dato("Contacto", documento.get("contacto"))
     if extras.get("carta"):
@@ -207,8 +209,12 @@ def parrafos_de(documento: dict[str, Any]) -> list[str]:
         + _dato("Garantía", condiciones.get("garantia"))
         + _dato("Validez de la oferta", condiciones.get("validez"))
     )
+    bloque += _dato("Alcance", extras.get("alcance"))
     if bloque:
         lineas += ["", "CONDICIONES", *bloque]
+    respaldo = [r.strip() for r in str(extras.get("detalle_condiciones") or "").splitlines()]
+    if any(respaldo):
+        lineas += ["", "DETALLE DE LAS CONDICIONES SEGÚN EL TDR", *[r for r in respaldo if r]]
     for titulo, clave in (
         ("EXPERIENCIA", "experiencia"),
         ("PERSONAL", "personal"),

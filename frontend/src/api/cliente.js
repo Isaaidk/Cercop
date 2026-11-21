@@ -43,6 +43,8 @@
  * faltara el comportamiento es el de antes, apoyado en la ventana de gracia del servidor.
  */
 
+import { nombreDesdeCabecera } from '@/utils/nombreArchivo'
+
 const BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
 const CLAVE_RENOVACION = 'contratacion:renovacion'
 
@@ -449,7 +451,7 @@ async function descargar(ruta, { parametros, sinReintento = false, aceptar = TIP
 
   return {
     contenido: await respuesta.blob(),
-    nombre: nombreDeArchivo(respuesta),
+    nombre: nombreDeArchivo(respuesta, aceptar === TIPO_LIBRO ? 'contrataciones.xlsx' : ''),
     filas: Number(respuesta.headers.get('X-Contenido-Filas') || 0),
   }
 }
@@ -459,13 +461,16 @@ async function descargar(ruta, { parametros, sinReintento = false, aceptar = TIP
  *
  * Se lee de la cabecera en lugar de componerlo aquí para que el nombre siga siendo una decisión del
  * servidor, que es quien sabe con qué filtros se generó. Si el navegador no deja leer la cabecera
- * —un despliegue con el origen cruzado y sin `expose_headers`— queda un nombre genérico: se pierde
+ * —un despliegue con el origen cruzado y sin `expose_headers`— queda `porDefecto`: se pierde
  * detalle, pero la descarga funciona, que es lo que no puede fallar.
+ *
+ * Se lee primero `filename*=` (UTF-8; ver `utils/nombreArchivo.js`). Antes solo se leía
+ * `filename=`, y un anexo como «INFORME DE NECESIDAD.docx» se guardaba como `contrataciones.xlsx`.
+ * Ese nombre por defecto queda solo para la exportación (quien pide un libro de Excel); el resto
+ * recibe cadena vacía y pone el suyo.
  */
-function nombreDeArchivo(respuesta) {
-  const cabecera = respuesta.headers.get('Content-Disposition') || ''
-  const encontrado = /filename="?([^";]+)"?/i.exec(cabecera)
-  return encontrado ? encontrado[1] : 'contrataciones.xlsx'
+function nombreDeArchivo(respuesta, porDefecto = '') {
+  return nombreDesdeCabecera(respuesta.headers.get('Content-Disposition'), porDefecto)
 }
 
 /**

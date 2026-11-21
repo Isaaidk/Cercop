@@ -58,10 +58,65 @@ async function cargar() {
   }
 }
 
-function elegir(evento) {
-  seleccionado.value = evento.target.files?.[0] || null
+/** Tope que anuncia el servidor; 8 MB si todavía no se ha cargado. */
+const tamanoMaximo = computed(() => estado.value.tamano_maximo_bytes || 8 * 1024 * 1024)
+
+/** La fila existe pero el archivo ya no está en el servidor: las descargas salen sin el diseño. */
+const archivoPerdido = computed(
+  () => estado.value.tiene_plantilla && estado.value.archivo_disponible === false,
+)
+
+/**
+ * Comprueba el archivo elegido y **lo copia en memoria en ese momento**.
+ *
+ * QA ciclo 3: «no está recibiendo el archivo». Dos causas que se dan con plantillas reales y que
+ * aquí se evitan o se explican:
+ *
+ * - Si el archivo se cambia o se guarda en Excel **después** de elegirlo, el navegador ya no puede
+ *   leerlo al enviar y la subida fallaba con «No se pudo contactar con el servidor», que no dice
+ *   nada. Copiándolo al elegirlo, lo que se sube es lo que se eligió; y si no se puede leer
+ *   (abierto y bloqueado), se dice qué hacer.
+ * - Un `.xls` antiguo, un `.xlsm` o un archivo demasiado grande se rechazan aquí con el motivo, sin
+ *   esperar al servidor.
+ */
+async function elegir(evento) {
+  const archivo = evento.target.files?.[0] || null
+  seleccionado.value = null
   error.value = ''
   aviso.value = ''
+  if (!archivo) return
+
+  const nombre = archivo.name || 'plantilla.xlsx'
+  const extension = nombre.toLowerCase().split('.').pop()
+  if (extension === 'xls') {
+    error.value = `«${nombre}» está en el formato antiguo de Excel (.xls). Ábrelo en Excel y usa «Guardar como → Libro de Excel (.xlsx)».`
+    return limpiarEntrada()
+  }
+  if (extension === 'xlsm') {
+    error.value = `«${nombre}» tiene macros (.xlsm). Guárdalo como «Libro de Excel (.xlsx)», sin macros.`
+    return limpiarEntrada()
+  }
+  if (extension !== 'xlsx') {
+    error.value = `«${nombre}» no es un libro de Excel (.xlsx).`
+    return limpiarEntrada()
+  }
+  if (archivo.size > tamanoMaximo.value) {
+    error.value = `«${nombre}» pesa ${bytesLegibles(archivo.size)} y el máximo es ${bytesLegibles(tamanoMaximo.value)}. Reduce el tamaño del logo (Imagen → Comprimir) y vuelve a intentarlo.`
+    return limpiarEntrada()
+  }
+  try {
+    const contenido = await archivo.arrayBuffer()
+    seleccionado.value = new File([contenido], nombre, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+  } catch {
+    error.value = `No se pudo leer «${nombre}». Si lo tienes abierto en Excel, ciérralo y vuelve a elegirlo.`
+    limpiarEntrada()
+  }
+}
+
+function limpiarEntrada() {
+  if (entrada.value) entrada.value.value = ''
 }
 
 async function subir() {
@@ -72,7 +127,12 @@ async function subir() {
   aviso.value = ''
   try {
     const respuesta = await api.subirPlantilla(seleccionado.value)
-    estado.value = { ...estado.value, tiene_plantilla: true, plantilla: respuesta.plantilla }
+    estado.value = {
+      ...estado.value,
+      tiene_plantilla: true,
+      archivo_disponible: true,
+      plantilla: respuesta.plantilla,
+    }
     aviso.value = `Plantilla actualizada con «${respuesta.plantilla.nombre_archivo}». Las exportaciones ya salen con tu diseño.`
     limpiarSeleccion()
   } catch (fallo) {
@@ -103,7 +163,7 @@ async function quitar() {
 
 function limpiarSeleccion() {
   seleccionado.value = null
-  if (entrada.value) entrada.value.value = ''
+  limpiarEntrada()
 }
 
 /**
@@ -147,7 +207,11 @@ onMounted(cargar)
             </p>
           </div>
         </div>
-        <div v-else class="plantilla__vacia">
+        <p v-if="archivoPerdido" class="tabla__error" role="alert">
+          El archivo de tu plantilla ya no está en el servidor, así que las descargas salen con el
+          diseño genérico. Vuelve a subirla con el botón de abajo.
+        </p>
+        <div v-if="!hayPlantilla" class="plantilla__vacia">
           <p>
             <strong>No hay ninguna plantilla subida.</strong>
             Las exportaciones salen con el libro genérico del sistema: una hoja por familia, con la
@@ -186,7 +250,8 @@ onMounted(cargar)
           />
           <button
             type="button"
-            class="boton boton--secundario boton--pequeno"
+            class="boton boton--pequeno"
+            :class="seleccionado ? 'boton--principal' : 'boton--secundario'"
             :disabled="!seleccionado || ocupado"
             @click="subir"
           >
@@ -203,6 +268,12 @@ onMounted(cargar)
             Quitar
           </button>
         </div>
+
+        <p v-if="seleccionado && !ocupado" class="plantilla__elegido" role="status">
+          Archivo elegido: <strong>{{ seleccionado.name }}</strong>
+          ({{ bytesLegibles(seleccionado.size) }}). Pulsa
+          «{{ hayPlantilla ? 'Reemplazar la plantilla' : 'Subir la plantilla' }}» para guardarlo.
+        </p>
 
         <p class="plantilla__nota">
           Los datos se escriben <strong>debajo de tus títulos</strong>: los que el sistema no
@@ -299,6 +370,11 @@ onMounted(cargar)
 .plantilla__entrada {
   flex: 1 1 16rem;
   font-size: 0.85rem;
+}
+
+.plantilla__elegido {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .plantilla__nota {

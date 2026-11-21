@@ -110,8 +110,9 @@ function accionar() {
               <li v-for="motivo in fila.motivos" :key="motivo" class="etiqueta">✓ {{ motivo }}</li>
             </ul>
           </div>
+          <!-- `proforma: false`: procesos con oferta (OCDS), que no se preparan como una ínfima. -->
           <button
-            v-if="fila.codigo || fila.registro_id"
+            v-if="t.proforma !== false && (fila.codigo || fila.registro_id)"
             type="button"
             class="boton boton--secundario tarjeta-ia__boton"
             :aria-label="`Preparar proforma de ${fila.objeto || fila.codigo}`"
@@ -122,6 +123,7 @@ function accionar() {
         </li>
       </ul>
       <p v-else class="tarjeta-ia__vacio">No encontré ínfimas con eso.</p>
+      <p v-if="t.nota" class="tarjeta-ia__nota">{{ t.nota }}</p>
       <button
         v-if="t.ver_mas?.pestana"
         type="button"
@@ -306,15 +308,20 @@ function accionar() {
 </template>
 
 <style scoped>
+/* Tarjeta hecha por la IA: borde violeta suave y un filete superior con el degradado de la IA,
+   el mismo que la insignia «IA» del menú y de la cabecera del Asistente. */
 .tarjeta-ia {
   display: flex;
   flex-direction: column;
   gap: var(--e-3);
   min-width: 0;
   padding: var(--e-4);
-  border: 1px solid var(--borde);
+  border: 1px solid var(--ia-borde);
+  border-top: 3px solid transparent;
   border-radius: var(--r-3);
-  background: var(--superficie);
+  background:
+    linear-gradient(var(--superficie), var(--superficie)) padding-box,
+    var(--ia-degradado) border-box;
   color: var(--texto);
   font-size: 1rem;
   line-height: 1.5;

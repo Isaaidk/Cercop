@@ -18,18 +18,25 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
 from contratacion.dominio.anexos import ACTA, clasificar, elegir_anexos
+from contratacion.dominio.documentos import parece_enlace
 from contratacion.infraestructura.adaptadores.salida.archivos.tdr import (
+    EXTENSION_DE_MIME,
+    MIME_GENERICO,
     EnlaceNoPermitido,
     PortalEnMantenimiento,
     TopeExcedido,
     descargar_a,
+    extension_de,
+    tipo_de_archivo,
 )
 from contratacion.infraestructura.adaptadores.salida.bd.tdr import RepositorioTdr
 from contratacion.infraestructura.adaptadores.salida.fuentes.portal import estado_portal
@@ -46,16 +53,123 @@ def _urls() -> list[str]:
     return [url.strip() for url in crudas.split(",") if url.strip()]
 
 
+_MIME_DE_EXTENSION = {extension: mime for mime, extension in EXTENSION_DE_MIME.items()}
+_MIME_DE_EXTENSION[".jpeg"] = "image/jpeg"
+_MIME_DE_EXTENSION[".tiff"] = "image/tiff"
+_GENERICO = MIME_GENERICO
+
+
 def _mime(nombre: str) -> str:
-    sufijo = Path(nombre).suffix.lower()
-    return {
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".zip": "application/zip",
-    }.get(sufijo, "application/octet-stream")
+    """Tipo por la extensión del nombre. Solo es el último recurso: el nombre del anexo es el texto
+    de la ficha y casi nunca trae extensión. Lo que manda es `mime_real`."""
+    return _MIME_DE_EXTENSION.get(Path(nombre).suffix.lower(), _GENERICO)
+
+
+def mime_real(ruta: Path, nombre: str = "", guardado: str = "") -> str:
+    """El tipo del archivo por su contenido; si no se reconoce, el guardado y, al final, el nombre.
+
+    Las filas bajadas antes de esta regla tienen el tipo deducido del nombre (casi siempre
+    `application/octet-stream`): se corrige al servirlas, sin migrar nada.
+    """
+    detectado = tipo_de_archivo(ruta)
+    if detectado != _GENERICO:
+        return detectado
+    if guardado and guardado != _GENERICO:
+        return guardado
+    return _mime(nombre)
+
+
+# Caracteres que Windows, macOS o el propio navegador no aceptan en un nombre de archivo.
+_PROHIBIDOS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]+')
+_ESPACIOS = re.compile(r"\s+")
+_LARGO_MAXIMO = 120
+
+
+def nombre_de_descarga(nombre: str, mime: str, *, respaldo: str = "documento") -> str:
+    """Nombre con el que se guarda el anexo: el que le dio la entidad y la extensión **real**.
+
+    - «INFORME DE NECESIDAD» + DOCX → «INFORME DE NECESIDAD.docx».
+    - «TDR.pdf» + PDF → «TDR.pdf» (no se duplica la extensión).
+    - «Anexo.pdf» + DOCX → «Anexo.docx»: la extensión escrita mentía, se cambia por la real.
+    - Un nombre que es en realidad la dirección del portal → `respaldo` + extensión.
+
+    Se quitan los caracteres que un sistema de archivos no admite y se recorta a una longitud
+    razonable, sin cortar la extensión.
+    """
+    limpio = unicodedata.normalize("NFC", str(nombre or "")).strip()
+    if not limpio or parece_enlace(limpio):
+        limpio = respaldo
+    limpio = _ESPACIOS.sub(" ", _PROHIBIDOS.sub(" ", limpio)).strip(" .") or respaldo
+    extension = extension_de(mime)
+    base, sufijo = os.path.splitext(limpio)
+    clave = sufijo.lower()
+    if clave in _MIME_DE_EXTENSION:
+        # Ya trae una extensión conocida: se respeta si coincide con el contenido, si no se cambia.
+        if not extension or _MIME_DE_EXTENSION.get(clave) == _MIME_DE_EXTENSION.get(extension):
+            extension = sufijo
+        limpio = base.strip(" .") or respaldo
+    return f"{limpio[:_LARGO_MAXIMO].rstrip(' .')}{extension}"
+
+
+# Errores de red con que el worker marca un anexo que no pudo bajar (el nombre de la excepción de
+# httpx va primero en el texto guardado). Mismo criterio que `preparar_documentos.py`.
+_ERRORES_DE_RED = (
+    "HTTP",
+    "Connect",
+    "Read",
+    "Write",
+    "Timeout",
+    "Remote",
+    "Proxy",
+    "Pool",
+    "Network",
+    "TooManyRedirects",
+    "Protocol",
+)
+
+MENSAJE_SIN_PORTAL = (
+    "El portal de compras públicas no respondió a CercoApp en este momento. Puedes abrir el "
+    "anexo en el portal desde tu computadora con «Ver en el portal» y guardarlo, o volver a "
+    "intentarlo en unos minutos."
+)
+MENSAJE_MANTENIMIENTO = (
+    "El portal de compras públicas está en mantenimiento y no entrega archivos en este momento. "
+    "Pulsa «Reintentar» cuando termine."
+)
+
+
+def mensaje_de_error(texto: str | None) -> str:
+    """El error guardado de un anexo, dicho para la persona que lo ve en la ficha."""
+    texto = str(texto or "")
+    if texto.startswith("PortalEnMantenimiento"):
+        return MENSAJE_MANTENIMIENTO
+    if not texto or texto.startswith(_ERRORES_DE_RED):
+        return MENSAJE_SIN_PORTAL
+    return texto
+
+
+_DOMINIO_PORTAL = "compraspublicas.gob.ec"
+
+
+def enlace_al_portal(enlace: str | None) -> str:
+    """Dirección completa del anexo en el portal, para abrirla con la conexión de la persona.
+
+    Navegar al portal desde su navegador sí funciona aunque el servidor no llegue. Solo se devuelven
+    direcciones `https` del propio portal: el enlace lo escribe un tercero en la ficha.
+    """
+    if not enlace:
+        return ""
+    url = urljoin(_BASE, str(enlace).strip())
+    try:
+        partes = urlsplit(url)
+        anfitrion = (partes.hostname or "").lower()
+    except ValueError:
+        return ""
+    if partes.scheme != "https":
+        return ""
+    if anfitrion != _DOMINIO_PORTAL and not anfitrion.endswith("." + _DOMINIO_PORTAL):
+        return ""
+    return url
 
 
 TAMANO_LOTE = 6
@@ -172,7 +286,8 @@ async def _atender(
             sha256=sha,
             ruta=str(ruta),
             tamano=tamano,
-            mime=_mime(str(pedido.get("nombre") or "")),
+            # El tipo por el contenido, no por el nombre: el nombre es el texto de la ficha.
+            mime=await asyncio.to_thread(mime_real, ruta, str(pedido.get("nombre") or "")),
         )
     except PortalEnMantenimiento:
         if pool.portal is not None:

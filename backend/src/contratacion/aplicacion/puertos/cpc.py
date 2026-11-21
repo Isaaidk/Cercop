@@ -72,3 +72,11 @@ class RepositorioCpc(Protocol):
     async def limpiar(self, *, negocio_id: UUID) -> int:
         """Vacía la lista y devuelve cuántos había. Cero no es un error."""
         ...
+
+
+class RamasCpc(Protocol):
+    """Los códigos de CPC que cuelgan de un código padre en lo ya descargado."""
+
+    async def ramas_cpc(self, prefijo: str, limite: int) -> tuple[dict[str, Any], ...]:
+        """Códigos que empiezan por `prefijo`, con su nombre y en cuántas contrataciones."""
+        ...
