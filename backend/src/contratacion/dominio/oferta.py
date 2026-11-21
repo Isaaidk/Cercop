@@ -14,6 +14,7 @@ from typing import Any
 
 from contratacion.dominio.anexos import CONTEXTO
 from contratacion.dominio.documentos import checklist, numerales_de, sin_referencia
+from contratacion.dominio.lineas import lineas_de_fuente, validar_lineas
 from contratacion.dominio.palabras import normalizar
 from contratacion.dominio.requisitos import condiciones_de_tdr, es_requisito_operativo, plazo_breve
 
@@ -136,37 +137,36 @@ def _palabras(texto: str) -> set[str]:
     return {p for p in normalizar(texto).split() if len(p) >= 5}
 
 
+def texto_de_lineas(secciones: dict[str, str]) -> str:
+    """El texto donde se busca la tabla de productos del TDR: los anexos completos (con sus saltos
+    de línea) y los apartados de productos esperados y especificaciones."""
+    return "\n".join(
+        str(secciones.get(clave) or "") for clave in (CONTEXTO, "entregables", "especificaciones")
+    )
+
+
 def _lineas_plantilla(
-    secciones: dict[str, str], perfil: dict[str, Any], objeto: str
+    fuente: list[dict[str, Any]], objeto: str, objeto_del_tdr: bool
 ) -> list[dict[str, Any]]:
-    """Los productos del catálogo que el TDR menciona. Si ninguno coincide, el objeto entero."""
-    pedido = _palabras(" ".join([objeto, *secciones.values()]))
-    lineas = []
-    for oferta in perfil.get("ofertas") or []:
-        nombre = _texto(oferta.get("nombre"), 200)
-        propias = _palabras(f"{nombre} {oferta.get('descripcion') or ''}")
-        if nombre and propias & pedido:
-            lineas.append(
-                {
-                    "descripcion": _texto(
-                        f"{nombre}. {oferta.get('descripcion') or ''}", 400
-                    ).rstrip(". "),
-                    "cantidad": 1,
-                    "unidad": "servicio" if oferta.get("tipo") == "servicio" else "unidad",
-                    "precio_unitario": None,
-                }
-            )
-    if not lineas:
-        lineas.append(
-            {
-                "descripcion": _texto(objeto, 400)
-                or "Bienes o servicios según los términos de referencia",
-                "cantidad": 1,
-                "unidad": "global",
-                "precio_unitario": None,
-            }
-        )
-    return lineas[:_TOPE_LINEAS]
+    """Las líneas publicadas (ficha o tabla del TDR). Sin ellas, una sola línea con el objeto.
+
+    Antes se armaban con el catálogo de la empresa que «coincidía» con el TDR: eso es inventar
+    ítems que la entidad no pidió. La línea del objeto lleva cantidad 1 y la unidad vacía, marcadas
+    para que la persona las confirme contra el TDR.
+    """
+    if fuente:
+        return [dict(linea) for linea in fuente]
+    return [
+        {
+            "descripcion": _texto(objeto, 400)
+            or "Bienes o servicios según los términos de referencia",
+            "cantidad": 1,
+            "unidad": "",
+            "precio_unitario": None,
+            "origen": "tdr" if objeto_del_tdr else "usuario",
+            "verificar": ["cantidad", "unidad"],
+        }
+    ]
 
 
 def _frase(texto: str, pistas: tuple[str, ...]) -> str:
@@ -294,9 +294,21 @@ def _experiencia(perfil: dict[str, Any], pedido: set[str]) -> list[str]:
 
 
 def borrador_plantilla(
-    *, secciones: dict[str, str], perfil: dict[str, Any], entidad: str, objeto: str
+    *,
+    secciones: dict[str, str],
+    perfil: dict[str, Any],
+    entidad: str,
+    objeto: str,
+    items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """Borrador sin IA. `items` son los ítems que la entidad publicó en la ficha (`items_pedidos`).
+
+    Las líneas salen solo de esos ítems o de la tabla de productos del TDR, con su descripción,
+    cantidad y unidad tal como están publicadas (`dominio/lineas.py`).
+    """
     empresa = datos_empresa(perfil)
+    objeto_del_tdr = not objeto.strip()
+    fuente = lineas_de_fuente(items or [], texto_de_lineas(secciones))
     objeto = _texto(
         objeto
         or secciones.get("objeto")
@@ -340,7 +352,9 @@ def borrador_plantilla(
         "entidad": _texto(entidad, 300),
         "objeto": objeto,
         "carta": carta,
-        "lineas": _lineas_plantilla(secciones, perfil, objeto),
+        "lineas": _lineas_plantilla(fuente, objeto, objeto_del_tdr),
+        # De dónde salen las líneas: «ficha», «tdr» o "" (no hay ítems publicados).
+        "fuente_lineas": fuente[0]["origen"] if fuente else "",
         "condiciones": condiciones,
         "alcance": del_tdr.get("alcance", ""),
         "detalle_condiciones": del_tdr.get("detalle", ""),
@@ -383,9 +397,17 @@ SISTEMA = (
     "6) Las condiciones van en una frase corta: plazo_entrega como «N días contados a partir del "
     "día siguiente de la suscripción de la orden de compra.»; forma_pago y lugar_entrega en una "
     "frase. Los cronogramas y el detalle no van ahí. "
-    "7) Responde solo con un objeto JSON con estas claves: carta (texto de presentación de 120 a "
+    "7) LÍNEAS DE LA PROFORMA (regla absoluta): las líneas son los ítems que publicó la entidad, "
+    "nada más. Si 'lineas_publicadas' trae ítems, devuelve en 'lineas' exactamente esos ítems, en "
+    "el mismo orden, con la misma descripción, cantidad y unidad, sin agregar, quitar, unir, "
+    "partir ni cambiar ninguno. Si 'lineas_publicadas' viene vacía, copia literalmente los "
+    "renglones de la tabla de productos o servicios del TDR (descripción, cantidad y unidad como "
+    "están escritas); si el TDR no trae esa tabla, devuelve 'lineas' vacía. Nunca armes líneas "
+    "con el catálogo de la empresa, nunca supongas cantidades y nunca pongas precios: los "
+    "precios los escribe la empresa. Lo que no se pueda citar del texto no se escribe. "
+    "8) Responde solo con un objeto JSON con estas claves: carta (texto de presentación de 120 a "
     "220 palabras dirigido a la entidad), objeto (una línea), lineas (lista de {descripcion, "
-    "cantidad, unidad} con lo que se ofrece según el TDR y el catálogo de la empresa), "
+    "cantidad, unidad} según la regla 7), "
     "plazo_entrega, forma_pago, garantia, lugar_entrega, validez, alcance (una frase medible "
     "tomada del alcance del TDR, por ejemplo la cantidad mínima de servicios), "
     "experiencia_relevante (lista de textos tomados de la experiencia de la empresa), "
@@ -406,7 +428,12 @@ def _sin_ids(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mensaje_para_modelo(
-    *, secciones: dict[str, str], perfil: dict[str, Any], entidad: str, objeto: str
+    *,
+    secciones: dict[str, str],
+    perfil: dict[str, Any],
+    entidad: str,
+    objeto: str,
+    lineas_publicadas: list[dict[str, Any]] | None = None,
 ) -> str:
     empresa = {
         "identidad": datos_empresa(perfil),
@@ -443,6 +470,15 @@ def mensaje_para_modelo(
             "estructura_del_tdr": numerales_de(secciones),
             "tdr": tdr,
             "texto_de_todos_los_anexos": anexos,
+            # Los ítems que la entidad publicó (ficha o tabla del TDR): son las líneas, tal cual.
+            "lineas_publicadas": [
+                {
+                    "descripcion": linea.get("descripcion"),
+                    "cantidad": linea.get("cantidad"),
+                    "unidad": linea.get("unidad"),
+                }
+                for linea in lineas_publicadas or []
+            ],
             "requisitos_a_responder": checklist(secciones)[:25],
             "empresa": empresa,
         },
@@ -463,28 +499,22 @@ def _lista(valor: Any) -> list[Any]:
 
 
 def limpiar_respuesta(
-    respuesta: dict[str, Any], base: dict[str, Any], *, modelo: str
+    respuesta: dict[str, Any], base: dict[str, Any], *, modelo: str, texto_tdr: str = ""
 ) -> dict[str, Any]:
-    """Mezcla lo que devolvió el modelo sobre la plantilla. Nada de precios ni identidad nueva."""
-    lineas = []
-    for linea in _lista(respuesta.get("lineas"))[:_TOPE_LINEAS]:
-        if not isinstance(linea, dict):
-            continue
-        descripcion = _sin_precio(linea.get("descripcion"), 400)
-        if len(descripcion) < 2:
-            continue
-        try:
-            cantidad = max(float(linea.get("cantidad") or 1), 0.01)
-        except (TypeError, ValueError):
-            cantidad = 1.0
-        lineas.append(
-            {
-                "descripcion": descripcion,
-                "cantidad": int(cantidad) if cantidad.is_integer() else cantidad,
-                "unidad": _texto(linea.get("unidad"), 30).lower() or "unidad",
-                "precio_unitario": None,
-            }
-        )
+    """Mezcla lo que devolvió el modelo sobre la plantilla. Nada de precios ni identidad nueva.
+
+    Las líneas del modelo se confrontan con las publicadas (`base["lineas"]` cuando
+    `base["fuente_lineas"]` no está vacío) y con el texto del TDR (`texto_tdr`): lo que no
+    corresponde se descarta y se avisa en `faltantes`; cantidades y unidades vuelven a las
+    publicadas.
+    """
+    fuente = list(base.get("lineas") or []) if base.get("fuente_lineas") else []
+    propuestas = [
+        {**linea, "descripcion": _sin_precio(linea.get("descripcion"), 400)}
+        for linea in _lista(respuesta.get("lineas"))[:_TOPE_LINEAS]
+        if isinstance(linea, dict)
+    ]
+    lineas, descartadas = validar_lineas(propuestas, fuente, texto_tdr)
     condiciones = dict(base["condiciones"])
     for clave in ("plazo_entrega", "forma_pago", "garantia", "lugar_entrega", "validez"):
         valor = _sin_precio(respuesta.get(clave), 400)
@@ -514,7 +544,17 @@ def limpiar_respuesta(
         for texto in _lista(respuesta.get("faltantes"))[:10]
         if _texto(texto)
     ]
+    extra: dict[str, Any] = {}
+    if descartadas:
+        # El panel enseña `aviso` al terminar: la persona sabe que se quitó algo y por qué.
+        extra["lineas_descartadas"] = descartadas
+        extra["aviso"] = (
+            "Listo. La IA armó el borrador. Quité "
+            f"{len(descartadas)} línea(s) que no están entre los ítems publicados por la entidad "
+            "ni en la tabla del TDR. Revisa las líneas y escribe tus precios."
+        )
     return {
+        **extra,
         **base,
         "origen": "ia",
         "modelo": modelo,

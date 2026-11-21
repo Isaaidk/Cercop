@@ -134,3 +134,24 @@ Topes por persona: 20 mensajes y 30 inicios por minuto.
 
 Pestañas a las que mandan las tarjetas `accion` / `ver_mas`: `propuestas`, `ofertas`, `alertas`,
 `mis-ofertas`, `empresa`, `documentos`.
+
+## Modelos de IA y modo «pensar» (DeepSeek)
+
+El asistente (chat) usa `IA_MODELO`. Leer el TDR y redactar la proforma usa `IA_MODELO_DOCUMENTOS`
+(si está vacío, el mismo `IA_MODELO`). Con DeepSeek, el modo razonamiento se elige por uso con
+`IA_PENSAR_DOCUMENTOS` e `IA_PENSAR_CHAT` (`true`/`false`; vacío = no se envía y manda el valor por
+defecto del proveedor). Se envía como `"thinking": {"type": "enabled"|"disabled"}` en
+`/chat/completions` (documentado en api-docs.deepseek.com, guía «Thinking Mode»). Groq, Gemini y
+Ollama no conocen el parámetro: con ellos se dejan vacías.
+
+- DeepSeek activa el razonamiento **por defecto** en `deepseek-flash` y `deepseek-v4-pro`. En el chat
+  conviene `IA_PENSAR_CHAT=false`: las respuestas son cortas (700 tokens) y el razonamiento gasta del
+  mismo cupo; además tarda más.
+- Con razonamiento, `max_tokens` se amplía 16 000 tokens y el texto pensado (`reasoning_content`)
+  nunca se enseña ni se guarda. En el chat con herramientas se reenvía al modelo en el turno
+  siguiente, porque DeepSeek responde 400 si falta.
+- Con razonamiento, sube `IA_TIEMPO_SEG` (hasta 120): la respuesta tarda más.
+- `deepseek-chat` y `deepseek-reasoner` son nombres antiguos: DeepSeek anunció que dejaban de
+  funcionar el 2026-07-24 (apuntaban a `deepseek-v4-flash` sin y con razonamiento). Su tabla de
+  modelos actual solo lista `deepseek-flash` y `deepseek-v4-pro`.
+

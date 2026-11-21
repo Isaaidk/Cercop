@@ -57,6 +57,7 @@ def _documento(impuesto: float) -> dict[str, Any]:
         "cifras": cifras,
         "extras": {
             "fecha": "10/11/2026",
+            "formato_proforma": "soce",
             "codigo": "NIC-1792157781001-2026-00038",
             "empresa": datos_empresa(
                 {

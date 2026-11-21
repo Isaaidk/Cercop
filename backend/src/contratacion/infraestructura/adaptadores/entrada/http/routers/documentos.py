@@ -47,7 +47,7 @@ from contratacion.infraestructura.adaptadores.entrada.http.dependencias import (
 )
 from contratacion.infraestructura.adaptadores.entrada.http.limites import LimitePorUsuario, Turno
 from contratacion.infraestructura.adaptadores.salida.firma import TOPE_CERTIFICADO, firmar_pdf
-from contratacion.infraestructura.adaptadores.salida.oficina import docx, parrafos_de
+from contratacion.infraestructura.adaptadores.salida.oficina import docx_documento
 from contratacion.infraestructura.adaptadores.salida.proforma_pdf import (
     armar_ficha,
     armar_proforma,
@@ -93,6 +93,8 @@ class LineaPrecio(BaseModel):
     unidad: str = Field(default="", max_length=30)
     cpc: str = Field(default="", max_length=20)
     cpc_nombre: str = Field(default="", max_length=200)
+    # «ficha», «tdr» o «usuario»: de dónde salió la línea. Otro valor se ignora al guardar.
+    origen: str = Field(default="", max_length=20)
 
 
 class ProformaNueva(BaseModel):
@@ -111,6 +113,9 @@ class GenerarPedido(BaseModel):
     entidad: str = Field(default="", max_length=500)
     objeto: str = Field(default="", max_length=3000)
     con_ia: bool = False
+    # La ínfima de la que sale la oferta: sus ítems publicados son las líneas. Sin él se toma el
+    # de la lectura del TDR.
+    registro_id: UUID | None = None
 
 
 class Especificacion(BaseModel):
@@ -391,6 +396,7 @@ async def generar(
             entidad=cuerpo.entidad,
             objeto=cuerpo.objeto,
             con_ia=cuerpo.con_ia,
+            registro_id=cuerpo.registro_id,
         )
     )
 
@@ -642,7 +648,7 @@ async def _bajar(
 
 
 def _word(documento: dict[str, Any]) -> bytes:
-    return docx(parrafos_de(documento))
+    return docx_documento(documento)
 
 
 def _armar(documento: dict[str, Any]) -> tuple[bytes, list[Any]]:

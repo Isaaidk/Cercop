@@ -57,6 +57,7 @@ from contratacion.dominio.errores import (
     SinPermiso,
 )
 from contratacion.dominio.oferta import datos_empresa
+from contratacion.dominio.paginas_finales import FORMATOS, limpiar_paginas
 from contratacion.dominio.palabras import normalizar
 from contratacion.dominio.presupuesto import (
     ETIQUETAS_FUENTE,
@@ -965,6 +966,13 @@ def _extras(valor: Any) -> dict[str, Any]:
             extras[clave] = texto
     if valor.get("integridad") is False:
         extras["integridad"] = False
+    # Formato de la primera página (modelo de ínfima o formulario del SOCE) y páginas finales
+    # que la persona eligió imprimir.
+    if valor.get("formato_proforma") in FORMATOS:
+        extras["formato_proforma"] = valor["formato_proforma"]
+    paginas = limpiar_paginas(valor.get("paginas_finales"))
+    if paginas:
+        extras["paginas_finales"] = paginas
     if "presupuesto" in extras:
         presupuesto = normalizar_presupuesto(extras["presupuesto"])
         if presupuesto:
@@ -1158,6 +1166,7 @@ async def _con_modelo(
                 f"Datos:\n{json.dumps(contexto, ensure_ascii=False, default=str)}\n\n"
                 f"Pregunta: {pregunta}",
                 max_tokens=2000,
+                uso="chat",
             )
         ).strip()
     except EstadoInvalido:

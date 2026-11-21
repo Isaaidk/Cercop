@@ -4,22 +4,38 @@
  * y descargarla). Cada paso tiene una acción principal y la misma barra «Atrás / Siguiente».
  *
  * Todo lo que ya se sabe (perfil de la empresa, ficha del proceso, datos de la entidad, lo que el
- * TDR trae con etiqueta) llega escrito y marcado «autollenado · revisa»: la persona solo escribe
+ * TDR trae con etiqueta) llega escrito y marcado con un punto discreto (`MarcaAuto`): la persona solo escribe
  * sus precios y lo que falte. Los precios nunca se proponen. El resumen no completa apartados que
  * el archivo no titula.
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/endpoints'
 import { esperarVisible, siguientePausa } from '@/utils/sondeo'
 import TextoTdr from '@/components/TextoTdr.vue'
+import ListaRevision from '@/components/proforma/ListaRevision.vue'
+import MarcaAuto from '@/components/proforma/MarcaAuto.vue'
+import PaginasFinales from '@/components/proforma/PaginasFinales.vue'
 import { guardarArchivo as guardarEnDisco } from '@/utils/descargas'
-import { armarProformaPdf, nombreDeDescarga } from '@/utils/proformaPdf'
+import * as generadorPdf from '@/utils/proformaPdf'
+import { cantidadDistinta, referenciaDeItem } from '@/utils/emparejarLineas'
+import { bloqueosDeFirma, descuadreDeRedondeo, masDeDosDecimales } from '@/utils/revisionProforma'
 import { decimal } from '@/utils/formato'
 import { esImagen, textoDeArchivo } from '@/utils/ocr'
 import { presupuestoValido, usoDelPresupuesto } from '@/utils/presupuesto'
 import { textoLegible } from '@/utils/textoTdr'
 import { tituloLibre, tituloRepetido } from '@/utils/titulos'
+
+const { armarProformaPdf, nombreDeDescarga } = generadorPdf
+// Las páginas que el generador puede añadir al final (integridad, compromiso, respaldo…). Si el
+// generador todavía no las publica, la lista queda vacía y se usa la casilla de integridad de antes.
+// (Se lee sin nombrarlo a pelo para que el empaquetador no avise mientras no exista.)
+const paginasDelGenerador = Object.getOwnPropertyDescriptor(generadorPdf, 'PAGINAS_FINALES')?.value
+const PAGINAS_FINALES = (Array.isArray(paginasDelGenerador) ? paginasDelGenerador : []).filter(
+  (pagina) => pagina && pagina.id,
+)
+const paginasPorDefecto = () =>
+  Object.fromEntries(PAGINAS_FINALES.map((pagina) => [pagina.id, Boolean(pagina.porDefecto)]))
 
 // Cada paso dice en una línea qué se hace en él; es lo que se lee bajo el título del paso.
 const PASOS = [
@@ -39,7 +55,7 @@ const PASOS = [
     id: 'documento',
     etiqueta: 'Tu proforma',
     resultado: 'Escribes tus precios',
-    ayuda: 'Ya llenamos lo que sabemos. Revisa lo marcado «autollenado» y escribe tus precios.',
+    ayuda: 'Ya llenamos lo que sabemos (marcado con un punto). Revísalo y escribe tus precios.',
   },
   {
     id: 'entrega',
@@ -244,6 +260,8 @@ const extras = reactive({
   detalle_condiciones: '',
   // El Formulario de Perfil de Integridad (Anexo I, Res. R.E-SERCOP-2026-0005) viaja con la oferta.
   integridad: true,
+  // Qué páginas finales opcionales se añaden: `{ [id]: boolean }` (ver `PAGINAS_FINALES`).
+  paginas_finales: paginasPorDefecto(),
   condiciones: Object.fromEntries(CONDICIONES.map((item) => [item.id, ''])),
   experiencia: '',
   personal: '',
@@ -334,62 +352,84 @@ function diasDe(texto) {
  */
 const problemas = computed(() => {
   const lista = []
-  const agregar = (id, mensaje, nivel = 'error') => lista.push({ id, mensaje, nivel })
+  // `seccion` dice en qué bloque está (para agrupar la lista); `grupo` junta los repetidos por línea.
+  const agregar = (id, mensaje, nivel = 'error', seccion = 'otros', grupo = '') =>
+    lista.push({ id, mensaje, nivel, seccion, grupo })
   if (tipo.value === 'ficha') {
-    if (!tieneTexto(ficha.nombre)) agregar('campo-ficha-nombre', 'Escribe el nombre del producto o servicio.')
+    if (!tieneTexto(ficha.nombre)) agregar('campo-ficha-nombre', 'Escribe el nombre del producto o servicio.', 'error', 'entidad')
     return lista
   }
-  if (tituloEnUso.value) agregar('campo-titulo', 'Ya usaste este título en otra proforma: cámbialo.')
-  if (!tieneTexto(proforma.entidad)) agregar('campo-entidad', 'Escribe la entidad contratante.')
+  if (tituloEnUso.value) agregar('campo-titulo', 'Ya usaste este título en otra proforma: cámbialo.', 'error', 'entidad')
+  if (!tieneTexto(proforma.entidad)) agregar('campo-entidad', 'Escribe la entidad contratante.', 'error', 'entidad')
   const ruc = String(extras.entidad.ruc || '').trim()
-  if (ruc && !/^\d{13}$/.test(ruc)) agregar('campo-entidad-ruc', 'El RUC de la entidad tiene 13 dígitos.')
+  if (ruc && !/^\d{13}$/.test(ruc)) agregar('campo-entidad-ruc', 'El RUC de la entidad tiene 13 dígitos.', 'error', 'entidad')
   const correo = String(extras.entidad.correo || '').trim()
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
-    agregar('campo-entidad-correo', 'El correo de la entidad no tiene forma de correo (nombre@dominio).')
+    agregar('campo-entidad-correo', 'El correo de la entidad no tiene forma de correo (nombre@dominio).', 'error', 'entidad')
   }
-  if (!tieneTexto(proforma.objeto)) agregar('campo-objeto', 'Escribe el objeto de contratación.')
+  if (!tieneTexto(proforma.objeto)) agregar('campo-objeto', 'Escribe el objeto de contratación.', 'error', 'entidad')
   if (tipo.value === 'proforma') {
     const pedidos = itemsPedidos.value
     proforma.lineas.forEach((linea, n) => {
       const num = n + 1
-      if (!tieneTexto(linea.descripcion)) agregar(`linea-${n}-descripcion`, `Línea ${num}: falta la descripción.`)
+      if (!tieneTexto(linea.descripcion)) {
+        agregar(`linea-${n}-descripcion`, `Línea ${num}: falta la descripción.`, 'error', 'lineas', 'sin-descripcion')
+      }
       if (linea.precio_unitario === '' || linea.precio_unitario == null) {
-        agregar(`linea-${n}-precio`, `Línea ${num}: escribe el valor unitario.`)
+        agregar(`linea-${n}-precio`, `Línea ${num}: escribe el valor unitario.`, 'error', 'lineas', 'sin-precio')
       } else if (!(Number(linea.precio_unitario) > 0)) {
-        agregar(`linea-${n}-precio`, `Línea ${num}: el valor unitario está en 0. Confírmalo o corrígelo.`, 'aviso')
+        // La revisión del servidor no deja firmar una línea en 0: se pide aquí, antes de generar.
+        agregar(`linea-${n}-precio`, `Línea ${num}: el valor unitario no puede ser 0.`, 'error', 'lineas', 'precio-cero')
       }
       const cantidad = Number(linea.cantidad)
       if (!(cantidad > 0)) {
-        agregar(`linea-${n}-cantidad`, `Línea ${num}: la cantidad debe ser mayor que 0.`)
+        agregar(`linea-${n}-cantidad`, `Línea ${num}: la cantidad debe ser mayor que 0.`, 'error', 'lineas', 'cantidad-cero')
       } else {
-        const pedido = pedidos.find((item) => item.cpc && item.cpc === linea.cpc) || (pedidos.length === proforma.lineas.length ? pedidos[n] : null)
-        if (pedido && Number(pedido.cantidad) && Math.abs(Number(pedido.cantidad) - cantidad) > 1e-9) {
-          agregar(`linea-${n}-cantidad`, `Línea ${num}: la entidad pide ${decimal(pedido.cantidad)}, aquí hay ${decimal(cantidad)}.`, 'aviso')
+        // Solo con un emparejamiento seguro (la línea salió de ese ítem, o CPC + descripción).
+        const distinta = cantidadDistinta(linea, pedidos)
+        if (distinta) {
+          agregar(
+            `linea-${n}-cantidad`,
+            `Línea ${num}: la entidad pide ${decimal(distinta.pedida)}, aquí hay ${decimal(distinta.escrita)}.`,
+            'aviso',
+            'lineas',
+            'cantidad-distinta',
+          )
         }
       }
     })
+    const descuadre = descuadreDeRedondeo(proforma.lineas)
+    if (descuadre) {
+      const primera = Math.max(0, proforma.lineas.findIndex((l) => masDeDosDecimales(l.precio_unitario)))
+      agregar(
+        `linea-${primera}-precio`,
+        `Los precios con más de 2 decimales descuadran el total en USD ${decimal(descuadre)}. Usa 2 decimales en el valor unitario.`,
+        'error',
+        'lineas',
+      )
+    }
     if (usoPresupuesto.value?.supera) {
-      agregar('bloque-presupuesto', `El total supera el presupuesto de la entidad en USD ${decimal(usoPresupuesto.value.exceso)}.`)
+      agregar('bloque-presupuesto', `El total supera el presupuesto de la entidad en USD ${decimal(usoPresupuesto.value.exceso)}.`, 'error', 'lineas')
     }
   }
   for (const id of CONDICIONES_SERCOP) {
     if (!tieneTexto(extras.condiciones[id])) {
       const etiqueta = CONDICIONES.find((item) => item.id === id)?.etiqueta || id
-      agregar(`condicion-${id}`, `Falta «${etiqueta}».`)
+      agregar(`condicion-${id}`, `Falta «${etiqueta}».`, 'error', 'condiciones', 'condicion-falta')
     }
   }
   // Vigencia: la que pide el TDR, o 45 días como mínimo habitual de la proforma.
   const vigenciaPedida = diasDe(lectura.value?.secciones?.vigencia_proforma) || 45
   const vigencia = diasDe(extras.condiciones.validez)
   if (vigencia != null && vigencia < vigenciaPedida) {
-    agregar('condicion-validez', `La vigencia (${vigencia} días) es menor que la pedida (${vigenciaPedida} días).`, 'aviso')
+    agregar('condicion-validez', `La vigencia (${vigencia} días) es menor que la pedida (${vigenciaPedida} días).`, 'aviso', 'condiciones')
   }
   // Plazo: ofrecer más días de los que da el TDR no cumple.
   const plazoTdr = diasDe(lectura.value?.condiciones_sugeridas?.plazo_ejecucion || lectura.value?.condiciones_sugeridas?.plazo_entrega)
   for (const id of ['plazo_entrega', 'plazo_ejecucion']) {
     const ofrecido = diasDe(extras.condiciones[id])
     if (plazoTdr && ofrecido && ofrecido > plazoTdr) {
-      agregar(`condicion-${id}`, `El plazo ofrecido (${ofrecido} días) es mayor que el del TDR (${plazoTdr} días).`, 'aviso')
+      agregar(`condicion-${id}`, `El plazo ofrecido (${ofrecido} días) es mayor que el del TDR (${plazoTdr} días).`, 'aviso', 'condiciones')
     }
   }
   return lista
@@ -896,7 +936,10 @@ function llenarDesdeItems(reemplazar) {
     (linea) => !tieneTexto(linea.descripcion) && linea.precio_unitario === '',
   )
   if (!sinEmpezar && !reemplazar) return false
-  proforma.lineas = items.map((item) => ({
+  proforma.lineas = items.map((item, posicion) => ({
+    // De qué ítem pedido sale la línea: así el aviso de cantidad compara con el suyo, aunque todos
+    // compartan CPC. No viaja al servidor.
+    item_ref: referenciaDeItem(item, posicion),
     descripcion: [item.descripcion, especificacionesDe(item, items)].filter(Boolean).join('\n'),
     cantidad: item.cantidad || 1,
     unidad: item.unidad || '',
@@ -1250,6 +1293,14 @@ function lista(texto) {
     .filter(Boolean)
 }
 
+// La elección de páginas finales, completada con el valor por defecto de cada una.
+const paginasElegidas = computed(() => ({ ...paginasPorDefecto(), ...(extras.paginas_finales || {}) }))
+const hayIntegridadEnLista = PAGINAS_FINALES.some((pagina) => pagina.id === 'integridad')
+/** `extras.integridad` sigue viajando (el servidor y los PDF ya guardados lo leen). */
+function integridadElegida() {
+  return hayIntegridadEnLista ? paginasElegidas.value.integridad !== false : extras.integridad
+}
+
 function extrasParaGuardar() {
   const empresa = { ...extras.empresa }
   if (tituloEmpresa.value) empresa.razon_social = tituloEmpresa.value
@@ -1260,7 +1311,8 @@ function extrasParaGuardar() {
     entidad: { ...extras.entidad },
     numero: extras.numero,
     necesidad: extras.necesidad,
-    integridad: tipo.value === 'proforma' ? extras.integridad : false,
+    integridad: tipo.value === 'proforma' ? integridadElegida() : false,
+    ...(PAGINAS_FINALES.length ? { paginas_finales: { ...paginasElegidas.value } } : {}),
     condiciones: { ...extras.condiciones },
     alcance: extras.alcance,
     detalle_condiciones: extras.detalle_condiciones,
@@ -1375,17 +1427,44 @@ function datosComunes() {
 }
 
 /** Lo que le falta al documento según el servidor. Si no responde, la firma lo vuelve a comprobar. */
+const verificando = ref(false)
 async function cargarVerificacion() {
   verificacion.value = null
   if (!documento.value || documento.value.tipo === 'Ficha técnica') return
+  const id = documento.value.id
+  verificando.value = true
   try {
-    verificacion.value = await api.verificarDocumento(documento.value.id)
+    const revision = await api.verificarDocumento(id)
+    // Una respuesta de un documento anterior (se volvió a generar mientras tanto) no cuenta.
+    if (documento.value?.id === id) verificacion.value = revision
   } catch {
     verificacion.value = null
+  } finally {
+    verificando.value = false
   }
 }
 
-const puedeFirmar = computed(() => !verificacion.value?.errores?.length)
+// Solo bloquean la firma los errores que el servidor también exige al firmar, y se enseñan uno a
+// uno junto al botón, con dónde se corrigen. Los avisos nunca bloquean.
+const bloqueosFirma = computed(() => bloqueosDeFirma(verificacion.value))
+const puedeFirmar = computed(() => !bloqueosFirma.value.length)
+const faltaParaFirmar = computed(() => {
+  if (!puedeFirmar.value) return 'Corrige lo que se indica arriba para poder firmar.'
+  if (!firma.archivo) return 'Elige tu archivo de firma (.p12 o .pfx).'
+  if (!firma.clave) return 'Escribe la clave de tu firma.'
+  return ''
+})
+
+/** Corregir un bloqueo de firma: el perfil (y volver a generar) o el paso 3. */
+function corregirBloqueo(grupo) {
+  if (grupo.accion === 'perfil') {
+    aviso.value = 'Cuando completes «Perfil y RUP», vuelve aquí y pulsa «Generar» otra vez: la proforma toma tus datos al generarse.'
+    emit('perfil')
+    return
+  }
+  ir('documento')
+  aviso.value = 'Corrige lo que falta y pulsa «Generar» otra vez para firmar la nueva versión.'
+}
 
 const vistaPdf = reactive({ cargando: false, url: '', blob: null, cajas: [], error: '' })
 
@@ -1418,6 +1497,7 @@ async function prepararPdf() {
 
 function dejarListo(creado, nombre, cifras) {
   documento.value = { id: creado.id, tipo: nombre, cifras }
+  intentoGenerar.value = false
   contraste.value = null
   paso.value = 'entrega'
   prepararPdf()
@@ -1553,6 +1633,7 @@ function firmar() {
   return ejecutar(async () => {
     if (!firma.archivo) throw new Error('Elige tu archivo de firma (.p12 o .pfx).')
     if (!firma.clave) throw new Error('Escribe la clave de tu firma electrónica.')
+    if (!puedeFirmar.value) throw new Error('Antes de firmar, corrige lo que se indica en «Firmar».')
     firmando.value = true
     try {
       const lugar = firma.lugar || extras.empresa?.ciudad || ''
@@ -1562,6 +1643,10 @@ function firmar() {
       guardarEnDisco(firmado.contenido, nombreDescarga('pdf', '_firmado'))
       const recuadros = firmado.firmas > 1 ? ` en sus ${firmado.firmas} recuadros` : ''
       aviso.value = `PDF firmado${firmado.firmante ? ` por ${firmado.firmante}` : ''}${recuadros}. Tu certificado y tu clave no se guardaron.`
+    } catch (fallo) {
+      // Si el servidor encontró algo que falta, la lista junto al botón se pone al día.
+      if (/completa la proforma/i.test(fallo?.message || '')) cargarVerificacion()
+      throw fallo
     } finally {
       firma.clave = ''
       firmando.value = false
@@ -1667,8 +1752,11 @@ onBeforeUnmount(() => {
 })
 // Al volver del perfil (otra pestaña del panel) el componente puede seguir montado: al entrar al
 // paso 3 se revisa otra vez qué falta de la empresa.
-watch(paso, (nuevo) => {
+watch(paso, async (nuevo) => {
   if (nuevo === 'documento') revisarEmpresa()
+  // Al cambiar de paso, el foco va al título del paso nuevo: el lector de pantalla lo anuncia.
+  await nextTick()
+  document.getElementById('docs-paso-titulo')?.focus({ preventScroll: true })
 })
 </script>
 
@@ -1677,15 +1765,24 @@ watch(paso, (nuevo) => {
     <header class="docs__cabecera">
       <div>
         <h2 class="docs__titulo">Preparar oferta</h2>
-        <p class="docs__subtitulo">
-          Del TDR a tu proforma en cuatro pasos. Lo que ya sabemos viene lleno; tú escribes tus precios.
-        </p>
+        <p class="docs__subtitulo">Del TDR a tu proforma en cuatro pasos. Tú solo escribes tus precios.</p>
       </div>
       <span v-if="documento" class="etiqueta etiqueta--ok">{{ documento.tipo }} lista</span>
       <span v-else-if="lectura" class="etiqueta">TDR leído</span>
     </header>
 
     <nav class="asistente" aria-label="Pasos para preparar la oferta">
+      <div
+        class="asistente__progreso"
+        role="progressbar"
+        aria-label="Avance de la oferta"
+        aria-valuemin="1"
+        :aria-valuemax="PASOS.length"
+        :aria-valuenow="indice + 1"
+        :aria-valuetext="`Paso ${indice + 1} de ${PASOS.length}: ${PASOS[indice].etiqueta}`"
+      >
+        <span :style="{ width: `${((indice + 1) / PASOS.length) * 100}%` }" />
+      </div>
       <ol class="asistente__pasos">
         <li
           v-for="(opcion, posicion) in PASOS"
@@ -1727,7 +1824,7 @@ watch(paso, (nuevo) => {
     <section class="docs__panel" aria-labelledby="docs-paso-titulo">
       <header class="docs__paso-cabecera">
         <p class="docs__paso-numero">Paso {{ indice + 1 }} de {{ PASOS.length }}</p>
-        <h3 id="docs-paso-titulo">{{ PASOS[indice].etiqueta }}</h3>
+        <h3 id="docs-paso-titulo" tabindex="-1">{{ PASOS[indice].etiqueta }}</h3>
         <p class="docs__nota">{{ PASOS[indice].ayuda }}</p>
       </header>
 
@@ -1854,9 +1951,8 @@ watch(paso, (nuevo) => {
 
         <aside v-if="formatoEntidad" class="docs__formato" role="note" aria-label="Formato de proforma de la entidad">
           <p>
-            <strong>La entidad entregó su propio formato de proforma: «{{ formatoEntidad.nombre }}».</strong>
-            Úsalo o adáptalo con tus datos: es el formato que la entidad espera recibir. La proforma de
-            CercoApp sigue disponible en el paso 3 y te sirve para llenarlo.
+            <strong>La entidad tiene su propio formato de proforma: «{{ formatoEntidad.nombre }}».</strong>
+            Es el que espera recibir. La proforma del paso 3 te sirve para llenarlo.
           </p>
           <p v-if="formatoEntidad.garantias?.length" class="docs__formato-garantias">
             Garantías que menciona: <strong>{{ formatoEntidad.garantias.join(' · ') }}</strong>.
@@ -1901,10 +1997,13 @@ watch(paso, (nuevo) => {
 
         <section v-if="proceso?.anexos?.length" class="proceso__docs" aria-label="Anexos leídos">
           <h4>Anexos para la proforma</h4>
-          <p class="docs__nota">
-            Se leen todos los archivos de la ínfima (PDF, Word, Excel y ZIP) para armar la proforma. De
-            las actas, solo la más reciente: corrige a las anteriores.
-          </p>
+          <details class="docs__que-es">
+            <summary>¿Qué es esto?</summary>
+            <p>
+              Leemos todos los archivos de la ínfima (PDF, Word, Excel y ZIP) para armar la proforma. De
+              las actas, solo la más reciente, porque corrige a las anteriores.
+            </p>
+          </details>
           <ul>
             <li v-for="(anexo, n) in proceso.anexos" :key="`${anexo.nombre}-${n}`" class="proceso__anexo">
               <span class="proceso__icono proceso__icono--tipo">{{ anexo.etiqueta_tipo }}</span>
@@ -1990,14 +2089,16 @@ watch(paso, (nuevo) => {
 
     <div v-if="paso === 'documento'" class="docs__cuerpo">
       <p v-if="autollenado.size" class="docs__autollenado" role="status">
-        <span class="docs__auto">autollenado · revisa</span>
-        Llenamos {{ autollenado.size }} {{ autollenado.size === 1 ? 'dato' : 'datos' }} con tu perfil, la
-        ficha del proceso y el TDR. Revísalos; lo que te toca es escribir tus precios.
+        <MarcaAuto />
+        <span>
+          Llenamos {{ autollenado.size }} {{ autollenado.size === 1 ? 'dato' : 'datos' }} con tu perfil y el
+          TDR; van marcados con un punto. Revísalos y escribe tus precios.
+        </span>
       </p>
       <aside v-if="formatoEntidad && tipo !== 'ficha'" class="docs__formato" role="note">
         <p>
-          <strong>La entidad entregó su propio formato de proforma: «{{ formatoEntidad.nombre }}».</strong>
-          Usa o adapta ese formato; esta proforma te sirve para tener los datos listos.
+          <strong>La entidad tiene su propio formato: «{{ formatoEntidad.nombre }}».</strong>
+          Esta proforma te deja los datos listos para llenarlo.
           <template v-if="formatoEntidad.garantias?.length">
             Garantías que menciona: <strong>{{ formatoEntidad.garantias.join(' · ') }}</strong>.
           </template>
@@ -2030,36 +2131,37 @@ watch(paso, (nuevo) => {
       </div>
 
       <div v-if="tipo !== 'ficha'" class="docs__armar">
-        <h4 class="docs__armar-titulo">¿Quieres que redactemos la carta y las respuestas?</h4>
-        <div class="docs__opciones">
-          <button type="button" class="docs__opcion" :disabled="ocupado" @click="armar(false)">
-            <svg class="docs__opcion-icono" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 2h9l5 5v15H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-              <path d="M15 2v5h5M9 12h8M9 16h8M9 8h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-            </svg>
-            <strong>{{ generando === 'plantilla' ? 'Armando…' : 'Rehacer sin IA' }}</strong>
-            <small>Usa el TDR y los datos de tu empresa: carta, líneas, condiciones y una respuesta para cada requisito (R1, R2…). Gratis.</small>
-          </button>
-          <button type="button" class="docs__opcion docs__opcion--ia" :disabled="ocupado" @click="armar(true)">
-            <svg class="docs__opcion-icono" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 20 15 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              <path d="m14 6 1-3 1 3 3 1-3 1-1 3-1-3-3-1zM19 13l.6-1.6L21 11l-1.4-.5L19 9l-.6 1.5L17 11l1.4.4zM8 4l.5-1.3L10 2l-1.5-.6L8 0l-.5 1.4L6 2l1.5.7z" fill="currentColor" />
-            </svg>
-            <strong>{{ generando === 'ia' ? 'Generando…' : 'Generar con IA' }}</strong>
-            <small>
-              Redacta la carta, las líneas y cómo cumples cada requisito con todos los datos de tu
-              empresa. {{ creditos?.costos?.generar_oferta || 3 }} créditos.
-            </small>
-            <span v-if="creditos" class="docs__saldo">{{ creditos.ilimitado ? "IA sin límite (super admin)" : `${creditos.disponibles} créditos disponibles` }}</span>
-          </button>
+        <div class="docs__redactar">
+          <div class="docs__redactar-texto">
+            <strong>Carta y respuestas al TDR</strong>
+            <small>Podemos redactarlas por ti. Tus precios no se tocan.</small>
+          </div>
+          <div class="docs__redactar-botones">
+            <button type="button" class="boton boton--secundario boton--pequeno" :disabled="ocupado" @click="armar(false)">
+              {{ generando === 'plantilla' ? 'Armando…' : 'Rehacer sin IA (gratis)' }}
+            </button>
+            <button type="button" class="boton boton--pequeno docs__boton-ia" :disabled="ocupado" @click="armar(true)">
+              {{ generando === 'ia' ? 'Generando…' : `Redactar con IA · ${creditos?.costos?.generar_oferta || 3} créditos` }}
+            </button>
+          </div>
         </div>
-        <p v-if="creditos && !creditos.ia_activa" class="docs__nota">
-          La IA todavía no está conectada en el servidor. «Generar con IA» arma la oferta con la
-          plantilla, sin gastar créditos.
-        </p>
-        <button type="button" class="boton boton--fantasma boton--pequeno docs__comprar" @click="verCompras = !verCompras">
-          {{ verCompras ? 'Ocultar paquetes' : 'Comprar más créditos' }}
-        </button>
+        <div class="docs__nota docs__nota--fila">
+          <span v-if="creditos" class="docs__saldo">{{ creditos.ilimitado ? 'IA sin límite (super admin)' : `${creditos.disponibles} créditos disponibles` }}</span>
+          <button type="button" class="docs__enlace" @click="verCompras = !verCompras">
+            {{ verCompras ? 'Ocultar paquetes' : 'Comprar más créditos' }}
+          </button>
+          <details class="docs__que-es">
+            <summary>¿Qué hace cada opción?</summary>
+            <p>
+              «Rehacer sin IA» usa el TDR y los datos de tu empresa para la carta, las condiciones y una
+              respuesta por requisito (R1, R2…). «Redactar con IA» escribe lo mismo con más detalle, usando
+              todos los datos de tu empresa.
+              <template v-if="creditos && !creditos.ia_activa">
+                La IA aún no está conectada: por ahora se usa la plantilla, sin gastar créditos.
+              </template>
+            </p>
+          </details>
+        </div>
         <div v-if="verCompras && creditos" class="docs__paquetes">
           <article v-for="paquete in creditos.paquetes" :key="paquete.codigo" class="docs__paquete">
             <strong>{{ paquete.nombre }}</strong>
@@ -2082,17 +2184,14 @@ watch(paso, (nuevo) => {
 
       <div v-if="tipo !== 'ficha' && faltanEmpresa.length" class="docs__faltan" role="status">
         <p>
-          <strong>Faltan estos datos de tu empresa:</strong> {{ faltanEmpresa.map((dato) => dato.etiqueta).join(', ') }}.
-          Puedes seguir: lo que falte no se imprime en la oferta.
+          <strong>Faltan datos de tu empresa:</strong> {{ faltanEmpresa.map((dato) => dato.etiqueta).join(', ') }}.
+          Lo que falte no se imprime; sin RUC, razón social o un contacto no podrás firmarla.
         </p>
-        <div class="docs__faltan-lista">
-          <span v-for="dato in faltanEmpresa" :key="dato.etiqueta" class="docs__falta">{{ dato.etiqueta }}</span>
-        </div>
         <div class="docs__acciones">
           <button type="button" class="boton boton--secundario boton--pequeno" @click="emit('perfil')">
             Completarlos en «Perfil y RUP»
           </button>
-          <button type="button" class="boton boton--fantasma boton--pequeno" @click="revisarEmpresa">
+          <button type="button" class="docs__enlace" @click="revisarEmpresa">
             Ya los completé: revisar de nuevo
           </button>
         </div>
@@ -2102,26 +2201,8 @@ watch(paso, (nuevo) => {
         agregar en «Perfil y RUP»: {{ recomendadosEmpresa.map((dato) => dato.etiqueta).join(', ') }}.
       </p>
 
-      <div
-        v-if="tipo !== 'ficha' && ((intentoGenerar && errores.length) || avisosCampos.length)"
-        class="docs__revisar"
-        :class="{ 'docs__revisar--error': intentoGenerar && errores.length }"
-        role="region"
-        aria-label="Revisa antes de generar"
-      >
-        <strong>Revisa antes de generar</strong>
-        <ul>
-          <li v-for="p in (intentoGenerar ? errores : [])" :key="`e-${p.id}-${p.mensaje}`" class="docs__revisar-error">
-            <button type="button" class="docs__enlace-chico" @click="irAlCampo(p.id)">{{ p.mensaje }}</button>
-          </li>
-          <li v-for="p in avisosCampos" :key="`a-${p.id}-${p.mensaje}`" class="docs__revisar-aviso">
-            <button type="button" class="docs__enlace-chico" @click="irAlCampo(p.id)">{{ p.mensaje }}</button>
-          </li>
-        </ul>
-      </div>
-
       <nav class="docs__control" aria-label="Lo que revisa la entidad">
-        <strong>Lo que revisa la entidad</strong>
+        <span class="docs__control-titulo">Lo que revisa la entidad</span>
         <button
           v-for="punto in revision"
           :key="punto.id"
@@ -2138,8 +2219,8 @@ watch(paso, (nuevo) => {
         <div class="formulario">
           <label v-if="tipo !== 'ficha'" class="formulario__campo formulario__campo--ancho">
             <span>
-              <strong>Título de la proforma</strong> <small>(referente a la ínfima; sale en el PDF y en «Mis ofertas»)</small>
-              <em v-if="!tituloTocado && proforma.titulo" class="docs__auto">sugerido · puedes cambiarlo</em>
+              <strong>Título de la proforma</strong> <small>(sale en el PDF y en «Mis ofertas»)</small>
+              <small v-if="!tituloTocado && proforma.titulo">· sugerido, puedes cambiarlo</small>
             </span>
             <input
               v-model="proforma.titulo"
@@ -2180,14 +2261,14 @@ watch(paso, (nuevo) => {
           <label class="formulario__campo">
             <span>
               Tu empresa
-              <em v-if="esAuto('empresa', tituloEmpresa)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('empresa', tituloEmpresa)" />
             </span>
             <input v-model="tituloEmpresa" placeholder="Razón social del perfil" />
           </label>
           <label class="formulario__campo" :class="{ 'docs__campo--falta': !proforma.entidad, 'docs__campo--error': invalido('campo-entidad') }">
             <span>
               Entidad contratante
-              <em v-if="esAuto('entidad', proforma.entidad)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad', proforma.entidad)" />
             </span>
             <input id="campo-entidad" v-model="proforma.entidad" placeholder="Ej. GAD Municipal de Quito" :aria-invalid="invalido('campo-entidad')" :aria-describedby="descrito('campo-entidad')" />
             <small v-if="problemaDe('campo-entidad')" id="msg-campo-entidad" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad').nivel}`">{{ problemaDe('campo-entidad').mensaje }}</small>
@@ -2195,7 +2276,7 @@ watch(paso, (nuevo) => {
           <label class="formulario__campo">
             <span>
               RUC de la entidad
-              <em v-if="esAuto('entidad.ruc', extras.entidad.ruc)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad.ruc', extras.entidad.ruc)" />
             </span>
             <input id="campo-entidad-ruc" v-model="extras.entidad.ruc" type="text" inputmode="numeric" maxlength="13" placeholder="Sale del código de la ínfima o del TDR" :aria-invalid="invalido('campo-entidad-ruc')" :aria-describedby="descrito('campo-entidad-ruc')" />
             <small v-if="problemaDe('campo-entidad-ruc')" id="msg-campo-entidad-ruc" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad-ruc').nivel}`">{{ problemaDe('campo-entidad-ruc').mensaje }}</small>
@@ -2203,21 +2284,21 @@ watch(paso, (nuevo) => {
           <label class="formulario__campo">
             <span>
               Dirección de la entidad
-              <em v-if="esAuto('entidad.direccion', extras.entidad.direccion)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad.direccion', extras.entidad.direccion)" />
             </span>
             <input v-model="extras.entidad.direccion" type="text" />
           </label>
           <label class="formulario__campo">
             <span>
               Teléfono de la entidad
-              <em v-if="esAuto('entidad.telefono', extras.entidad.telefono)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad.telefono', extras.entidad.telefono)" />
             </span>
             <input v-model="extras.entidad.telefono" type="text" />
           </label>
           <label class="formulario__campo">
             <span>
               Correo de la entidad <small>(opcional)</small>
-              <em v-if="esAuto('entidad.correo', extras.entidad.correo)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad.correo', extras.entidad.correo)" />
             </span>
             <input id="campo-entidad-correo" v-model="extras.entidad.correo" type="email" placeholder="Sale del membrete o pie del TDR" :aria-invalid="invalido('campo-entidad-correo')" :aria-describedby="descrito('campo-entidad-correo')" />
             <small v-if="problemaDe('campo-entidad-correo')" id="msg-campo-entidad-correo" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-entidad-correo').nivel}`">{{ problemaDe('campo-entidad-correo').mensaje }}</small>
@@ -2225,14 +2306,14 @@ watch(paso, (nuevo) => {
           <label class="formulario__campo">
             <span>
               Sitio web de la entidad <small>(opcional)</small>
-              <em v-if="esAuto('entidad.web', extras.entidad.web)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('entidad.web', extras.entidad.web)" />
             </span>
             <input v-model="extras.entidad.web" type="text" inputmode="url" placeholder="Ej. www.municipio.gob.ec" />
           </label>
           <label class="formulario__campo formulario__campo--ancho" :class="{ 'docs__campo--falta': !proforma.objeto, 'docs__campo--error': invalido('campo-objeto') }">
             <span>
               Objeto de contratación <small>(tal como lo dice el TDR)</small>
-              <em v-if="esAuto('objeto', proforma.objeto)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('objeto', proforma.objeto)" />
             </span>
             <textarea id="campo-objeto" v-model="proforma.objeto" rows="2" placeholder="Ej. Mantenimiento de impresoras" :aria-invalid="invalido('campo-objeto')" :aria-describedby="descrito('campo-objeto')" />
             <small v-if="problemaDe('campo-objeto')" id="msg-campo-objeto" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe('campo-objeto').nivel}`">{{ problemaDe('campo-objeto').mensaje }}</small>
@@ -2240,7 +2321,7 @@ watch(paso, (nuevo) => {
           <label v-if="tipo !== 'ficha'" class="formulario__campo">
             <span>
               Contacto <small>(opcional)</small>
-              <em v-if="esAuto('contacto', proforma.contacto)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('contacto', proforma.contacto)" />
             </span>
             <input v-model="proforma.contacto" placeholder="Nombre, teléfono, correo" />
           </label>
@@ -2259,22 +2340,24 @@ watch(paso, (nuevo) => {
             <small>Un renglón por cada ítem del proceso, con su CPC, unidad y cantidad. Tú escribes el valor unitario.</small>
           </div>
         </header>
-        <p v-if="itemsPedidos.length" class="docs__nota">
-          <em v-if="autollenado.has('lineas')" class="docs__auto">autollenado · revisa</em>
-          La entidad pide <strong>{{ itemsPedidos.length }}</strong>
-          {{ itemsPedidos.length === 1 ? 'ítem' : 'ítems' }} con su CPC, unidad y cantidad; ya están en la
-          tabla. Solo escribe el valor unitario.
-          <button type="button" class="docs__enlace" @click="llenarDesdeItems(true)">
-            Volver a traer los ítems de la entidad
-          </button>
-        </p>
-        <p v-else class="docs__nota">
-          Este proceso no publica sus ítems en el listado. Agrégalos a mano, con el CPC que pide el TDR.
-        </p>
-        <p class="docs__nota docs__nota--aviso">
-          El precio no se inventa: lo escribes tú. Ni la plantilla ni la IA proponen importes. Con IVA en 0 %
-          el PDF imprime solo el TOTAL, como el formulario del SOCE.
-        </p>
+        <div class="docs__nota docs__nota--fila">
+          <template v-if="itemsPedidos.length">
+            <MarcaAuto v-if="autollenado.has('lineas')" />
+            <span>
+              Los {{ itemsPedidos.length }} {{ itemsPedidos.length === 1 ? 'ítem' : 'ítems' }} de la entidad ya
+              están en la tabla.
+            </span>
+            <button type="button" class="docs__enlace" @click="llenarDesdeItems(true)">Volver a traerlos</button>
+          </template>
+          <span v-else>Este proceso no publica sus ítems: agrégalos con el CPC que pide el TDR.</span>
+          <details class="docs__que-es">
+            <summary>¿Por qué no hay precios?</summary>
+            <p>
+              El precio lo escribes tú: ni la plantilla ni la IA proponen importes. Con IVA en 0 % el PDF
+              imprime solo el TOTAL, como el formulario del SOCE.
+            </p>
+          </details>
+        </div>
         <div class="docs__tabla-lineas">
           <div class="docs__linea docs__linea--soce docs__linea--cabecera" aria-hidden="true">
             <span>No.</span><span>CPC</span><span>Descripción del producto</span><span>Unidad</span><span>Cantidad</span><span>Valor unitario ofertado</span><span>Valor total</span><span />
@@ -2383,10 +2466,7 @@ watch(paso, (nuevo) => {
             <span class="docs__letra">3</span>
             <div>
               <h4>Condiciones de la oferta</h4>
-              <small>
-                La entidad pide siempre vigencia (mínimo 45 días), plazo, forma de pago y lugar de
-                entrega. Las marcadas en amarillo faltan.
-              </small>
+              <small>Vigencia (mínimo 45 días), plazo, forma de pago y lugar de entrega son obligatorios.</small>
             </div>
           </header>
           <div class="formulario">
@@ -2399,9 +2479,7 @@ watch(paso, (nuevo) => {
               <span>
                 {{ item.etiqueta }}
                 <small v-if="CONDICIONES_SERCOP.includes(item.id)">(obligatoria)</small>
-                <em v-if="esAuto(`condicion.${item.id}`, extras.condiciones[item.id])" class="docs__auto">
-                  autollenado · revisa
-                </em>
+                <MarcaAuto v-if="esAuto(`condicion.${item.id}`, extras.condiciones[item.id])" />
               </span>
               <textarea :id="`condicion-${item.id}`" v-model="extras.condiciones[item.id]" rows="2" :placeholder="item.pista" :aria-invalid="invalido(`condicion-${item.id}`)" :aria-describedby="descrito(`condicion-${item.id}`)" />
               <small v-if="problemaDe(`condicion-${item.id}`)" :id="`msg-condicion-${item.id}`" class="docs__msg-campo" :class="`docs__msg-campo--${problemaDe(`condicion-${item.id}`).nivel}`">{{ problemaDe(`condicion-${item.id}`).mensaje }}</small>
@@ -2409,7 +2487,7 @@ watch(paso, (nuevo) => {
             <label class="formulario__campo formulario__campo--ancho">
               <span>
                 Alcance <small>(opcional; una frase medible del TDR)</small>
-                <em v-if="esAuto('alcance', extras.alcance)" class="docs__auto">autollenado · revisa</em>
+                <MarcaAuto v-if="esAuto('alcance', extras.alcance)" />
               </span>
               <textarea
                 v-model="extras.alcance"
@@ -2422,12 +2500,9 @@ watch(paso, (nuevo) => {
           <details class="docs__detalle-condiciones">
             <summary>
               Detalle de las condiciones según el TDR <small>(va al documento de respaldo, no a cada casilla)</small>
-              <em v-if="esAuto('detalle_condiciones', extras.detalle_condiciones)" class="docs__auto">autollenado · revisa</em>
+              <MarcaAuto v-if="esAuto('detalle_condiciones', extras.detalle_condiciones)" />
             </summary>
-            <p class="docs__nota">
-              Cada condición queda en una frase. Aquí va el texto largo del TDR (cronograma, forma de pago
-              completa), que se imprime aparte en el PDF de respaldo y en el Word.
-            </p>
+            <p class="docs__nota">El texto largo del TDR (cronograma, forma de pago completa). Se imprime aparte.</p>
             <textarea
               v-model="extras.detalle_condiciones"
               rows="5"
@@ -2445,15 +2520,6 @@ watch(paso, (nuevo) => {
               <input v-model="extras.necesidad" type="text" />
             </label>
           </div>
-          <label v-if="tipo === 'proforma'" class="docs__integridad">
-            <input v-model="extras.integridad" type="checkbox" />
-            <span>
-              Incluir el <strong>Formulario de Perfil de Integridad del Proveedor</strong>
-              (Anexo I, Resolución R.E-SERCOP-2026-0005). Se agrega al final del PDF con su propio
-              recuadro de firma. Las fuentes oficiales que revisé no confirman que se exija en la
-              ínfima cuantía: <strong>pregunta a la entidad</strong> y quítalo si no lo pide.
-            </span>
-          </label>
         </section>
 
         <section id="bloque-respuestas" class="docs__bloque">
@@ -2461,14 +2527,9 @@ watch(paso, (nuevo) => {
             <span class="docs__letra">4</span>
             <div>
               <h4>Respuestas al TDR</h4>
-              <small>
-                Cada requisito con su número (R1, R2…) y cómo lo cumples. Si el TDR dice que no
-                aplica, escríbelo. Se imprime como tabla en el PDF.
-              </small>
+              <small>Cómo cumples cada requisito (R1, R2…). Se imprime como tabla.</small>
             </div>
-            <span class="etiqueta" :class="respuestas.total && respuestas.hechas === respuestas.total ? 'etiqueta--ok' : ''">
-              {{ respuestas.hechas }} de {{ respuestas.total }} respondidos
-            </span>
+            <span class="docs__contador">{{ respuestas.hechas }}/{{ respuestas.total }} respondidos</span>
           </header>
           <div v-if="respuestas.total" class="docs__barra" aria-hidden="true">
             <span :style="{ width: `${respuestas.porcentaje}%` }" />
@@ -2492,8 +2553,7 @@ watch(paso, (nuevo) => {
             </label>
           </div>
           <p v-if="!extras.cumplimiento.length" class="docs__vacio">
-            Todavía no hay requisitos. Tráelos del paso 2, pulsa «Armar sin IA» o «Generar con IA»
-            arriba, o añádelos uno a uno.
+            Aún no hay requisitos. Tráelos del paso 2 o añádelos uno a uno.
           </p>
           <template v-for="(fila, n) in extras.cumplimiento" :key="n">
             <article
@@ -2560,9 +2620,30 @@ watch(paso, (nuevo) => {
           <textarea
             v-model="extras.carta"
             rows="8"
-            placeholder="Pulsa «Armar sin IA» o «Generar con IA» para redactarla, o escríbela aquí."
+            placeholder="Escríbela aquí, o usa «Rehacer sin IA» o «Redactar con IA» arriba."
           />
         </details>
+
+        <section v-if="tipo === 'proforma'" id="bloque-paginas" class="docs__bloque">
+          <PaginasFinales
+            v-if="PAGINAS_FINALES.length"
+            v-model="extras.paginas_finales"
+            :paginas="PAGINAS_FINALES"
+          />
+          <fieldset v-else class="docs__finales">
+            <legend>Páginas finales <small>(opcionales)</small></legend>
+            <label class="docs__integridad">
+              <input v-model="extras.integridad" type="checkbox" aria-describedby="ayuda-integridad" />
+              <span>
+                <strong>Formulario de Perfil de Integridad del Proveedor</strong>
+                <small id="ayuda-integridad">
+                  Anexo I, Res. R.E-SERCOP-2026-0005. No está claro que se exija en la ínfima: pregunta a la
+                  entidad y quítalo si no lo pide.
+                </small>
+              </span>
+            </label>
+          </fieldset>
+        </section>
       </template>
 
       <template v-else>
@@ -2661,91 +2742,118 @@ watch(paso, (nuevo) => {
         </section>
       </template>
 
+      <div id="bloque-revision" class="docs__ancla" tabindex="-1">
+        <ListaRevision :problemas="problemas" :intento="intentoGenerar" @ir="irAlCampo" />
+      </div>
+
     </div>
 
     <div v-if="paso === 'entrega'" class="docs__cuerpo">
-      <div v-if="documento?.cifras" class="docs__cifras">
-        Subtotal {{ decimal(documento.cifras.subtotal) }} · IVA {{ decimal(documento.cifras.impuesto) }} ·
-        Total {{ decimal(documento.cifras.total) }}
+      <div class="docs__entrega-resumen">
+        <dl v-if="documento?.cifras" class="docs__cifras">
+          <div><dt>Subtotal</dt><dd>{{ decimal(documento.cifras.subtotal) }}</dd></div>
+          <div><dt>IVA</dt><dd>{{ decimal(documento.cifras.impuesto) }}</dd></div>
+          <div class="docs__cifras-total"><dt>Total</dt><dd>USD {{ decimal(documento.cifras.total) }}</dd></div>
+        </dl>
+        <div class="docs__bajar">
+          <button type="button" class="docs__enlace" :disabled="ocupado" @click="bajar('docx')">Descargar Word</button>
+          <small class="docs__nota">para seguir editándola</small>
+        </div>
       </div>
+
       <section
-        v-if="verificacion"
+        v-if="verificacion || verificando"
         class="docs__verificacion"
-        :class="verificacion.errores.length ? 'docs__verificacion--falta' : 'docs__verificacion--lista'"
         aria-live="polite"
+        aria-labelledby="verificacion-titulo"
       >
-        <h4>
-          {{ verificacion.errores.length
-            ? `Faltan ${verificacion.errores.length} dato(s) para enviarla`
-            : 'La oferta tiene lo que una entidad revisa' }}
+        <h4 id="verificacion-titulo">
+          <template v-if="verificando">Comprobando lo que revisa la entidad…</template>
+          <template v-else-if="bloqueosFirma.length">
+            <span class="etiqueta etiqueta--aviso">Falta completar</span> Corrige esto antes de enviarla o firmarla
+          </template>
+          <template v-else><span class="etiqueta etiqueta--ok">Lista</span> Tiene lo que una entidad revisa</template>
         </h4>
-        <ul v-if="verificacion.errores.length">
-          <li v-for="fila in verificacion.errores" :key="fila.codigo + fila.texto">{{ fila.texto }}</li>
-        </ul>
-        <ul v-if="verificacion.avisos.length" class="docs__verificacion-avisos">
-          <li v-for="fila in verificacion.avisos" :key="fila.codigo + fila.texto">{{ fila.texto }}</li>
-        </ul>
-        <button
-          v-if="verificacion.errores.length"
-          class="boton boton--secundario"
-          type="button"
-          @click="ir('documento')"
-        >
-          Corregir en el documento
-        </button>
+        <div v-for="grupo in bloqueosFirma" :key="grupo.donde" class="docs__bloqueo">
+          <p class="docs__bloqueo-titulo">{{ grupo.etiqueta }}</p>
+          <ul>
+            <li v-for="texto in grupo.textos" :key="texto">{{ texto }}</li>
+          </ul>
+          <button type="button" class="boton boton--secundario boton--pequeno" @click="corregirBloqueo(grupo)">
+            {{ grupo.accion === 'perfil' ? 'Completar en «Perfil y RUP»' : 'Corregir en el paso 3' }}
+          </button>
+        </div>
+        <details v-if="verificacion?.avisos?.length" class="docs__que-es">
+          <summary>{{ verificacion.avisos.length }} {{ verificacion.avisos.length === 1 ? 'aviso' : 'avisos' }} (no impiden enviarla)</summary>
+          <ul class="docs__verificacion-avisos">
+            <li v-for="fila in verificacion.avisos" :key="fila.codigo + fila.texto">{{ fila.texto }}</li>
+          </ul>
+        </details>
+        <p v-if="bloqueosFirma.length" class="docs__nota">
+          Después de corregir, pulsa «Generar» otra vez en el paso 3: se guarda una versión nueva.
+          <button type="button" class="docs__enlace" :disabled="verificando" @click="cargarVerificacion">Comprobar de nuevo</button>
+        </p>
       </section>
+
       <section v-if="documento?.tipo !== 'Ficha técnica'" class="docs__previa" aria-label="Vista previa del PDF">
-        <p v-if="vistaPdf.cargando" class="docs__nota" role="status">Armando el PDF en tu navegador…</p>
+        <p v-if="vistaPdf.cargando" class="docs__cargando" role="status">
+          <span class="docs__spinner" aria-hidden="true" /> Armando la vista previa…
+        </p>
         <p v-else-if="vistaPdf.error" class="docs__nota docs__nota--aviso">{{ vistaPdf.error }}</p>
         <iframe v-if="vistaPdf.url" class="docs__marco" :src="vistaPdf.url" title="Vista previa de tu proforma" />
       </section>
-      <div class="docs__bajar">
-        <button type="button" class="boton boton--secundario" :disabled="ocupado" @click="bajar('docx')">
-          Descargar Word
-        </button>
-        <small class="docs__nota">
-          PDF para enviarla tal como quedó (botón de abajo); Word si vas a corregir textos o precios.
-        </small>
-      </div>
 
-      <details class="docs__firma docs__firma--resaltada docs__plegable">
-        <summary><h4>Firmar con tu firma electrónica <small>(opcional en la proforma)</small></h4></summary>
-      <form class="docs__firma-form" autocomplete="off" @submit.prevent="firmar">
-        <p class="docs__nota">
-          En la ínfima cuantía la firma electrónica es exigible en la orden de compra o la factura;
-          en la proforma es opcional. Si firmas, el sello de FirmaEC queda en <strong>cada recuadro
-          de firma</strong> del PDF (marcado en azul): el del oferente y el del formulario de integridad.
-        </p>
-        <p class="docs__nota">
-          Sirve el archivo .p12 o .pfx de FirmaEC, Security Data, ANF, Banco Central o cualquier
-          entidad acreditada. Se usa solo para firmar este PDF: el certificado y la clave no se
-          guardan.
-        </p>
-        <div class="formulario">
-          <label class="formulario__campo">
-            <span>Archivo de firma (.p12 / .pfx)</span>
-            <input type="file" accept=".p12,.pfx,application/x-pkcs12" @change="elegirCertificado" />
-          </label>
-          <label class="formulario__campo">
-            <span>Clave de la firma</span>
-            <input v-model="firma.clave" type="password" autocomplete="new-password" placeholder="La clave de tu certificado" />
-          </label>
-          <label class="formulario__campo">
-            <span>Lugar <small>(opcional)</small></span>
-            <input v-model="firma.lugar" :placeholder="extras.empresa?.ciudad || 'Ej. Quito'" maxlength="80" />
-          </label>
-        </div>
-        <div class="docs__pie-paso">
-          <button
-            class="boton boton--secundario"
-            type="submit"
-            :disabled="ocupado || !firma.archivo || !firma.clave || !puedeFirmar"
-            :title="puedeFirmar ? '' : 'Completa los datos que faltan antes de firmar.'"
-          >
-            {{ firmando ? 'Firmando…' : 'Firmar y descargar PDF' }}
-          </button>
-        </div>
-      </form>
+      <details class="docs__firma docs__plegable" :open="Boolean(firma.archivo)">
+        <summary>
+          <span>
+            <strong>Firmar con tu firma electrónica</strong>
+            <small>Opcional en la proforma. Descarga el PDF firmado.</small>
+          </span>
+        </summary>
+        <form class="docs__firma-form" autocomplete="off" @submit.prevent="firmar">
+          <details class="docs__que-es">
+            <summary>¿Qué es esto?</summary>
+            <p>
+              En la ínfima cuantía la firma electrónica es exigible en la orden de compra o la factura; en la
+              proforma es opcional. El sello queda en cada recuadro de firma del PDF. Sirve el archivo .p12 o
+              .pfx de FirmaEC, Security Data, ANF, Banco Central u otra entidad acreditada. El certificado y la
+              clave no se guardan.
+            </p>
+          </details>
+          <div class="formulario">
+            <label class="formulario__campo">
+              <span>Archivo de firma (.p12 / .pfx)</span>
+              <input type="file" accept=".p12,.pfx,application/x-pkcs12" @change="elegirCertificado" />
+            </label>
+            <label class="formulario__campo">
+              <span>Clave de la firma</span>
+              <input v-model="firma.clave" type="password" autocomplete="new-password" placeholder="La clave de tu certificado" />
+            </label>
+            <label class="formulario__campo">
+              <span>Lugar <small>(opcional)</small></span>
+              <input v-model="firma.lugar" :placeholder="extras.empresa?.ciudad || 'Ej. Quito'" maxlength="80" />
+            </label>
+          </div>
+          <div class="docs__pie-paso">
+            <button
+              class="boton boton--secundario"
+              type="submit"
+              :disabled="ocupado || verificando || Boolean(faltaParaFirmar)"
+              :aria-describedby="faltaParaFirmar ? 'firma-falta' : undefined"
+            >
+              {{ firmando ? 'Firmando…' : 'Firmar y descargar PDF' }}
+            </button>
+            <small v-if="faltaParaFirmar" id="firma-falta" class="docs__nota">{{ faltaParaFirmar }}</small>
+          </div>
+          <ul v-if="bloqueosFirma.length" class="docs__firma-bloqueos" aria-label="Lo que impide firmar">
+            <li v-for="grupo in bloqueosFirma" :key="grupo.donde">
+              <strong>{{ grupo.etiqueta }}:</strong> {{ grupo.textos.join(' ') }}
+              <button type="button" class="docs__enlace" @click="corregirBloqueo(grupo)">
+                {{ grupo.accion === 'perfil' ? 'Completar el perfil' : 'Corregir' }}
+              </button>
+            </li>
+          </ul>
+        </form>
       </details>
 
       <div v-if="documento?.tipo !== 'Ficha técnica'" class="docs__revision">
@@ -2787,11 +2895,11 @@ watch(paso, (nuevo) => {
           <template v-else-if="paso === 'documento' && usoPresupuesto?.supera">
             Supera el presupuesto de la entidad: baja los precios para generar.
           </template>
-          <template v-else-if="paso === 'documento'">
-            {{ revision.filter((punto) => !punto.ok).length
-              ? `${revision.filter((punto) => !punto.ok).length} punto(s) por revisar. Puedes generar igual.`
-              : 'Todo listo para la entidad.' }}
+          <template v-else-if="paso === 'documento' && problemas.length">
+            {{ errores.length ? `${errores.length} por completar` : '' }}{{ errores.length && avisosCampos.length ? ' · ' : '' }}{{ avisosCampos.length ? `${avisosCampos.length} ${avisosCampos.length === 1 ? 'aviso' : 'avisos'}` : '' }}
+            <button type="button" class="docs__enlace" @click="irAlCampo('bloque-revision')">Ver la lista</button>
           </template>
+          <template v-else-if="paso === 'documento'">Todo listo para generar.</template>
           <template v-else>Guardada en «Mis ofertas».</template>
         </span>
         <button
@@ -2879,7 +2987,7 @@ watch(paso, (nuevo) => {
 .docs__total { padding-top: 4px; border-top: 1px solid var(--borde); font-weight: 700; }
 .docs__producto { display: grid; grid-template-columns: minmax(0, 1fr) 90px 120px auto; gap: var(--e-2); align-items: center; padding: var(--e-3); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); }
 .docs__producto small { display: block; color: var(--texto-tenue); font-size: var(--t-xs); }
-.docs__cifras { font-weight: 650; font-variant-numeric: tabular-nums; }
+
 .docs__archivo { flex: 1 1 220px; display: flex; flex-direction: column; gap: 4px; padding: var(--e-4); border: 1px solid var(--borde-fuerte); border-radius: var(--r-3); background: var(--superficie); color: var(--texto); text-align: left; cursor: pointer; }
 .docs__archivo small { color: var(--texto-suave); font-size: var(--t-xs); }
 
@@ -2921,15 +3029,8 @@ watch(paso, (nuevo) => {
 .docs__linea .docs__subtotal { padding-top: 0.55rem; }
 .docs__armar { display: flex; flex-direction: column; gap: var(--e-3); }
 .docs__armar-titulo { margin: 0; }
-.docs__opciones { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--e-3); }
-.docs__opcion { position: relative; display: flex; flex-direction: column; gap: 6px; padding: var(--e-4) var(--e-5); border: 1px solid var(--borde); border-radius: var(--r-3); background: var(--superficie); color: var(--texto); text-align: left; cursor: pointer; transition: border-color var(--rapido) var(--curva), box-shadow var(--rapido) var(--curva); }
-.docs__opcion:hover:not(:disabled) { border-color: var(--acento); box-shadow: var(--sombra-2); }
-.docs__opcion:disabled { opacity: 0.6; cursor: progress; }
-.docs__opcion small { color: var(--texto-suave); font-size: var(--t-xs); line-height: 1.45; }
-.docs__opcion-icono { width: 30px; height: 30px; color: var(--acento); }
 
 .docs__saldo { align-self: flex-start; margin-top: 4px; padding: 2px 10px; border-radius: var(--r-redondo); background: var(--acento-tenue); color: var(--acento-fuerte); font-size: var(--t-xs); font-weight: 600; }
-.docs__comprar { align-self: flex-start; }
 .docs__paquetes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--e-3); }
 .docs__paquetes .docs__nota, .docs__compras { grid-column: 1 / -1; }
 .docs__paquete { display: flex; flex-direction: column; gap: 4px; padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); font-size: var(--t-sm); }
@@ -2937,15 +3038,13 @@ watch(paso, (nuevo) => {
 .docs__compras { margin: 0; padding-left: 1.1rem; color: var(--texto-suave); font-size: var(--t-xs); }
 .docs__faltan { display: flex; flex-direction: column; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie-2); font-size: var(--t-sm); }
 .docs__faltan button { align-self: flex-start; }
-.docs__faltan-lista { display: flex; flex-wrap: wrap; gap: 6px; }
-.docs__falta { padding: 2px 10px; border-radius: var(--r-redondo); background: var(--aviso-suave); color: var(--aviso); font-size: var(--t-xs); font-weight: 600; }
 .docs__cumple-fila { display: flex; flex-direction: column; gap: var(--e-2); padding: var(--e-3); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie-2); }
 .docs__cumple-fila button { align-self: flex-start; }
 .docs__firma { display: flex; flex-direction: column; gap: var(--e-3); padding: var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); }
 .docs__firma h4 { margin: 0; }
 .docs__texto { white-space: pre-line; }
 .docs__num { flex: none; min-width: 2.4rem; padding: 2px 8px; border-radius: var(--r-redondo); background: var(--acento-tenue); color: var(--acento-fuerte); font-size: var(--t-xs); font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
-.docs__control { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); font-size: var(--t-sm); }
+.docs__control { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); font-size: var(--t-sm); }
 .docs__control strong { margin-right: var(--e-2); }
 .docs__control-punto { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--borde); border-radius: var(--r-redondo); background: var(--superficie); color: var(--texto-suave); font-size: var(--t-xs); font-weight: 600; cursor: pointer; }
 .docs__control-punto span { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; font-size: 0.65rem; }
@@ -3030,9 +3129,9 @@ watch(paso, (nuevo) => {
 .proceso__icono--tipo { min-width: 8.5rem; text-align: center; font-weight: 650; }
 .proceso__anexo-nombre { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .proceso__anexo-aviso { display: block; color: var(--aviso); }
-.docs__bloque--titulo { border: 2px solid var(--acento); background: var(--acento-tenue); }
+.docs__bloque--titulo { background: var(--superficie-2); }
 .docs__titulo-input { font-size: var(--t-lg); font-weight: 600; }
-.docs__titulo-repetido { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); color: var(--peligro); font-size: var(--t-sm); }
+.docs__titulo-repetido { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); color: var(--error); font-size: var(--t-sm); }
 .proceso__anexo-nombre small { display: block; color: var(--texto-tenue); font-size: var(--t-xs); }
 .proceso__ocr { display: flex; flex-direction: column; gap: var(--e-2); margin-top: var(--e-2); color: var(--texto-suave); font-size: var(--t-sm); }
 .proceso__ocr .docs__barra { flex: none; }
@@ -3107,8 +3206,6 @@ watch(paso, (nuevo) => {
 .docs__autollenado .docs__auto { margin-left: 0; }
 .docs__formato { display: grid; gap: var(--e-2); justify-items: start; padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-left: 4px solid var(--acento, #2563eb); border-radius: var(--r-2); background: var(--superficie-2); color: var(--texto); font-size: var(--t-sm); }
 .docs__formato p { margin: 0; }
-.docs__firma--resaltada { border: 2px solid var(--acento) !important; background: var(--acento-tenue); border-radius: var(--r-2); }
-.docs__firma--resaltada > summary h4::before { content: "✍ "; color: var(--acento); }
 .docs__celda { display: grid; gap: 2px; min-width: 0; }
 .docs__celda textarea, .docs__celda input { width: 100%; }
 .docs__campo--error input, .docs__campo--error textarea, .docs__entrada--error, .docs__entrada--error:focus { border-color: var(--error) !important; box-shadow: 0 0 0 1px var(--error); }
@@ -3117,11 +3214,6 @@ watch(paso, (nuevo) => {
 .docs__msg-campo--error { color: var(--error); }
 .docs__msg-campo--aviso { color: var(--aviso); }
 .docs__msg-linea { grid-column: 1 / -1; }
-.docs__revisar { display: grid; gap: var(--e-2); padding: var(--e-3) var(--e-4); border: 1px solid var(--aviso); border-radius: var(--r-2); background: var(--superficie-2); font-size: var(--t-sm); }
-.docs__revisar--error { border-color: var(--error); }
-.docs__revisar ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 2px; }
-.docs__revisar-error, .docs__revisar-error .docs__enlace-chico { color: var(--error); }
-.docs__revisar-aviso, .docs__revisar-aviso .docs__enlace-chico { color: var(--aviso); }
 .docs__formato-garantias { color: var(--texto-suave); }
 .docs__detalle-condiciones { display: grid; gap: var(--e-2); margin-top: var(--e-3); }
 .docs__detalle-condiciones summary { cursor: pointer; font-size: var(--t-sm); }
@@ -3182,5 +3274,68 @@ watch(paso, (nuevo) => {
 }
 @media (prefers-reduced-motion: reduce) {
   .asistente__boton, .checklist__item, .docs__opcion, .docs__barra span { transition: none; }
+}
+
+/* --- Pulido 2026-11: indicador fijo, ayudas plegadas, una acción principal por paso ------------- */
+.asistente { position: sticky; top: 0; z-index: 3; display: grid; gap: var(--e-2); padding: var(--e-2) 0; background: var(--fondo); }
+.asistente__progreso { height: 3px; overflow: hidden; border-radius: var(--r-redondo); background: var(--superficie-3); }
+.asistente__progreso span { display: block; height: 100%; background: var(--acento); transition: width var(--normal) var(--curva); }
+.docs__paso-cabecera h3:focus { outline: none; }
+.docs__que-es { color: var(--texto-suave); font-size: var(--t-sm); }
+.docs__que-es > summary { display: inline; color: var(--acento-fuerte); font-size: var(--t-xs); font-weight: 600; cursor: pointer; }
+.docs__que-es > summary:hover, .docs__que-es > summary:focus-visible { text-decoration: underline; }
+.docs__que-es[open] > summary { display: block; margin-bottom: var(--e-1); }
+.docs__que-es p, .docs__que-es ul { margin: 0; max-width: 70ch; line-height: 1.55; }
+.docs__nota--fila { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2) var(--e-3); }
+.docs__nota--fila .docs__enlace { margin-left: 0; }
+.docs__nota--fila .docs__que-es { flex-basis: 100%; }
+.docs__redactar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--e-3); padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-3); background: var(--superficie); }
+.docs__redactar-texto { display: grid; gap: 2px; font-size: var(--t-sm); }
+.docs__redactar-texto small { color: var(--texto-suave); font-size: var(--t-xs); }
+.docs__redactar-botones { display: flex; flex-wrap: wrap; gap: var(--e-2); }
+.docs__boton-ia { border: 1px solid var(--ia-borde); background: var(--ia-tenue); color: var(--ia-fuerte); }
+.docs__boton-ia:hover:not(:disabled) { background: var(--ia-suave); }
+.docs__saldo { margin-top: 0; background: var(--superficie-3); color: var(--texto-suave); }
+.docs__control { gap: var(--e-2) var(--e-2); padding: var(--e-2) var(--e-3); }
+.docs__control-titulo { margin-right: var(--e-2); color: var(--texto-suave); font-size: var(--t-xs); font-weight: 650; }
+.docs__contador { flex: none; color: var(--texto-suave); font-size: var(--t-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
+.docs__ancla { scroll-margin-top: 96px; }
+.docs__ancla:focus { outline: none; }
+.docs__autollenado { align-items: flex-start; padding: var(--e-2) var(--e-3); background: transparent; border-style: dashed; }
+.docs__autollenado .marca-auto { margin-top: 0.45rem; }
+.docs__finales { display: grid; gap: var(--e-2); margin: 0; padding: 0; border: 0; }
+.docs__finales legend { padding: 0; font-size: var(--t-base); font-weight: 650; }
+.docs__finales legend small, .docs__integridad small { color: var(--texto-suave); font-weight: 400; }
+.docs__integridad { margin-top: 0; padding: var(--e-2) var(--e-3); border: 1px solid var(--borde); border-radius: var(--r-2); cursor: pointer; }
+.docs__integridad span { display: grid; gap: 2px; }
+.docs__integridad small { font-size: var(--t-xs); }
+.docs__entrega-resumen { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--e-3); }
+.docs__cifras { display: flex; flex-wrap: wrap; gap: var(--e-5); margin: 0; font-variant-numeric: tabular-nums; }
+.docs__cifras dt { color: var(--texto-suave); font-size: var(--t-xs); }
+.docs__cifras dd { margin: 0; font-size: var(--t-md); font-weight: 600; }
+.docs__cifras-total dd { font-size: var(--t-lg); font-weight: 700; }
+.docs__bajar { gap: var(--e-1) var(--e-2); }
+.docs__bajar .docs__nota { flex: none; }
+.docs__verificacion h4 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--e-2); margin: 0; color: var(--texto); font-size: var(--t-base); }
+.docs__verificacion--falta h4, .docs__verificacion--lista h4 { color: var(--texto); }
+.docs__bloqueo { display: grid; gap: var(--e-1); justify-items: start; width: 100%; padding-top: var(--e-2); border-top: 1px solid var(--borde); }
+.docs__bloqueo-titulo { margin: 0; font-weight: 650; }
+.docs__bloqueo ul { margin: 0; }
+.docs__cargando { display: flex; align-items: center; gap: var(--e-2); color: var(--texto-suave); font-size: var(--t-sm); }
+.docs__spinner { width: 14px; height: 14px; border: 2px solid var(--borde-fuerte); border-top-color: var(--acento); border-radius: 50%; animation: docs-giro 0.8s linear infinite; }
+@keyframes docs-giro { to { transform: rotate(360deg); } }
+.docs__firma > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--e-3); }
+.docs__firma > summary > span { display: grid; gap: 2px; }
+.docs__firma > summary small { color: var(--texto-suave); font-size: var(--t-xs); }
+.docs__pie-paso small { flex: 1 1 14rem; }
+.docs__firma-bloqueos { display: grid; gap: var(--e-1); margin: 0; padding: var(--e-2) var(--e-3); border-radius: var(--r-2); background: var(--superficie-2); font-size: var(--t-sm); list-style: none; }
+.docs__firma-bloqueos strong { font-weight: 650; }
+@media (max-width: 640px) {
+  .docs__redactar-botones, .docs__redactar-botones .boton { width: 100%; }
+  .docs__cifras { gap: var(--e-4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .docs__spinner { animation: none; }
+  .asistente__progreso span { transition: none; }
 }
 </style>

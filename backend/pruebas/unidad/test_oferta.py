@@ -78,13 +78,17 @@ def test_cada_requisito_del_tdr_sale_respondido() -> None:
     assert resultado["no_cubiertos"] == []
 
 
-def test_plantilla_usa_catalogo_que_el_tdr_menciona() -> None:
+def test_plantilla_no_arma_lineas_con_el_catalogo() -> None:
+    """El catálogo de la empresa no son ítems pedidos: sin tabla publicada, una línea con el
+    objeto del TDR, marcada para confirmar cantidad y unidad."""
     borrador = borrador_plantilla(
         secciones=SECCIONES, perfil=PERFIL, entidad="GAD Quito", objeto=""
     )
     descripciones = [linea["descripcion"] for linea in borrador["lineas"]]
-    assert any("diésel" in texto for texto in descripciones)
-    assert not any("Limpieza" in texto for texto in descripciones)
+    assert descripciones == ["Servicio de abastecimiento de combustible diésel para la flota."]
+    assert not any("Despacho a domicilio" in texto for texto in descripciones)
+    assert borrador["lineas"][0]["origen"] == "tdr"
+    assert borrador["lineas"][0]["verificar"] == ["cantidad", "unidad"]
     assert all(linea["precio_unitario"] is None for linea in borrador["lineas"])
     assert "30 días" in borrador["condiciones"]["plazo_entrega"]
     assert "contra entrega" in borrador["condiciones"]["forma_pago"]
@@ -125,7 +129,9 @@ def test_limpieza_quita_precios_y_respeta_identidad() -> None:
     limpio = limpiar_respuesta(respuesta, base, modelo="prueba")
     assert "1.500" not in limpio["carta"]
     assert limpio["lineas"][0]["precio_unitario"] is None
-    assert limpio["lineas"][0]["cantidad"] == 200
+    # «Diésel premium», 200 galones: el TDR no lo dice. La línea inventada se quita y se avisa.
+    assert all(linea["cantidad"] != 200 for linea in limpio["lineas"])
+    assert limpio["lineas_descartadas"]
     assert limpio["empresa"]["ruc"] == "1792345678001"
     assert limpio["condiciones"]["plazo_entrega"] == "5 días"
     assert any(f["etiqueta"] == "Certificado de calidad" for f in limpio["faltantes"])

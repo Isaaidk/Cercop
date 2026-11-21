@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -33,16 +33,36 @@ from contratacion.infraestructura.config.ajustes import obtener_ajustes
 registro = logging.getLogger(__name__)
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
+# Para qué se llama al modelo: leer el TDR y redactar documentos, o el asistente (chat).
+Uso = Literal["documentos", "chat"]
+# Tokens que se suman a `max_tokens` cuando el modelo razona antes de responder.
+_CUPO_RAZONAMIENTO = 16000
 _ILEGIBLE = "La IA no devolvió datos legibles. Vuelve a intentarlo."
 
 
 class ModeloIa:
     def __init__(
-        self, *, url: str, clave: str, modelo: str, concurrencia: int, tiempo_seg: float
+        self,
+        *,
+        url: str,
+        clave: str,
+        modelo: str,
+        concurrencia: int,
+        tiempo_seg: float,
+        modelo_documentos: str = "",
+        pensar_documentos: bool | None = None,
+        pensar_chat: bool | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._clave = clave
+        # `modelo` es el del asistente (chat); `modelo_documentos`, el de leer el TDR y redactar la
+        # proforma. Sin modelo propio para documentos, se usa el mismo.
         self.modelo = modelo
+        self.modelo_documentos = modelo_documentos.strip() or modelo
+        self._pensar: dict[str, bool | None] = {
+            "documentos": pensar_documentos,
+            "chat": pensar_chat,
+        }
         self._tiempo = tiempo_seg
         self._concurrencia = concurrencia
         self._turnos = asyncio.Semaphore(concurrencia)
@@ -95,13 +115,29 @@ class ModeloIa:
         *,
         como_json: bool = False,
         max_tokens: int = 1800,
+        uso: Uso = "documentos",
     ) -> str:
+        """Una respuesta de texto. `uso` elige modelo y modo «pensar»: documentos o chat."""
         if not self.disponible:
             raise EstadoInvalido("No hay un modelo de IA configurado.")
         async with self._circuito().proteger():
             return await self._completar(
-                sistema, usuario, como_json=como_json, max_tokens=max_tokens
+                sistema, usuario, como_json=como_json, max_tokens=max_tokens, uso=uso
             )
+
+    def _modo(self, cuerpo: dict[str, Any], uso: Uso) -> None:
+        """Pone en el cuerpo el modelo y el modo «pensar» del uso.
+
+        Con `pensar` sin definir no se envía el parámetro: Groq, Gemini u Ollama no lo conocen. El
+        razonamiento gasta del mismo cupo de `max_tokens`: con él, el cupo se amplía, o el modelo
+        lo agota pensando y deja la respuesta vacía.
+        """
+        cuerpo["model"] = self.modelo_documentos if uso == "documentos" else self.modelo
+        pensar = self._pensar.get(uso)
+        if pensar is not None:
+            cuerpo["thinking"] = {"type": "enabled" if pensar else "disabled"}
+        if pensar:
+            cuerpo["max_tokens"] = int(cuerpo.get("max_tokens") or 0) + _CUPO_RAZONAMIENTO
 
     async def _completar(
         self,
@@ -110,6 +146,7 @@ class ModeloIa:
         *,
         como_json: bool,
         max_tokens: int,
+        uso: Uso = "documentos",
     ) -> str:
         cuerpo: dict[str, Any] = {
             "model": self.modelo,
@@ -120,8 +157,11 @@ class ModeloIa:
                 {"role": "user", "content": usuario},
             ],
         }
+        self._modo(cuerpo, uso)
         if como_json:
             cuerpo["response_format"] = {"type": "json_object"}
+        # Solo `content`: el razonamiento (`reasoning_content` de DeepSeek en modo «pensar») no se
+        # enseña ni se guarda.
         texto = str((await self._pedir(cuerpo)).get("content") or "")
         # Gemini 2.5 y 3 gastan parte del cupo en su razonamiento interno y dejan el texto vacío
         # aunque la petición haya salido bien. Se pide de nuevo con más cupo, una sola vez.
@@ -129,7 +169,11 @@ class ModeloIa:
             # Por `_completar` y no por `completar`: la llamada ya tiene su turno en el circuito, y
             # pedir otro podría esperar a sí misma con el compartimento lleno.
             return await self._completar(
-                sistema, usuario, como_json=como_json, max_tokens=max(max_tokens * 3, 4000)
+                sistema,
+                usuario,
+                como_json=como_json,
+                max_tokens=max(max_tokens * 3, 4000),
+                uso=uso,
             )
         return texto
 
@@ -155,16 +199,23 @@ class ModeloIa:
             "max_tokens": max_tokens,
             "messages": mensajes,
         }
+        self._modo(cuerpo, "chat")
         if herramientas:
             cuerpo["tools"] = herramientas
             cuerpo["tool_choice"] = "auto"
         async with self._circuito().proteger():
             mensaje = await self._pedir(cuerpo)
         llamadas = mensaje.get("tool_calls") or []
-        return {
+        salida: dict[str, Any] = {
             "content": mensaje.get("content"),
             "tool_calls": [llamada for llamada in llamadas if isinstance(llamada, dict)],
         }
+        # En modo «pensar» con herramientas, DeepSeek exige recibir de vuelta el razonamiento del
+        # turno anterior (sin él responde 400). Viaja aparte solo para reenviarlo; no se enseña.
+        razonamiento = mensaje.get("reasoning_content")
+        if isinstance(razonamiento, str) and razonamiento:
+            salida["reasoning_content"] = razonamiento
+        return salida
 
     async def _pedir(self, cuerpo: dict[str, Any]) -> dict[str, Any]:
         """Envía el cuerpo con reintentos y devuelve `choices[0].message`.
@@ -247,6 +298,9 @@ def obtener_modelo() -> ModeloIa:
             modelo=ajustes.ia_modelo,
             concurrencia=ajustes.ia_concurrencia,
             tiempo_seg=ajustes.ia_tiempo_seg,
+            modelo_documentos=ajustes.ia_modelo_documentos,
+            pensar_documentos=ajustes.ia_pensar_documentos,
+            pensar_chat=ajustes.ia_pensar_chat,
         )
     return _MODELO
 

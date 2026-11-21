@@ -9,12 +9,14 @@ from uuid import UUID
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.creditos_actor import creditos_de
 from contratacion.dominio.creditos import COSTO_GENERAR_OFERTA, PAQUETES, paquete
+from contratacion.dominio.documentos import items_pedidos
 from contratacion.dominio.errores import DatoInvalido, EstadoInvalido, NoEncontrado, SinPermiso
 from contratacion.dominio.oferta import (
     SISTEMA,
     borrador_plantilla,
     limpiar_respuesta,
     mensaje_para_modelo,
+    texto_de_lineas,
 )
 from contratacion.dominio.roles import es_de_plataforma
 from contratacion.infraestructura.adaptadores.salida.bd.creditos import RepositorioCreditos
@@ -36,6 +38,7 @@ async def generar_oferta(
     entidad: str,
     objeto: str,
     con_ia: bool,
+    registro_id: UUID | None = None,
 ) -> dict[str, Any]:
     secciones: dict[str, str] = {}
     if lectura_id is not None:
@@ -43,11 +46,16 @@ async def generar_oferta(
         if lectura is None:
             raise NoEncontrado("Ese TDR no está en la empresa.")
         secciones = dict(lectura["secciones"] or {})
+        registro_id = registro_id or lectura.get("registro_id")
     if not secciones and not objeto.strip():
         raise DatoInvalido("Trae el TDR o escribe el objeto para armar la oferta.")
 
+    # Los ítems que la entidad publicó en la ficha mandan sobre todo lo demás: son las líneas.
+    items = items_pedidos(await documentos.items_de_registro(registro_id)) if registro_id else []
     datos = await perfil.leer(actor.negocio_id)
-    base = borrador_plantilla(secciones=secciones, perfil=datos, entidad=entidad, objeto=objeto)
+    base = borrador_plantilla(
+        secciones=secciones, perfil=datos, entidad=entidad, objeto=objeto, items=items
+    )
     if not con_ia:
         return {**base, "saldo": None}
     if not modelo.disponible:
@@ -65,15 +73,25 @@ async def generar_oferta(
     try:
         respuesta = await modelo.completar_json(
             SISTEMA,
-            mensaje_para_modelo(secciones=secciones, perfil=datos, entidad=entidad, objeto=objeto),
+            mensaje_para_modelo(
+                secciones=secciones,
+                perfil=datos,
+                entidad=entidad,
+                objeto=objeto,
+                lineas_publicadas=base["lineas"] if base["fuente_lineas"] else [],
+            ),
             max_tokens=8000,
+            uso="documentos",
         )
     except EstadoInvalido:
         await creditos.devolver(
             actor.negocio_id, COSTO_GENERAR_OFERTA, "Devolución: la IA no respondió"
         )
         raise
-    return {**limpiar_respuesta(respuesta, base, modelo=modelo.modelo), "saldo": queda}
+    limpio = limpiar_respuesta(
+        respuesta, base, modelo=modelo.modelo_documentos, texto_tdr=texto_de_lineas(secciones)
+    )
+    return {**limpio, "saldo": queda}
 
 
 async def ver_creditos(

@@ -878,6 +878,10 @@ def calcular_proforma(lineas: list[dict[str, Any]], impuesto_porcentaje: float) 
         unidad = str(linea.get("unidad") or "").strip()[:30]
         if unidad:
             armada["unidad"] = unidad
+        # De dónde salió la línea: ítem publicado en la ficha, tabla del TDR o escrita a mano.
+        origen = str(linea.get("origen") or "").strip()
+        if origen in ("ficha", "tdr", "usuario"):
+            armada["origen"] = origen
         armadas.append(armada)
     subtotal = round(sum(linea["subtotal"] for linea in armadas), 2)
     impuesto = round(subtotal * float(impuesto_porcentaje) / 100, 2)

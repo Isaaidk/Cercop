@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from contratacion.dominio.paginas_finales import paginas_activas
 from contratacion.dominio.presupuesto import comparar_con_presupuesto, normalizar_presupuesto
 
 IVA_VIGENTE = 15.0
@@ -105,14 +106,27 @@ def verificar_proforma(documento: dict[str, Any]) -> dict[str, Any]:
         if not _texto(linea.get("unidad")):
             avisos.append(_hallazgo("unidad", f"La línea {numero} no indica la unidad.", "detalle"))
     if cifras and lineas:
+        # Igual que `calcular_proforma`: cada línea se redondea a centavos y el subtotal es la suma
+        # de esas líneas. Comparar con la suma sin redondear daba «no coinciden» para siempre con
+        # precios de 3 o más decimales (6 líneas a 1.125 se alejan 3 centavos) y bloqueaba la firma.
         esperado = round(
             sum(
-                float(linea.get("cantidad") or 0) * float(linea.get("precio_unitario") or 0)
+                round(
+                    float(linea.get("cantidad") or 0) * float(linea.get("precio_unitario") or 0),
+                    2,
+                )
                 for linea in lineas
             ),
             2,
         )
-        if abs(esperado - float(cifras.get("subtotal") or 0)) > 0.01:
+        subtotal = float(cifras.get("subtotal") or 0)
+        impuesto = round(esperado * float(cifras.get("impuesto_porcentaje") or 0) / 100, 2)
+        total = round(esperado + impuesto, 2)
+        if (
+            abs(esperado - subtotal) > 0.005
+            or abs(impuesto - float(cifras.get("impuesto") or 0)) > 0.005
+            or abs(total - float(cifras.get("total") or 0)) > 0.005
+        ):
             errores.append(
                 _hallazgo(
                     "totales",
@@ -166,7 +180,7 @@ def verificar_proforma(documento: dict[str, Any]) -> dict[str, Any]:
                 "cumplimiento",
             )
         )
-    if es_oferta and extras.get("integridad") is False:
+    if es_oferta and not paginas_activas(documento)["integridad"]:
         avisos.append(
             _hallazgo(
                 "integridad",

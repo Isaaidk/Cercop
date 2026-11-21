@@ -56,3 +56,30 @@ El RUP no tiene consulta pública; el historial es lo adjudicado a tu RUC, no tu
 ## Calidad
 
 CI (`.github/workflows/ci.yml`): ruff, ruff format, mypy (0 errores en 292 archivos), pytest, y en el panel `npm test` + build. Las reglas del SRI y de contratos viven en Python y en JavaScript, y ambas pruebas leen los mismos casos (`compartido/reglas_consultas.json`).
+
+## Modelo de proforma de ínfima y páginas finales (2026-11-21)
+
+- **Formato por defecto** (`extras.formato_proforma = "infima"`): copia el «Modelo de proforma» de
+  ínfima cuantía de las entidades. «PROFORMA» centrado; Cliente, Dirección, RUC y Fecha de la
+  entidad; Proveedor (Razón Social), RUC, Teléfono, Dirección y Correo; tabla N° | DESCRIPCIÓN |
+  CANTIDAD | UNIDAD DE MEDIDA | VALOR UNITARIO | VALOR TOTAL con cabecera celeste; SUBTOTAL, BASE
+  IMPONIBLE 15%, BASE IMPONIBLE 0%, IVA 15% y TOTAL (una sola tarifa por proforma: con tarifa todo es
+  base gravada, con 0 % todo es base 0 %); Forma de Pago, Vigencia, Plazo, Garantía y Lugar (vacíos →
+  «El proponente se adhiere a las condiciones de la contratación» en pago, plazo y lugar);
+  «Atentamente», el recuadro de firma y Razón Social y RUC. El formulario del SOCE anterior sigue con
+  `"soce"` (es el de la cotización si no se elige). Igual en el PDF del navegador
+  (`utils/proformaPdf.js`), el del servidor (`salida/proforma_pdf.py`) y el Word (`salida/oficina.py`).
+- **Páginas finales** (`extras.paginas_finales = {id: bool}`, lista en `PAGINAS_FINALES` del
+  navegador y `dominio/paginas_finales.py`): `respaldo` (código, CPC de cada ítem, alcance, detalle
+  del TDR, presentación, experiencia, personal, equipo), `cumplimiento`, `declaracion`,
+  `compromiso` (carta de compromiso del modelo de la entidad, apagada por defecto, con su propio
+  recuadro de firma) e `integridad`. `integridad: false` de proformas antiguas se respeta.
+- **Líneas fieles al TDR** (`dominio/lineas.py`): solo los ítems de la ficha o, sin ellos, la
+  tabla de productos del TDR leída renglón por renglón (cabecera con DESCRIPCIÓN y CANTIDAD,
+  renglones numerados desde 1). Ya no se arman con el catálogo de la empresa. Lo que devuelve la IA
+  se confronta con esa fuente: se devuelven las líneas publicadas con su cantidad y unidad, y lo que
+  no corresponde se quita (`lineas_descartadas` y `aviso`). Sin fuente, una línea de la IA solo queda
+  si sus palabras están en el TDR; cantidad o unidad que no aparecen en el texto se marcan en
+  `verificar`. Cada línea lleva `origen` (`ficha`, `tdr` o `usuario`), que se guarda con la proforma.
+  `POST /v1/documentos/generar` acepta `registro_id` para tomar los ítems de la ficha.
+

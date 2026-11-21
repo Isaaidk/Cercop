@@ -552,7 +552,11 @@ async def _conversar(
         contenido = str(respuesta.get("content") or "").strip()
         if not llamadas or not con_herramientas:
             return contenido
-        mensajes.append({"role": "assistant", "content": contenido, "tool_calls": llamadas})
+        turno: dict[str, Any] = {"role": "assistant", "content": contenido, "tool_calls": llamadas}
+        # DeepSeek en modo «pensar» exige su razonamiento de vuelta en el turno con herramientas.
+        if respuesta.get("reasoning_content"):
+            turno["reasoning_content"] = respuesta["reasoning_content"]
+        mensajes.append(turno)
         nuevas = 0
         for indice, llamada in enumerate(llamadas):
             funcion = llamada.get("function") or {}

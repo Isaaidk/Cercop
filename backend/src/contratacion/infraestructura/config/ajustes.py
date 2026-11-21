@@ -215,6 +215,15 @@ class Ajustes(BaseSettings):
     ia_url: str = ""
     ia_clave: str = ""
     ia_modelo: str = "llama-3.3-70b-versatile"
+    # Modelo para leer el TDR y redactar la proforma (trabajo largo y que exige precisión). Vacío,
+    # usa `ia_modelo`. El asistente (chat) siempre usa `ia_modelo`.
+    ia_modelo_documentos: str = ""
+    # Modo «pensar» (razonamiento) por uso, para proveedores que lo admiten con el parámetro
+    # `thinking` de la API de chat (DeepSeek: `{"thinking": {"type": "enabled"|"disabled"}}`). Sin
+    # valor no se envía nada y manda el comportamiento por defecto del proveedor; Groq, Gemini u
+    # Ollama no conocen el parámetro, así que solo se define con DeepSeek.
+    ia_pensar_documentos: bool | None = None
+    ia_pensar_chat: bool | None = None
     # Llamadas al modelo a la vez por proceso. Con 4 procesos son 16 en vuelo: el resto espera turno
     # en vez de tumbar el servicio externo o agotar su cuota por minuto.
     ia_concurrencia: int = Field(default=4, ge=1, le=32)
@@ -382,6 +391,14 @@ class Ajustes(BaseSettings):
     def _dominios_por_comas(cls, valor: Any) -> Any:
         if isinstance(valor, str):
             return [parte.strip().lower() for parte in valor.split(",") if parte.strip()]
+        return valor
+
+    @field_validator("ia_pensar_documentos", "ia_pensar_chat", mode="before")
+    @classmethod
+    def _pensar_vacio_es_ninguno(cls, valor: Any) -> Any:
+        """`IA_PENSAR_CHAT=` (vacío) es «no enviar el parámetro», no un error de arranque."""
+        if isinstance(valor, str) and not valor.strip():
+            return None
         return valor
 
     @field_validator("cors_origins", mode="before")

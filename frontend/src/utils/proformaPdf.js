@@ -6,11 +6,13 @@
  * aquí, el servidor solo guarda los datos. La librería (jsPDF) se carga recién al descargar, así que
  * no pesa en la carga del panel.
  *
- * El diseño sigue el formulario de proformas de ínfima cuantía del SOCE: datos del proveedor,
- * detalle del objeto de compra con CPC, unidad, cantidad, valor unitario ofertado y total, vigencia
- * de la proforma y documentos anexos. Después van las secciones propias de la oferta (condiciones y
- * alcance, declaración, firma y el Formulario de Perfil de Integridad). El PDF se firma una sola vez:
- * no hay recuadros de firma por requisito.
+ * Por defecto la primera página copia el «Modelo de proforma» de ínfima cuantía que entregan las
+ * entidades (`formato_proforma: 'infima'`): «PROFORMA», cliente, proveedor, tabla N° | DESCRIPCIÓN |
+ * CANTIDAD | UNIDAD DE MEDIDA | VALOR UNITARIO | VALOR TOTAL, totales con base imponible e IVA,
+ * condiciones y «Atentamente» con el único recuadro de firma. El formulario del SOCE de antes sigue
+ * disponible con `formato_proforma: 'soce'`. Detrás van las páginas finales que la persona elige
+ * (`PAGINAS_FINALES`, `extras.paginas_finales`): respaldo, cumplimiento de los TDR, declaración,
+ * carta de compromiso y Formulario de Perfil de Integridad.
  *
  * Devuelve también los **recuadros de firma** (página y rectángulo en puntos PDF): el servidor
  * estampa ahí la firma electrónica sin volver a maquetar nada.
@@ -59,6 +61,15 @@ const GRIS_CLARO = [217, 217, 217]
 // El recuadro de la firma electrónica, en un color propio para que se distinga del resto.
 const AZUL_FIRMA = [37, 99, 235]
 const FONDO_FIRMA = [239, 246, 255]
+
+// Modelo de proforma de ínfima: márgenes de 2 cm, texto negro, bordes finos y la cabecera de la
+// tabla en celeste grisáceo, como el modelo de las entidades.
+const X_INF = 20
+const ANCHO_INF = 170
+const ANCHOS_INF = [10, 58, 20, 24, 28, 30]
+const CABECERAS_INF = ['N°', 'DESCRIPCIÓN', 'CANTIDAD', 'UNIDAD DE MEDIDA', 'VALOR UNITARIO', 'VALOR TOTAL']
+const ALINEAR_INF = ['center', 'left', 'center', 'center', 'right', 'right']
+const CELESTE = [217, 226, 236]
 
 /**
  * «ProformaCercoapp_NIC-0360019760001-2026-00028.pdf». Sin código, «ProformaCercoapp.pdf». Solo
@@ -184,6 +195,118 @@ export function tituloSinObjeto(documento = {}) {
   return [primero, resto.join(' · ').trim()].filter(Boolean).join(' · ')
 }
 
+/**
+ * Formato de la primera página. `infima` copia el «Modelo de proforma» de ínfima cuantía que
+ * entregan las entidades y es el de siempre para la proforma; `soce` es el formulario anterior
+ * (barras de color, columna CPC), que sigue disponible con `extras.formato_proforma = 'soce'`.
+ */
+export const FORMATOS_PROFORMA = [
+  { id: 'infima', etiqueta: 'Modelo de proforma de ínfima cuantía', descripcion: 'Cliente, proveedor, tabla de ítems, totales con IVA, condiciones y firma, como el modelo de las entidades.' },
+  { id: 'soce', etiqueta: 'Formulario del SOCE', descripcion: 'El formato anterior, con la columna CPC y los bloques de color.' },
+]
+
+/**
+ * Páginas finales opcionales, en el orden en que se imprimen. `extras.paginas_finales` guarda
+ * `{ [id]: boolean }`; lo que falte va con `porDefecto`. El servidor (PDF y Word) lee la misma
+ * lista: `backend/src/contratacion/dominio/paginas_finales.py`.
+ */
+export const PAGINAS_FINALES = [
+  {
+    id: 'respaldo',
+    etiqueta: 'Documento de respaldo',
+    descripcion: 'Código del proceso, CPC de cada ítem, alcance, detalle de las condiciones del TDR, presentación, experiencia, personal y equipo.',
+    porDefecto: true,
+  },
+  {
+    id: 'cumplimiento',
+    etiqueta: 'Cumplimiento de los TDR',
+    descripcion: 'Tabla con cada requisito del TDR y cómo lo cumples.',
+    porDefecto: true,
+  },
+  {
+    id: 'declaracion',
+    etiqueta: 'Declaración del oferente',
+    descripcion: 'No estar incurso en inhabilidades y que los precios incluyen impuestos y costos.',
+    porDefecto: true,
+  },
+  {
+    id: 'compromiso',
+    etiqueta: 'Carta de compromiso',
+    descripcion: 'Compromiso de entregar al administrador de la orden de compra el respaldo del personal, equipo y recursos que pide el TDR.',
+    porDefecto: false,
+  },
+  {
+    id: 'integridad',
+    etiqueta: 'Formulario de Perfil de Integridad',
+    descripcion: 'Anexo I de la Resolución R.E-SERCOP-2026-0005, que se presenta con la oferta.',
+    porDefecto: true,
+  },
+]
+
+const SOLO_OFERTA = new Set(['compromiso', 'integridad'])
+
+/** El formato elegido; sin elección, el modelo de ínfima (la cotización conserva el del SOCE). */
+export function formatoDe(documento = {}) {
+  const elegido = (documento.extras || {}).formato_proforma
+  if (FORMATOS_PROFORMA.some((f) => f.id === elegido)) return elegido
+  return documento.tipo === 'cotizacion' ? 'soce' : 'infima'
+}
+
+/** `{ respaldo: true, … }`: lo elegido en `extras.paginas_finales`, o lo de por defecto. */
+export function paginasActivas(documento = {}) {
+  const extras = documento.extras || {}
+  const elegidas = extras.paginas_finales && typeof extras.paginas_finales === 'object' ? extras.paginas_finales : {}
+  const activas = {}
+  for (const { id, porDefecto } of PAGINAS_FINALES) {
+    if (typeof elegidas[id] === 'boolean') activas[id] = elegidas[id]
+    // Proformas guardadas antes de la lista: `integridad: false` sigue apagando el formulario.
+    else if (id === 'integridad' && extras.integridad === false) activas[id] = false
+    else activas[id] = porDefecto
+  }
+  if (documento.tipo === 'cotizacion') for (const id of SOLO_OFERTA) activas[id] = false
+  return activas
+}
+
+/** Frase del modelo cuando la condición es la que fija la entidad. */
+export const ADHIERE = 'El proponente se adhiere a las condiciones de la contratación'
+
+/**
+ * SUBTOTAL, BASE IMPONIBLE <tarifa>%, BASE IMPONIBLE 0%, IVA <tarifa>% y TOTAL. La proforma tiene
+ * una sola tarifa (`impuesto_porcentaje`): con tarifa todo es base gravada; con 0 %, base 0 %.
+ */
+export function totalesIva(cifras = {}) {
+  const subtotal = Number(cifras.subtotal || 0)
+  const tarifa = Number(cifras.impuesto_porcentaje || 0)
+  const impuesto = Number(cifras.impuesto || 0)
+  const total = Number(cifras.total ?? subtotal + impuesto)
+  const rotulo = tarifa > 0 ? String(Number(tarifa.toFixed(2))) : '15'
+  const gravada = tarifa > 0 ? subtotal : 0
+  return [
+    ['SUBTOTAL', subtotal],
+    [`BASE IMPONIBLE ${rotulo}%`, gravada],
+    ['BASE IMPONIBLE 0%', subtotal - gravada],
+    [`IVA ${rotulo}%`, impuesto],
+    ['TOTAL', total],
+  ]
+}
+
+/** Carta de compromiso del modelo de la entidad, con los datos de la proforma. */
+export function textoCompromiso({ razon, ruc, entidad, objeto }) {
+  return `Yo, ${razon || '[RAZÓN SOCIAL]'} con RUC: ${ruc || '[RUC]'} por mis propios derechos me comprometo con la ${entidad || '[ENTIDAD]'}, respecto del proceso ${objeto || '[OBJETO DE CONTRATACIÓN]'}, que en el caso de ser adjudicado cumpliré con los requisitos y condiciones solicitadas en los términos de referencia y/o especificaciones técnicas, referente al personal técnico/equipo de trabajo/recursos/otros parámetros; para lo cual, al inicio de la etapa de ejecución de la Orden de Compra, entregaré la documentación de respaldo al Administrador de la Orden de Compra; caso contrario se procederá conforme a lo establecido en la normativa legal vigente.`
+}
+
+/** «$ 1,234.56»; el precio unitario conserva hasta 5 decimales si los trae. */
+function moneda(valor) {
+  const n = Number(valor)
+  if (!Number.isFinite(n)) return ''
+  return `$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+function unitario(valor) {
+  const n = Number(valor)
+  if (!Number.isFinite(n)) return ''
+  return `$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
+}
+
 const INTEGRIDAD = [
   '1. Conozco formalmente el contenido, alcance y principios de la Política Nacional de Integridad Pública (PNIP). Garantizo que mi actuación en este procedimiento se ceñirá estrictamente a los valores de honestidad, legalidad, integridad, probidad y prevención de conflictos de interés, así como a las directrices e instrumentos que emita la Secretaría General de Integridad Pública, para promover la integridad y fortalecer la lucha contra la corrupción.',
   '2. En mi calidad de proveedor del Estado, no he ofrecido, entregado, prometido ni facilitado dinero, bienes, dádivas, favores ni ventajas indebidas de orden material o inmaterial a ningún servidor público, trabajador de la entidad contratante o persona del sector privado, con el objeto de influir, viciar u obtener un trato favorable en este o cualquier otro procedimiento de contratación en el que haya participado.',
@@ -227,6 +350,11 @@ class Maquetador {
 
   nuevaPagina() {
     this.doc.addPage()
+    if (this.sobrio) {
+      // El modelo de ínfima no lleva encabezado: la hoja empieza limpia.
+      this.y = 22
+      return
+    }
     this.fuente(8, 'italic', GRIS)
     this.doc.text(`${this.nombre}  ·  ${this.tipoTexto}`, 10, 11, { baseline: 'top' })
     this.y = 22
@@ -507,13 +635,13 @@ class Maquetador {
     }
   }
 
-  condiciones() {
+  condiciones({ sinAlcance = false } = {}) {
     const c = this.extras.condiciones || {}
     const filas = [
       ['Plazo de entrega:', c.plazo_entrega],
       ['Lugar de entrega:', c.lugar_entrega],
-      // El alcance va tras las condiciones: una frase medible del TDR.
-      ['Alcance:', this.extras.alcance],
+      // El alcance va tras las condiciones: una frase medible del TDR (es parte del respaldo).
+      ['Alcance:', sinAlcance ? '' : this.extras.alcance],
     ].filter(([, v]) => String(v || '').trim())
     if (!filas.length) return
     this.seccion('CONDICIONES DE LA OFERTA')
@@ -656,10 +784,301 @@ class Maquetador {
     this.y = y0 + 31
   }
 
+  // ----------------------------------------------------------------------- modelo de ínfima
+
+  infTitulo(texto) {
+    const lineas = this.partir(texto, ANCHO_INF, 14, 'bold')
+    this.fuente(14, 'bold', NEGRO)
+    for (const linea of lineas) {
+      this.asegurar(this.alto(14))
+      this.doc.text(linea, 105, this.y, { align: 'center', baseline: 'top' })
+      this.y += this.alto(14)
+    }
+    this.y += 5
+  }
+
+  /** «Etiqueta: valor» con la etiqueta en negrita y el valor en la misma línea. */
+  infEtiquetado(etiqueta, valor) {
+    const size = 10
+    this.fuente(size, 'bold', NEGRO)
+    const rotulo = limpio(etiqueta)
+    const ancho = this.doc.getTextWidth(rotulo) + 2
+    const lineas = this.partir(String(valor ?? '').trim(), ANCHO_INF - ancho, size)
+    const alto = Math.max(1, lineas.length) * this.alto(size) + 0.6
+    this.asegurar(alto)
+    this.fuente(size, 'bold', NEGRO)
+    this.doc.text(rotulo, X_INF, this.y, { baseline: 'top' })
+    if (lineas.length && lineas[0]) {
+      this.fuente(size, 'normal', NEGRO)
+      this.doc.text(lineas, X_INF + ancho, this.y, { baseline: 'top' })
+    }
+    this.y += alto
+  }
+
+  infSubtitulo(texto) {
+    this.asegurar(16)
+    this.y += 3
+    this.fuente(10.5, 'bold', NEGRO)
+    this.doc.text(limpio(texto), X_INF, this.y, { baseline: 'top' })
+    this.y += this.alto(10.5) + 0.4
+    this.doc.setDrawColor(...NEGRO)
+    this.doc.setLineWidth(0.2)
+    this.doc.line(X_INF, this.y, X_INF + ANCHO_INF, this.y)
+    this.y += 2
+  }
+
+  infParrafo(texto, size = 9.5) {
+    this.parrafo(texto, size, ANCHO_INF, X_INF, 1.5, 'normal', NEGRO)
+  }
+
+  /** Alto de una fila de la tabla del modelo con esos textos. */
+  altoFilaInf(textos, size, estilo = 'normal') {
+    return Math.max(7, ...textos.map((t, i) => (t ? this.partir(t, ANCHOS_INF[i] - 2.4, size, estilo).length * this.alto(size) + 2.4 : 0)))
+  }
+
+  filaInf(textos, { size = 8.5, estilo = 'normal', relleno = null, alinear = ALINEAR_INF } = {}) {
+    const { doc } = this
+    const alto = this.altoFilaInf(textos, size, estilo)
+    let x = X_INF
+    textos.forEach((texto, i) => {
+      doc.setDrawColor(...NEGRO)
+      doc.setLineWidth(0.2)
+      if (relleno) {
+        doc.setFillColor(...relleno)
+        doc.rect(x, this.y, ANCHOS_INF[i], alto, 'FD')
+      } else {
+        doc.rect(x, this.y, ANCHOS_INF[i], alto)
+      }
+      if (texto) {
+        const lineas = this.partir(texto, ANCHOS_INF[i] - 2.4, size, estilo)
+        this.fuente(size, estilo, NEGRO)
+        const ay = this.y + Math.max(1.2, (alto - lineas.length * this.alto(size)) / 2)
+        const lado = alinear[i]
+        const ax = lado === 'center' ? x + ANCHOS_INF[i] / 2 : lado === 'right' ? x + ANCHOS_INF[i] - 1.2 : x + 1.2
+        doc.text(lineas, ax, ay, { align: lado, baseline: 'top' })
+      }
+      x += ANCHOS_INF[i]
+    })
+    this.y += alto
+  }
+
+  tablaInf() {
+    const cabecera = () => this.filaInf(CABECERAS_INF, { size: 8, estilo: 'bold', relleno: CELESTE, alinear: CABECERAS_INF.map(() => 'center') })
+    this.asegurar(20)
+    cabecera()
+    ;(this.documento.lineas || []).forEach((linea, n) => {
+      const textos = [
+        String(n + 1),
+        String(linea.descripcion || ''),
+        numero(linea.cantidad),
+        String(linea.unidad || ''),
+        unitario(linea.precio_unitario),
+        moneda(linea.subtotal),
+      ]
+      if (this.y + this.altoFilaInf(textos, 8.5) > LIMITE) {
+        this.nuevaPagina()
+        cabecera()
+      }
+      this.filaInf(textos)
+    })
+  }
+
+  totalesInf() {
+    const cifras = this.documento.cifras || {}
+    if (!Object.keys(cifras).length) return
+    const filas = totalesIva(cifras)
+    this.asegurar(filas.length * 6.5)
+    const [anchoRotulo, anchoValor] = [ANCHOS_INF[4], ANCHOS_INF[5]]
+    const x = X_INF + ANCHO_INF - anchoRotulo - anchoValor
+    const { doc } = this
+    for (const [rotulo, valor] of filas) {
+      doc.setDrawColor(...NEGRO)
+      doc.setLineWidth(0.2)
+      doc.rect(x, this.y, anchoRotulo, 6.5)
+      doc.rect(x + anchoRotulo, this.y, anchoValor, 6.5)
+      let size = 7.5
+      this.fuente(size, 'bold', NEGRO)
+      while (doc.getTextWidth(rotulo) > anchoRotulo - 2 && size > 5.5) {
+        size -= 0.5
+        this.fuente(size, 'bold', NEGRO)
+      }
+      doc.text(rotulo, x + 1, this.y + 3.25, { baseline: 'middle' })
+      this.fuente(8.5, rotulo === 'TOTAL' ? 'bold' : 'normal', NEGRO)
+      doc.text(moneda(valor), x + anchoRotulo + anchoValor - 1.2, this.y + 3.25, { align: 'right', baseline: 'middle' })
+      this.y += 6.5
+    }
+  }
+
+  condicionesInf() {
+    const c = this.extras.condiciones || {}
+    const oAdhiere = (...claves) => claves.map((k) => String(c[k] || '').trim()).find(Boolean) || ADHIERE
+    this.y += 4
+    this.infEtiquetado('Forma de Pago:', oAdhiere('forma_pago'))
+    this.infEtiquetado('Vigencia de la Oferta:', c.validez)
+    this.infEtiquetado('Plazo de entrega:', oAdhiere('plazo_entrega', 'plazo_ejecucion'))
+    this.infEtiquetado('Garantía:', c.garantia)
+    this.infEtiquetado('Lugar de entrega:', oAdhiere('lugar_entrega'))
+  }
+
+  /** «Atentamente», el único recuadro de firma (resaltado) y los datos del proveedor. */
+  firmaInf({ conRepresentante = false } = {}) {
+    const e = this.empresa
+    this.asegurar(52)
+    this.y += 3
+    this.fuente(10, 'normal', NEGRO)
+    this.doc.text('Atentamente,', X_INF, this.y, { baseline: 'top' })
+    this.y += 7
+    const [ancho, alto] = [75, 28]
+    this.doc.setDrawColor(...AZUL_FIRMA)
+    this.doc.setFillColor(...FONDO_FIRMA)
+    this.doc.setLineWidth(0.5)
+    this.doc.rect(X_INF, this.y, ancho, alto, 'FD')
+    this.registrarCaja(X_INF, this.y, ancho, alto)
+    this.fuente(7, 'bold', AZUL_FIRMA)
+    this.doc.text('Firma electrónica del oferente', X_INF + ancho / 2, this.y + alto - 4.2, { align: 'center', baseline: 'top' })
+    this.doc.setLineWidth(0.2)
+    this.y += alto + 2
+    if (conRepresentante && e.representante) this.infEtiquetado('Representante legal:', e.representante)
+    this.infEtiquetado('Razón Social:', e.razon_social)
+    this.infEtiquetado('RUC:', e.ruc)
+  }
+
+  paginaInfima() {
+    const { documento, extras } = this
+    const e = this.empresa
+    const ent = extras.entidad || {}
+    this.y = 22
+    const numeroProforma = String(extras.numero || '').trim()
+    const titulo = tituloSinObjeto(documento)
+    this.infTitulo(numeroProforma ? `${titulo} N° ${numeroProforma}` : titulo)
+    this.infEtiquetado('Cliente:', String(documento.entidad || '').toUpperCase())
+    this.infEtiquetado('Dirección:', ent.direccion)
+    this.infEtiquetado('RUC:', ent.ruc)
+    this.infEtiquetado('Fecha:', extras.fecha)
+    this.y += 5
+    const direccion = [e.direccion, e.canton || e.ciudad, e.provincia].filter(Boolean).join(', ')
+    this.infEtiquetado('Proveedor (Razón Social):', e.razon_social)
+    this.infEtiquetado('RUC:', e.ruc)
+    this.infEtiquetado('Teléfono:', e.telefono)
+    this.infEtiquetado('Dirección:', direccion)
+    this.infEtiquetado('Correo electrónico:', e.email)
+    this.y += 5
+    this.tablaInf()
+    this.totalesInf()
+    this.condicionesInf()
+    this.firmaInf()
+  }
+
+  /** Lo que el modelo no lleva en la primera página va aquí, para quien lo quiera adjuntar. */
+  respaldoInf() {
+    const { documento, extras } = this
+    const ent = extras.entidad || {}
+    const c = extras.condiciones || {}
+    this.nuevaPagina()
+    this.infTitulo('DOCUMENTO DE RESPALDO DE LA PROFORMA')
+    this.infSubtitulo('DATOS DEL PROCESO')
+    for (const [etiqueta, valor] of [
+      ['Código del proceso:', extras.codigo],
+      ['Código de necesidad:', extras.necesidad],
+      ['Proforma N°:', extras.numero],
+      ['Objeto de contratación:', documento.objeto],
+      ['Teléfono de la entidad:', ent.telefono],
+      ['Correo de la entidad:', ent.correo],
+      ['Sitio web de la entidad:', ent.web],
+    ]) {
+      if (String(valor || '').trim()) this.infEtiquetado(etiqueta, valor)
+    }
+    const lineas = documento.lineas || []
+    if (lineas.some((l) => l.cpc)) {
+      this.infSubtitulo('CPC DE CADA ÍTEM')
+      lineas.forEach((l, n) => {
+        if (!l.cpc) return
+        const nombre = String(l.cpc_nombre || '').trim()
+        this.infParrafo(`${n + 1}. CPC ${l.cpc}${nombre ? ` - ${nombre}` : ''}`, 9)
+      })
+    }
+    const filas = [['Plazo de ejecución:', c.plazo_ejecucion], ['Alcance:', extras.alcance]].filter(([, v]) => String(v || '').trim())
+    if (filas.length) {
+      this.infSubtitulo('CONDICIONES Y ALCANCE')
+      for (const [etiqueta, valor] of filas) this.infEtiquetado(etiqueta, valor)
+    }
+    const detalle = String(extras.detalle_condiciones || '').split('\n').map((r) => r.trim()).filter(Boolean)
+    if (detalle.length) {
+      this.infSubtitulo('DETALLE DE LAS CONDICIONES SEGÚN EL TDR')
+      for (const renglon of detalle) this.infParrafo(renglon, 9)
+    }
+    if (String(extras.carta || '').trim()) {
+      this.infSubtitulo('PRESENTACIÓN')
+      for (const parrafo of String(extras.carta).split('\n')) if (parrafo.trim()) this.infParrafo(parrafo.trim())
+    }
+    for (const [titulo, clave] of [['EXPERIENCIA DEL OFERENTE', 'experiencia'], ['PERSONAL TÉCNICO', 'personal'], ['EQUIPO DISPONIBLE', 'equipo']]) {
+      const items = (extras[clave] || []).map(String).filter((f) => f.trim())
+      if (!items.length) continue
+      this.infSubtitulo(titulo)
+      for (const item of items) this.infParrafo(`-  ${item}`, 9)
+    }
+  }
+
+  compromiso() {
+    const { documento, extras } = this
+    const e = this.empresa
+    const sobrio = this.sobrio
+    this.sobrio = true
+    this.nuevaPagina()
+    this.sobrio = sobrio
+    this.y = Math.max(this.y, 24)
+    this.infTitulo('CARTA DE COMPROMISO')
+    const lugarFecha = [e.ciudad, extras.fecha].filter(Boolean).join(', ')
+    if (lugarFecha) {
+      this.fuente(10, 'normal', NEGRO)
+      this.doc.text(limpio(lugarFecha), X_INF + ANCHO_INF, this.y, { align: 'right', baseline: 'top' })
+      this.y += 9
+    }
+    this.parrafo(
+      textoCompromiso({ razon: e.razon_social, ruc: e.ruc, entidad: String(documento.entidad || '').toUpperCase(), objeto: documento.objeto }),
+      10.5, ANCHO_INF, X_INF, 4, 'normal', NEGRO,
+    )
+    this.firmaInf({ conRepresentante: true })
+  }
+
+  /** Las páginas finales elegidas, en el orden de `PAGINAS_FINALES`. */
+  paginasFinales(activas) {
+    if (activas.respaldo) {
+      if (this.sobrio) this.respaldoInf()
+      else {
+        this.presentacion()
+        this.condiciones()
+        this.listas()
+      }
+    } else if (!this.sobrio) {
+      // En el formato del SOCE, plazo y lugar de entrega son parte de la oferta, no del respaldo.
+      this.condiciones({ sinAlcance: true })
+    }
+    let hayHoja = false
+    const conCumplimiento = activas.cumplimiento && (this.extras.cumplimiento || []).some((f) => f && String(f.requisito || '').trim())
+    if (conCumplimiento) {
+      if (this.sobrio) this.nuevaPagina()
+      this.cumplimiento()
+      hayHoja = true
+    }
+    if (activas.declaracion) {
+      if (this.sobrio && !hayHoja) this.nuevaPagina()
+      this.declaracion()
+    }
+    if (activas.compromiso) this.compromiso()
+    if (activas.integridad) this.integridad()
+  }
+
   pies() {
     const total = this.doc.getNumberOfPages()
     for (let i = 1; i <= total; i += 1) {
       this.doc.setPage(i)
+      if (this.sobrio) {
+        // Sobrio como el modelo: al pie solo el número de página.
+        this.fuente(7.5, 'normal', GRIS)
+        this.doc.text(`Página ${i} de ${total}`, X_INF + ANCHO_INF, 285.5, { align: 'right', baseline: 'top' })
+        continue
+      }
       this.doc.setDrawColor(...LINEA)
       this.doc.setLineWidth(0.2)
       this.doc.line(10, 283, 200, 283)
@@ -681,20 +1100,22 @@ export async function armarProformaPdf(documento) {
   const m = new Maquetador(doc, documento)
   const [titulo] = TIPOS[documento.tipo] || TIPOS.proforma
   m.tipoTexto = titulo.charAt(0) + titulo.slice(1).toLowerCase()
+  const activas = paginasActivas(documento)
 
-  m.numeroDeProforma()
-  m.bloqueEntidad()
-  m.bloqueInformacion()
-  m.bloqueOferente()
-  m.bloqueFirmaYFecha()
-  m.bloqueObjeto()
-  m.detalleDeCompra()
-  const conIntegridad = documento.tipo !== 'cotizacion' && (documento.extras || {}).integridad !== false
-  m.presentacion()
-  m.condiciones()
-  m.listas()
-  m.declaracion()
-  if (conIntegridad) m.integridad()
+  if (formatoDe(documento) === 'infima') {
+    // Por defecto: el «Modelo de proforma» de ínfima cuantía, y detrás las páginas elegidas.
+    m.sobrio = true
+    m.paginaInfima()
+  } else {
+    m.numeroDeProforma()
+    m.bloqueEntidad()
+    m.bloqueInformacion()
+    m.bloqueOferente()
+    m.bloqueFirmaYFecha()
+    m.bloqueObjeto()
+    m.detalleDeCompra()
+  }
+  m.paginasFinales(activas)
   m.pies()
 
   return { blob: doc.output('blob'), cajas: m.cajas }

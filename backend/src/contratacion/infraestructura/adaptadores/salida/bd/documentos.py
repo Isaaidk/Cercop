@@ -490,6 +490,16 @@ class RepositorioDocumentos:
             )
         return dict(fila) if fila else None
 
+    async def items_de_registro(self, registro_id: UUID) -> list[Any]:
+        """Los ítems que la ficha publica (CPC, descripción, unidad, cantidad). Dato público."""
+        async with sin_contexto(self._motor) as conexion:
+            items = (
+                await conexion.execute(
+                    text("SELECT items FROM registro WHERE id = :id"), {"id": registro_id}
+                )
+            ).scalar()
+        return list(items) if isinstance(items, list) else []
+
     async def datos_de_entidad(self, *, negocio_id: UUID, registro_id: UUID) -> dict[str, Any]:
         """Lo que la ficha publica de la entidad (código con su RUC, dirección, cantón, contacto) y
         el texto de los anexos de la última lectura de esa ficha por la empresa.
