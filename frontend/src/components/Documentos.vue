@@ -210,6 +210,13 @@ const generando = ref('')
 const borrador = ref(null)
 const verCompras = ref(false)
 const pensando = ref(false)
+// El asistente del TDR vive en una bolita flotante (abajo a la izquierda) y se abre como panel.
+const asistenteAbierto = ref(false)
+const entradaAsistente = ref(null)
+function alternarAsistente() {
+  asistenteAbierto.value = !asistenteAbierto.value
+  if (asistenteAbierto.value) nextTick(() => entradaAsistente.value?.focus())
+}
 const firmando = ref(false)
 const firma = reactive({ archivo: null, clave: '', lugar: '' })
 const verificacion = ref(null)
@@ -2914,8 +2921,32 @@ watch(paso, async (nuevo) => {
       </footer>
     </section>
 
-    <details class="docs__ayuda">
-      <summary>Asistente del TDR. Pregunta por plazos, requisitos, entregables o forma de pago.</summary>
+    <button
+      type="button"
+      :class="['docs__bolita', { 'docs__bolita--abierta': asistenteAbierto }]"
+      :aria-expanded="asistenteAbierto"
+      aria-controls="asistente-tdr"
+      :title="asistenteAbierto ? 'Cerrar el asistente' : 'Asistente del TDR'"
+      @click="alternarAsistente"
+    >
+      <svg v-if="!asistenteAbierto" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 11h.01M12 11h.01M15.5 11h.01"/></svg>
+      <svg v-else viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      <span class="sr-solo">{{ asistenteAbierto ? 'Cerrar el asistente' : 'Abrir el asistente del TDR' }}</span>
+      <span v-if="!asistenteAbierto && conversacion.length" class="docs__bolita-punto" aria-hidden="true"></span>
+    </button>
+
+    <section
+      v-show="asistenteAbierto"
+      id="asistente-tdr"
+      class="docs__ayuda"
+      role="dialog"
+      aria-label="Asistente del TDR"
+      @keydown.esc="asistenteAbierto = false"
+    >
+      <header class="docs__ayuda-cabecera">
+        <strong>Asistente del TDR</strong>
+        <small>Plazos, requisitos, entregables o forma de pago.</small>
+      </header>
       <div class="docs__ejemplos">
         <button v-for="ejemplo in EJEMPLOS" :key="ejemplo" type="button" class="docs__chip" :disabled="pensando" @click="preguntar(ejemplo)">
           {{ ejemplo }}
@@ -2944,10 +2975,10 @@ watch(paso, async (nuevo) => {
         <div v-if="pensando" class="docs__burbuja docs__burbuja--asistente docs__burbuja--pensando">Pensando…</div>
       </div>
       <form class="docs__preguntar" @submit.prevent="preguntar()">
-        <input v-model="pregunta" placeholder="Escribe tu pregunta…" aria-label="Pregunta" maxlength="500" />
+        <input ref="entradaAsistente" v-model="pregunta" placeholder="Escribe tu pregunta…" aria-label="Pregunta" maxlength="500" />
         <button class="boton boton--secundario" type="submit" :disabled="pensando || pregunta.trim().length < 2">Preguntar</button>
       </form>
-    </details>
+    </section>
   </div>
 </template>
 
@@ -2956,7 +2987,7 @@ watch(paso, async (nuevo) => {
 .docs__cabecera { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--e-3); }
 .docs__titulo { font-size: var(--t-xl); font-weight: 700; }
 .docs__subtitulo { margin-top: 4px; max-width: 62ch; color: var(--texto-suave); font-size: var(--t-sm); line-height: 1.5; }
-.docs__panel, .docs__ayuda { display: flex; flex-direction: column; gap: var(--e-4); padding: var(--e-5); border: 1px solid var(--borde); border-radius: var(--r-3); background: var(--superficie); }
+.docs__panel { display: flex; flex-direction: column; gap: var(--e-4); padding: var(--e-5); border: 1px solid var(--borde); border-radius: var(--r-3); background: var(--superficie); }
 .docs__panel h3 { font-size: var(--t-lg); font-weight: 650; }
 .docs__revision h4 { font-size: var(--t-md); font-weight: 650; }
 .docs__panel h4 { margin-bottom: 4px; color: var(--texto); font-size: var(--t-sm); font-weight: 650; }
@@ -3008,7 +3039,18 @@ watch(paso, async (nuevo) => {
 .docs__verificacion--falta h4 { color: var(--aviso); }
 .docs__verificacion--lista h4 { color: var(--ok); }
 .docs__verificacion-avisos { color: var(--texto-suave); }
-.docs__ayuda summary { font-weight: 650; cursor: pointer; }
+.docs__bolita { position: fixed; left: calc(var(--ancho-menu, 0px) + 20px); bottom: 20px; z-index: 70; display: grid; place-items: center; width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--ia-degradado); color: var(--ia-sobre); box-shadow: var(--sombra-3); cursor: pointer; transition: transform var(--rapido) var(--curva); }
+.docs__bolita:hover { transform: scale(1.06); }
+.docs__bolita:focus-visible { outline: 3px solid var(--ia-borde); outline-offset: 3px; }
+.docs__bolita-punto { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border: 2px solid var(--superficie); border-radius: 50%; background: var(--ok); }
+/* Sin menú fijo al lado (tableta y móvil), la bolita va pegada al borde. */
+@media (max-width: 1023px) { .docs__bolita, .docs__ayuda { left: 16px; } }
+.docs__ayuda { position: fixed; left: calc(var(--ancho-menu, 0px) + 20px); bottom: 88px; z-index: 70; display: flex; flex-direction: column; gap: var(--e-3); width: min(380px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 120px)); padding: var(--e-4); border: 1px solid var(--ia-borde); border-radius: var(--r-3); background: var(--superficie); box-shadow: var(--sombra-3); animation: aparecer var(--rapido) var(--curva) both; }
+.docs__ayuda-cabecera { display: flex; flex-direction: column; gap: 2px; padding-bottom: var(--e-2); border-bottom: 1px solid var(--borde); }
+.docs__ayuda-cabecera strong { color: var(--ia-fuerte); font-size: var(--t-md); }
+.docs__ayuda-cabecera small { color: var(--texto-tenue); font-size: var(--t-xs); }
+.docs__ayuda .docs__chat { flex: 1 1 auto; min-height: 120px; max-height: none; }
+.sr-solo { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .docs__ejemplos { display: flex; flex-wrap: wrap; gap: var(--e-2); }
 .docs__chip { padding: 0.35rem 0.8rem; border: 1px solid var(--borde-fuerte); border-radius: var(--r-redondo); background: var(--superficie); color: var(--texto-suave); font-size: var(--t-xs); cursor: pointer; }
 .docs__chat { display: flex; flex-direction: column; gap: var(--e-3); max-height: 320px; overflow-y: auto; }
@@ -3251,7 +3293,8 @@ watch(paso, async (nuevo) => {
 
 /* --- Móvil: el indicador se reduce a números y la barra apila las acciones ------------------------ */
 @media (max-width: 640px) {
-  .docs__panel, .docs__ayuda { padding: var(--e-4); }
+  .docs__panel { padding: var(--e-4); }
+  .docs__bolita { bottom: 16px; }
   .asistente__pasos { gap: var(--e-1); }
   .asistente__paso:not(:last-child)::after { display: none; }
   .asistente__boton { flex-direction: column; justify-content: center; gap: 4px; padding: var(--e-2) var(--e-1); text-align: center; }
