@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import UTC, datetime
 
 from contratacion.aplicacion.casos_uso.ejecutar_ingesta import (
@@ -66,6 +67,12 @@ LIMITE_TERMINOS_POR_CICLO = 20
 # una réplica puede estar ingestando el listado mientras otra lee fichas, y lo que no puede pasar es
 # que las dos lean las mismas fichas y gasten dos veces la misma cuota.
 BLOQUEO_DETALLE = "items-cpc"
+
+# Cuánto puede seguir leyendo fichas una pasada antes de soltar el turno (ver `_leer_fichas`). El
+# ciclo completo corre cada 15 min: 10 min de fichas caben de sobra (~150 fichas cada 2 min). La
+# vuelta corta corre cada 150 s: con 5 min vacía una avalancha sin frenar la siguiente vuelta mucho.
+TIEMPO_FICHAS_CICLO = 600.0
+TIEMPO_FICHAS_VIGILANCIA = 300.0
 
 
 async def fuentes_por_defecto(
@@ -239,7 +246,13 @@ async def ejecutar_todos(
             for aviso in resultado.avisos:
                 registro.warning("%s: %s", resultado.fuente, aviso)
 
-    await _leer_fichas(repositorio, definiciones, fichas=fichas_items, cache=cache)
+    await _leer_fichas(
+        repositorio,
+        definiciones,
+        fichas=fichas_items,
+        cache=cache,
+        tiempo_max_seg=TIEMPO_FICHAS_CICLO,
+    )
     return resultados
 
 
@@ -370,7 +383,14 @@ async def leer_fichas_nuevas(
         incluir_ocds=False,
     )
     try:
-        return await _leer_fichas(repositorio, definiciones, fichas=fichas, cache=cache) > 0
+        leidas = await _leer_fichas(
+            repositorio,
+            definiciones,
+            fichas=fichas,
+            cache=cache,
+            tiempo_max_seg=TIEMPO_FICHAS_VIGILANCIA,
+        )
+        return leidas > 0
     finally:
         for definicion in definiciones:
             cerrar = getattr(definicion.adaptador, "cerrar", None)
@@ -387,6 +407,7 @@ async def _leer_fichas(
     *,
     fichas: int,
     cache: Cache,
+    tiempo_max_seg: float = 0.0,
 ) -> int:
     """Lee, por tandas, las fichas de las que aún no se tienen los ítems con CPC.
 
@@ -410,18 +431,31 @@ async def _leer_fichas(
             if conexion is None:
                 registro.info("Otra réplica ya está leyendo fichas: se omite.")
                 return 0
-            resultado = await recoger_items(
-                repositorio,
-                definiciones,
-                presupuesto_peticiones=fichas,
-                limite=fichas,
-                concurrencia=_concurrencia_fichas(),
-            )
-            con_cpc = resultado.con_items
+            # Se vacía la cola por tandas, no una sola tanda por vuelta. Cuando el portal suelta
+            # cientos de ínfimas de golpe (pasó: 755 en una vuelta tras horas sin publicar), una
+            # tanda de 150 dejaba 605 sin CPC durante una hora y la búsqueda por CPC no las veía.
+            # El ritmo contra el portal no cambia (lo marca el limitador); solo se sigue hasta
+            # terminar, con un tope de tiempo y parando si una tanda no avanza.
+            limite_tiempo = time.monotonic() + max(0.0, tiempo_max_seg)
+            while True:
+                resultado = await recoger_items(
+                    repositorio,
+                    definiciones,
+                    presupuesto_peticiones=fichas,
+                    limite=fichas,
+                    concurrencia=_concurrencia_fichas(),
+                )
+                con_cpc += resultado.con_items
+                if resultado.con_items:
+                    # Cada tanda se publica ya: el panel ve los CPC según llegan.
+                    await subir_generacion(cache)
+                avanzo = resultado.con_items + resultado.sin_items > 0
+                if not resultado.quedan or not avanzo or time.monotonic() >= limite_tiempo:
+                    break
     except Exception:  # noqa: BLE001 - el enriquecimiento no puede tumbar el ciclo
         registro.exception("Fallo leyendo las fichas de CPC; el ciclo ya está guardado.")
-        return 0
+        if con_cpc:
+            await subir_generacion(cache)
+        return con_cpc
 
-    if con_cpc:
-        await subir_generacion(cache)
     return con_cpc
