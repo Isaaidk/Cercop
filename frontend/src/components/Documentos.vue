@@ -215,7 +215,70 @@ const asistenteAbierto = ref(false)
 const entradaAsistente = ref(null)
 function alternarAsistente() {
   asistenteAbierto.value = !asistenteAbierto.value
+  pista.value = ''
   if (asistenteAbierto.value) nextTick(() => entradaAsistente.value?.focus())
+}
+
+// Mini mensajes junto a la bolita: cada cierto tiempo recuerda en qué puede ayudar. Se callan si el
+// asistente está abierto, si ya se conversó o si el usuario los cierra.
+const PISTAS_CON_TDR = [
+  '¿Dudas con el plazo de entrega? Pregúntame.',
+  'Te resumo los requisitos del TDR en segundos.',
+  '¿Qué entregables pide la entidad? Te los digo.',
+  'Pregúntame por la forma de pago.',
+]
+const PISTAS_SIN_TDR = ['Trae el TDR y te ayudo a leerlo.', '¿Tienes dudas? Pregúntame lo que necesites.']
+const pista = ref('')
+const pistasCalladas = ref(false)
+let turnoPista = 0
+let relojPista = null
+let primeraPista = null
+function mostrarPista() {
+  if (asistenteAbierto.value || pistasCalladas.value || conversacion.value.length) return
+  const lista = lectura.value ? PISTAS_CON_TDR : PISTAS_SIN_TDR
+  const texto = lista[turnoPista++ % lista.length]
+  pista.value = texto
+  setTimeout(() => { if (pista.value === texto) pista.value = '' }, 6000)
+}
+function callarPistas() {
+  pista.value = ''
+  pistasCalladas.value = true
+}
+onMounted(() => {
+  primeraPista = setTimeout(mostrarPista, 4000)
+  relojPista = setInterval(mostrarPista, 25000)
+})
+onBeforeUnmount(() => {
+  clearTimeout(primeraPista)
+  clearInterval(relojPista)
+})
+
+// Modelo de IA para redactar la proforma: «estandar» (barato) o «avanzado» (razona más, cuesta
+// más créditos). La elección se recuerda en este navegador.
+const CLAVE_MODELO_IA = 'cerco.modeloIa'
+function leerModeloIa() {
+  try {
+    return localStorage.getItem(CLAVE_MODELO_IA) === 'avanzado' ? 'avanzado' : 'estandar'
+  } catch {
+    return 'estandar'
+  }
+}
+const modeloIa = ref(leerModeloIa())
+const modelosIa = computed(() =>
+  creditos.value?.modelos?.length
+    ? creditos.value.modelos
+    : [{ codigo: 'estandar', nombre: 'Estándar', detalle: 'Rápido y económico.', costo: creditos.value?.costos?.generar_oferta || 3 }],
+)
+const modeloElegido = computed(
+  () => modelosIa.value.find((opcion) => opcion.codigo === modeloIa.value) || modelosIa.value[0],
+)
+function elegirModeloIa(codigo) {
+  modeloIa.value = codigo
+  try {
+    localStorage.setItem(CLAVE_MODELO_IA, codigo)
+  } catch {
+    /* sin almacenamiento: la elección vale para esta visita */
+  }
 }
 const firmando = ref(false)
 const firma = reactive({ archivo: null, clave: '', lugar: '' })
@@ -1185,13 +1248,18 @@ function aplicarBorrador(datos) {
 function armar(conIa) {
   return ejecutar(async () => {
     generando.value = conIa ? 'ia' : 'plantilla'
-    aviso.value = conIa ? 'La IA está redactando tu oferta con los datos de tu empresa…' : ''
+    aviso.value = conIa
+      ? modeloElegido.value?.codigo === 'avanzado'
+        ? 'El modelo avanzado está leyendo el TDR con calma: puede tardar hasta un par de minutos…'
+        : 'La IA está redactando tu oferta con los datos de tu empresa…'
+      : ''
     try {
       const datos = await api.generarOferta({
         lectura_id: lectura.value?.lectura_id || null,
         entidad: proforma.entidad,
         objeto: proforma.objeto,
         con_ia: conIa,
+        modelo: conIa ? modeloElegido.value?.codigo || 'estandar' : 'estandar',
       })
       aplicarBorrador(datos)
       if (datos.saldo != null && creditos.value) creditos.value.disponibles = datos.saldo
@@ -2148,9 +2216,28 @@ watch(paso, async (nuevo) => {
               {{ generando === 'plantilla' ? 'Armando…' : 'Rehacer sin IA (gratis)' }}
             </button>
             <button type="button" class="boton boton--pequeno docs__boton-ia" :disabled="ocupado" @click="armar(true)">
-              {{ generando === 'ia' ? 'Generando…' : `Redactar con IA · ${creditos?.costos?.generar_oferta || 3} créditos` }}
+              {{ generando === 'ia' ? 'Generando…' : `Redactar con IA · ${modeloElegido?.costo || 3} créditos` }}
             </button>
           </div>
+        </div>
+        <div v-if="!creditos || creditos.ia_activa" class="docs__modelos" role="radiogroup" aria-label="Modelo de IA">
+          <span class="docs__modelos-titulo">Modelo de IA para redactar</span>
+          <button
+            v-for="opcion in modelosIa"
+            :key="opcion.codigo"
+            type="button"
+            role="radio"
+            :aria-checked="modeloElegido?.codigo === opcion.codigo"
+            :class="['docs__modelo', { 'docs__modelo--activo': modeloElegido?.codigo === opcion.codigo }]"
+            :disabled="ocupado"
+            @click="elegirModeloIa(opcion.codigo)"
+          >
+            <span class="docs__modelo-cabeza">
+              <strong>{{ opcion.nombre }}</strong>
+              <span class="docs__modelo-costo">{{ opcion.costo }} créditos</span>
+            </span>
+            <small>{{ opcion.detalle }}</small>
+          </button>
         </div>
         <div class="docs__nota docs__nota--fila">
           <span v-if="creditos" class="docs__saldo">{{ creditos.ilimitado ? 'IA sin límite (super admin)' : `${creditos.disponibles} créditos disponibles` }}</span>
@@ -2921,6 +3008,14 @@ watch(paso, async (nuevo) => {
       </footer>
     </section>
 
+    <Teleport to="body">
+    <div class="docs__flotante">
+    <Transition name="pista">
+      <div v-if="pista && !asistenteAbierto" class="docs__pista" role="status">
+        <button type="button" class="docs__pista-texto" @click="alternarAsistente">{{ pista }}</button>
+        <button type="button" class="docs__pista-cerrar" aria-label="No mostrar más sugerencias" @click="callarPistas">×</button>
+      </div>
+    </Transition>
     <button
       type="button"
       :class="['docs__bolita', { 'docs__bolita--abierta': asistenteAbierto }]"
@@ -2979,6 +3074,8 @@ watch(paso, async (nuevo) => {
         <button class="boton boton--secundario" type="submit" :disabled="pensando || pregunta.trim().length < 2">Preguntar</button>
       </form>
     </section>
+    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -3039,13 +3136,35 @@ watch(paso, async (nuevo) => {
 .docs__verificacion--falta h4 { color: var(--aviso); }
 .docs__verificacion--lista h4 { color: var(--ok); }
 .docs__verificacion-avisos { color: var(--texto-suave); }
-.docs__bolita { position: fixed; left: calc(var(--ancho-menu, 0px) + 20px); bottom: 20px; z-index: 70; display: grid; place-items: center; width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--ia-degradado); color: var(--ia-sobre); box-shadow: var(--sombra-3); cursor: pointer; transition: transform var(--rapido) var(--curva); }
-.docs__bolita:hover { transform: scale(1.06); }
+.docs__flotante { position: fixed; right: 20px; bottom: 20px; z-index: 900; display: flex; flex-direction: column; align-items: flex-end; gap: var(--e-3); pointer-events: none; }
+.docs__flotante > * { pointer-events: auto; }
+.docs__bolita { position: relative; order: 3; display: grid; place-items: center; width: 58px; height: 58px; border: 0; border-radius: 50%; background: var(--ia-degradado); color: var(--ia-sobre); box-shadow: 0 10px 28px -8px color-mix(in srgb, var(--ia) 70%, transparent), var(--sombra-3); cursor: pointer; transition: transform var(--rapido) var(--curva); animation: bolita-entra 500ms var(--curva) both; }
+.docs__bolita::after { content: ""; position: absolute; inset: 0; border-radius: 50%; animation: bolita-late 2.8s ease-out 1s infinite; pointer-events: none; }
+.docs__bolita--abierta::after { animation: none; }
+.docs__bolita:hover { transform: translateY(-2px) scale(1.05); }
 .docs__bolita:focus-visible { outline: 3px solid var(--ia-borde); outline-offset: 3px; }
-.docs__bolita-punto { position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border: 2px solid var(--superficie); border-radius: 50%; background: var(--ok); }
-/* Sin menú fijo al lado (tableta y móvil), la bolita va pegada al borde. */
-@media (max-width: 1023px) { .docs__bolita, .docs__ayuda { left: 16px; } }
-.docs__ayuda { position: fixed; left: calc(var(--ancho-menu, 0px) + 20px); bottom: 88px; z-index: 70; display: flex; flex-direction: column; gap: var(--e-3); width: min(380px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 120px)); padding: var(--e-4); border: 1px solid var(--ia-borde); border-radius: var(--r-3); background: var(--superficie); box-shadow: var(--sombra-3); animation: aparecer var(--rapido) var(--curva) both; }
+.docs__bolita-punto { position: absolute; top: 4px; right: 4px; width: 12px; height: 12px; border: 2px solid var(--superficie); border-radius: 50%; background: var(--ok); }
+.docs__pista { order: 2; display: flex; align-items: flex-start; gap: 4px; max-width: min(280px, calc(100vw - 100px)); padding: 10px 8px 10px 14px; border: 1px solid var(--ia-borde); border-radius: 16px 16px 4px 16px; background: var(--superficie); color: var(--texto); box-shadow: var(--sombra-3); font-size: var(--t-sm); line-height: 1.4; }
+.docs__pista-texto { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.docs__pista-cerrar { flex: none; width: 22px; height: 22px; border: 0; border-radius: 50%; background: none; color: var(--texto-tenue); font-size: 16px; line-height: 1; cursor: pointer; }
+.docs__pista-cerrar:hover { background: var(--superficie-2); color: var(--texto); }
+.pista-enter-active, .pista-leave-active { transition: opacity 240ms var(--curva), transform 240ms var(--curva); }
+.pista-enter-from, .pista-leave-to { opacity: 0; transform: translateY(8px) scale(0.96); }
+@keyframes bolita-entra { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
+@keyframes bolita-late { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ia) 45%, transparent); } 70%, 100% { box-shadow: 0 0 0 16px transparent; } }
+@media (prefers-reduced-motion: reduce) { .docs__bolita, .docs__bolita::after, .docs__ayuda { animation: none; } }
+.docs__ayuda { order: 1; display: flex; flex-direction: column; gap: var(--e-3); width: min(400px, calc(100vw - 32px)); max-height: min(600px, calc(100vh - 120px)); padding: var(--e-4); border: 1px solid var(--ia-borde); border-radius: var(--r-3); background: var(--superficie); box-shadow: var(--sombra-3); animation: aparecer var(--rapido) var(--curva) both; transform-origin: bottom right; }
+@media (max-width: 640px) { .docs__flotante { right: 16px; bottom: 16px; } }
+/* Modelo de IA para redactar: dos tarjetas, la elegida en el color de la IA. */
+.docs__modelos { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--e-2); align-items: stretch; }
+.docs__modelos-titulo { grid-column: 1 / -1; color: var(--texto-suave); font-size: var(--t-xs); font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
+.docs__modelo { display: flex; flex-direction: column; gap: 4px; padding: var(--e-3) var(--e-4); border: 1px solid var(--borde); border-radius: var(--r-2); background: var(--superficie); color: var(--texto); text-align: left; cursor: pointer; transition: border-color var(--rapido) var(--curva), box-shadow var(--rapido) var(--curva); }
+.docs__modelo:hover:not(:disabled) { border-color: var(--ia-borde); }
+.docs__modelo small { color: var(--texto-tenue); font-size: var(--t-xs); line-height: 1.4; }
+.docs__modelo--activo { border-color: var(--ia); background: var(--ia-tenue); box-shadow: 0 0 0 3px var(--ia-suave); }
+.docs__modelo-cabeza { display: flex; align-items: center; justify-content: space-between; gap: var(--e-2); }
+.docs__modelo-costo { padding: 1px 8px; border-radius: var(--r-redondo); background: var(--superficie-2); color: var(--texto-suave); font-size: var(--t-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
+.docs__modelo--activo .docs__modelo-costo { background: var(--ia); color: var(--ia-sobre); }
 .docs__ayuda-cabecera { display: flex; flex-direction: column; gap: 2px; padding-bottom: var(--e-2); border-bottom: 1px solid var(--borde); }
 .docs__ayuda-cabecera strong { color: var(--ia-fuerte); font-size: var(--t-md); }
 .docs__ayuda-cabecera small { color: var(--texto-tenue); font-size: var(--t-xs); }
@@ -3294,7 +3413,6 @@ watch(paso, async (nuevo) => {
 /* --- Móvil: el indicador se reduce a números y la barra apila las acciones ------------------------ */
 @media (max-width: 640px) {
   .docs__panel { padding: var(--e-4); }
-  .docs__bolita { bottom: 16px; }
   .asistente__pasos { gap: var(--e-1); }
   .asistente__paso:not(:last-child)::after { display: none; }
   .asistente__boton { flex-direction: column; justify-content: center; gap: 4px; padding: var(--e-2) var(--e-1); text-align: center; }

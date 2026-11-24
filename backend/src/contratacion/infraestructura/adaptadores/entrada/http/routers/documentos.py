@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
@@ -116,6 +116,8 @@ class GenerarPedido(BaseModel):
     # La ínfima de la que sale la oferta: sus ítems publicados son las líneas. Sin él se toma el
     # de la lectura del TDR.
     registro_id: UUID | None = None
+    # «estandar» (3 créditos) o «avanzado» (5 créditos, modelo que razona más el TDR).
+    modelo: Literal["estandar", "avanzado"] = "estandar"
 
 
 class Especificacion(BaseModel):
@@ -397,6 +399,7 @@ async def generar(
             objeto=cuerpo.objeto,
             con_ia=cuerpo.con_ia,
             registro_id=cuerpo.registro_id,
+            avanzado=cuerpo.modelo == "avanzado",
         )
     )
 

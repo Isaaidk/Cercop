@@ -15,6 +15,8 @@ from contratacion.dominio.errores import DatoInvalido
 # ver `aplicacion/creditos_actor.py`. Solo el super admin otorga más.
 REGALO_INICIAL = 100
 COSTO_GENERAR_OFERTA = 3
+# Con el modelo avanzado (más caro por token y más lento): pedido del cliente, 2026-11.
+COSTO_GENERAR_OFERTA_AVANZADO = 5
 COSTO_PREGUNTA = 1
 
 
@@ -38,3 +40,7 @@ def paquete(codigo: str) -> Paquete:
         if candidato.codigo == codigo:
             return candidato
     raise DatoInvalido("Ese paquete de créditos no existe.")
+
+
+def costo_generar_oferta(avanzado: bool) -> int:
+    return COSTO_GENERAR_OFERTA_AVANZADO if avanzado else COSTO_GENERAR_OFERTA

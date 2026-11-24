@@ -34,7 +34,7 @@ registro = logging.getLogger(__name__)
 
 _JSON = re.compile(r"\{.*\}", re.DOTALL)
 # Para qué se llama al modelo: leer el TDR y redactar documentos, o el asistente (chat).
-Uso = Literal["documentos", "chat"]
+Uso = Literal["documentos", "chat", "avanzado"]
 # Tokens que se suman a `max_tokens` cuando el modelo razona antes de responder.
 _CUPO_RAZONAMIENTO = 16000
 _ILEGIBLE = "La IA no devolvió datos legibles. Vuelve a intentarlo."
@@ -52,6 +52,8 @@ class ModeloIa:
         modelo_documentos: str = "",
         pensar_documentos: bool | None = None,
         pensar_chat: bool | None = None,
+        modelo_avanzado: str = "",
+        pensar_avanzado: bool | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._clave = clave
@@ -62,7 +64,10 @@ class ModeloIa:
         self._pensar: dict[str, bool | None] = {
             "documentos": pensar_documentos,
             "chat": pensar_chat,
+            "avanzado": pensar_avanzado,
         }
+        # El modelo que el usuario elige pagando más créditos. Vacío: no se ofrece.
+        self.modelo_avanzado = modelo_avanzado.strip()
         self._tiempo = tiempo_seg
         self._concurrencia = concurrencia
         self._turnos = asyncio.Semaphore(concurrencia)
@@ -71,6 +76,17 @@ class ModeloIa:
     @property
     def disponible(self) -> bool:
         return bool(self._url)
+
+    @property
+    def avanzado_disponible(self) -> bool:
+        return self.disponible and bool(self.modelo_avanzado)
+
+    def modelo_de(self, uso: Uso) -> str:
+        if uso == "avanzado" and self.modelo_avanzado:
+            return self.modelo_avanzado
+        if uso in ("documentos", "avanzado"):
+            return self.modelo_documentos
+        return self.modelo
 
     def _http(self) -> httpx.AsyncClient:
         if self._cliente is None:
@@ -132,7 +148,7 @@ class ModeloIa:
         razonamiento gasta del mismo cupo de `max_tokens`: con él, el cupo se amplía, o el modelo
         lo agota pensando y deja la respuesta vacía.
         """
-        cuerpo["model"] = self.modelo_documentos if uso == "documentos" else self.modelo
+        cuerpo["model"] = self.modelo_de(uso)
         pensar = self._pensar.get(uso)
         if pensar is not None:
             cuerpo["thinking"] = {"type": "enabled" if pensar else "disabled"}
@@ -301,6 +317,8 @@ def obtener_modelo() -> ModeloIa:
             modelo_documentos=ajustes.ia_modelo_documentos,
             pensar_documentos=ajustes.ia_pensar_documentos,
             pensar_chat=ajustes.ia_pensar_chat,
+            modelo_avanzado=ajustes.ia_modelo_avanzado,
+            pensar_avanzado=ajustes.ia_pensar_avanzado,
         )
     return _MODELO
 

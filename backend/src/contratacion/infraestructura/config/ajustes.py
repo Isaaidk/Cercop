@@ -224,6 +224,10 @@ class Ajustes(BaseSettings):
     # Ollama no conocen el parámetro, así que solo se define con DeepSeek.
     ia_pensar_documentos: bool | None = None
     ia_pensar_chat: bool | None = None
+    # Modelo «avanzado» que el usuario puede elegir para armar la proforma (cuesta más créditos).
+    # Vacío, no se ofrece: la proforma sale siempre con `ia_modelo_documentos`.
+    ia_modelo_avanzado: str = ""
+    ia_pensar_avanzado: bool | None = None
     # Llamadas al modelo a la vez por proceso. Con 4 procesos son 16 en vuelo: el resto espera turno
     # en vez de tumbar el servicio externo o agotar su cuota por minuto.
     ia_concurrencia: int = Field(default=4, ge=1, le=32)
@@ -393,7 +397,7 @@ class Ajustes(BaseSettings):
             return [parte.strip().lower() for parte in valor.split(",") if parte.strip()]
         return valor
 
-    @field_validator("ia_pensar_documentos", "ia_pensar_chat", mode="before")
+    @field_validator("ia_pensar_documentos", "ia_pensar_chat", "ia_pensar_avanzado", mode="before")
     @classmethod
     def _pensar_vacio_es_ninguno(cls, valor: Any) -> Any:
         """`IA_PENSAR_CHAT=` (vacío) es «no enviar el parámetro», no un error de arranque."""

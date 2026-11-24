@@ -8,7 +8,13 @@ from uuid import UUID
 
 from contratacion.aplicacion.actor import Actor
 from contratacion.aplicacion.creditos_actor import creditos_de
-from contratacion.dominio.creditos import COSTO_GENERAR_OFERTA, PAQUETES, paquete
+from contratacion.dominio.creditos import (
+    COSTO_GENERAR_OFERTA,
+    COSTO_GENERAR_OFERTA_AVANZADO,
+    PAQUETES,
+    costo_generar_oferta,
+    paquete,
+)
 from contratacion.dominio.documentos import items_pedidos
 from contratacion.dominio.errores import DatoInvalido, EstadoInvalido, NoEncontrado, SinPermiso
 from contratacion.dominio.oferta import (
@@ -39,6 +45,7 @@ async def generar_oferta(
     objeto: str,
     con_ia: bool,
     registro_id: UUID | None = None,
+    avanzado: bool = False,
 ) -> dict[str, Any]:
     secciones: dict[str, str] = {}
     if lectura_id is not None:
@@ -66,9 +73,16 @@ async def generar_oferta(
             "plantilla y los datos de tu empresa, sin gastar créditos.",
         }
 
+    if avanzado and not modelo.avanzado_disponible:
+        raise DatoInvalido("El modelo avanzado no está disponible ahora. Usa el estándar.")
+    costo = costo_generar_oferta(avanzado)
+    uso = "avanzado" if avanzado else "documentos"
     creditos = creditos_de(actor, creditos)
     queda = await creditos.consumir(
-        actor.negocio_id, actor.usuario_id, COSTO_GENERAR_OFERTA, "Generar oferta con IA"
+        actor.negocio_id,
+        actor.usuario_id,
+        costo,
+        "Generar oferta con IA (modelo avanzado)" if avanzado else "Generar oferta con IA",
     )
     try:
         respuesta = await modelo.completar_json(
@@ -81,15 +95,15 @@ async def generar_oferta(
                 lineas_publicadas=base["lineas"] if base["fuente_lineas"] else [],
             ),
             max_tokens=8000,
-            uso="documentos",
+            uso=uso,
         )
     except EstadoInvalido:
         await creditos.devolver(
-            actor.negocio_id, COSTO_GENERAR_OFERTA, "Devolución: la IA no respondió"
+            actor.negocio_id, costo, "Devolución: la IA no respondió"
         )
         raise
     limpio = limpiar_respuesta(
-        respuesta, base, modelo=modelo.modelo_documentos, texto_tdr=texto_de_lineas(secciones)
+        respuesta, base, modelo=modelo.modelo_de(uso), texto_tdr=texto_de_lineas(secciones)
     )
     return {**limpio, "saldo": queda}
 
@@ -101,7 +115,33 @@ async def ver_creditos(
     return {
         **saldo,
         "ia_activa": modelo.disponible,
-        "costos": {"generar_oferta": COSTO_GENERAR_OFERTA, "pregunta": 1},
+        "costos": {
+            "generar_oferta": COSTO_GENERAR_OFERTA,
+            "generar_oferta_avanzado": COSTO_GENERAR_OFERTA_AVANZADO,
+            "pregunta": 1,
+        },
+        # Los modelos que el usuario puede elegir para armar la proforma.
+        "modelos": [
+            {
+                "codigo": "estandar",
+                "nombre": "Estándar",
+                "detalle": "Rápido y económico. Sirve para la mayoría de ínfimas.",
+                "costo": COSTO_GENERAR_OFERTA,
+            },
+            *(
+                [
+                    {
+                        "codigo": "avanzado",
+                        "nombre": "Avanzado",
+                        "detalle": "Razona más el TDR: mejor en procesos largos o técnicos. "
+                        "Tarda más.",
+                        "costo": COSTO_GENERAR_OFERTA_AVANZADO,
+                    }
+                ]
+                if modelo.avanzado_disponible
+                else []
+            ),
+        ],
         "paquetes": [
             {
                 "codigo": p.codigo,
